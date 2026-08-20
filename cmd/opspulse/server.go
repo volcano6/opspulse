@@ -89,7 +89,7 @@ var serverListCmd = &cobra.Command{
 		_, _ = fmt.Fprintln(tw, "----\t----\t----\t----\t----\t----\t-----------")
 
 		for _, s := range servers {
-			authMethod := "key"
+			var authMethod string
 			if s.KeyPath != "" {
 				authMethod = fmt.Sprintf("key (%s)", s.KeyPath)
 			} else if s.Password != "" {

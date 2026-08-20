@@ -42,20 +42,20 @@ func (e *SSHExecutor) Test(ctx context.Context, srv server.Server) (time.Duratio
 	if err != nil {
 		return 0, "", &NetworkError{Host: srv.Host, Reason: err}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
 		return 0, "", &AuthError{User: srv.User, Host: srv.Host, Reason: err}
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
 		return 0, "", fmt.Errorf("failed to open SSH session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	output, err := session.Output("uname -srm || ver")
 	duration := time.Since(start)
@@ -93,7 +93,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 		res.Duration = res.EndTime.Sub(startTime)
 		return res, netErr
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
 	if err != nil {
@@ -104,7 +104,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 		return res, authErr
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -114,7 +114,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 		res.Duration = res.EndTime.Sub(startTime)
 		return res, sessErr
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// Stream stdout and stderr
 	if outputWriter != nil {
@@ -138,7 +138,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 
 	// Write script to stdin and close pipe
 	go func() {
-		defer stdinPipe.Close()
+		defer func() { _ = stdinPipe.Close() }()
 		_, _ = io.WriteString(stdinPipe, scriptContent)
 	}()
 

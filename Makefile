@@ -7,7 +7,7 @@ LDFLAGS     := -s -w \
                -X github.com/volcano6/opspulse/internal/version.Commit=$(COMMIT) \
                -X github.com/volcano6/opspulse/internal/version.Date=$(DATE)
 
-.PHONY: build test lint clean docker dev
+.PHONY: build test lint ci clean docker dev
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) ./cmd/opspulse
@@ -17,6 +17,9 @@ test:
 
 lint:
 	golangci-lint run
+
+ci:
+	bash scripts/ci.sh
 
 clean:
 	rm -rf bin/ coverage.out

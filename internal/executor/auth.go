@@ -84,7 +84,7 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 	config := &ssh.ClientConfig{
 		User:            user,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Default to accepting host keys for automated VPS provisioning
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // G106: Host keys accepted for automated VPS provisioning
 		Timeout:         timeout,
 	}
 
