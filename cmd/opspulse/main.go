@@ -6,13 +6,19 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/logger"
 	"github.com/volcano6/opspulse/internal/version"
 )
+
+var debugFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "opspulse",
 	Short: "Personal infrastructure lifecycle management",
 	Long:  "OpsPulse — Self-hosted server automation, backup orchestration, and secure operations.",
+	PersistentPreRun: func(_ *cobra.Command, _ []string) {
+		logger.Setup(debugFlag)
+	},
 }
 
 var versionCmd = &cobra.Command{
@@ -25,6 +31,7 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolVar(&debugFlag, "debug", false, "Enable verbose debug logging")
 	rootCmd.AddCommand(versionCmd)
 }
 
