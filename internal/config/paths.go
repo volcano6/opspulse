@@ -19,7 +19,7 @@ func ConfigDir() string {
 	if env := os.Getenv(EnvHome); env != "" {
 		return env
 	}
-	if legacy := legacyDir(); dirExists(legacy) {
+	if legacy := legacyDir(); legacy != "" && dirExists(legacy) {
 		return legacy
 	}
 	return filepath.Join(xdg.ConfigHome, appName)
@@ -31,14 +31,17 @@ func DataDir() string {
 	if env := os.Getenv(EnvHome); env != "" {
 		return filepath.Join(env, "data")
 	}
-	if legacy := legacyDir(); dirExists(legacy) {
+	if legacy := legacyDir(); legacy != "" && dirExists(legacy) {
 		return filepath.Join(legacy, "data")
 	}
 	return filepath.Join(xdg.DataHome, appName)
 }
 
 func legacyDir() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(home, ".opspulse")
 }
 
