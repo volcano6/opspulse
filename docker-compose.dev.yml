@@ -1,0 +1,3 @@
+# OpsPulse development environment
+# Add services as needed (database, etc.)
+services: {}
