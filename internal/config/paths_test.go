@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-func TestConfigDir_EnvOverride(t *testing.T) {
+func TestDir_EnvOverride(t *testing.T) {
 	t.Setenv(EnvHome, "/custom/opspulse")
-	got := ConfigDir()
+	got := Dir()
 	if got != "/custom/opspulse" {
-		t.Errorf("ConfigDir() = %q, want /custom/opspulse", got)
+		t.Errorf("Dir() = %q, want /custom/opspulse", got)
 	}
 }
 
@@ -22,10 +22,10 @@ func TestDataDir_EnvOverride(t *testing.T) {
 	}
 }
 
-func TestConfigDir_XDGFallback(t *testing.T) {
+func TestDir_XDGFallback(t *testing.T) {
 	os.Unsetenv(EnvHome)
-	got := ConfigDir()
+	got := Dir()
 	if got == "" {
-		t.Error("ConfigDir() returned empty string")
+		t.Error("Dir() returned empty string")
 	}
 }
