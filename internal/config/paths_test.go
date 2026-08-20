@@ -23,7 +23,9 @@ func TestDataDir_EnvOverride(t *testing.T) {
 }
 
 func TestDir_XDGFallback(t *testing.T) {
-	os.Unsetenv(EnvHome)
+	if err := os.Unsetenv(EnvHome); err != nil {
+		t.Fatalf("failed to unset env: %v", err)
+	}
 	got := Dir()
 	if got == "" {
 		t.Error("Dir() returned empty string")
