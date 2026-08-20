@@ -17,7 +17,7 @@ jobs:
           cache: true
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v1.64.5
           args: --verbose
 
   test:
