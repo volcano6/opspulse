@@ -97,7 +97,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			if err == nil {
 				logFile, _ = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 				if logFile != nil {
-					defer logFile.Close()
+					defer func() { _ = logFile.Close() }()
 					_, _ = fmt.Fprintf(logFile, "=== Bootstrap Log for Server %s (%s) at %s ===\n\n",
 						srv.Name, srv.Address(), time.Now().Format(time.RFC3339))
 				}
