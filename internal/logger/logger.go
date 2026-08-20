@@ -1,3 +1,4 @@
+// Package logger provides structured logging setup for OpsPulse.
 package logger
 
 import (

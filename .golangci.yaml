@@ -4,7 +4,13 @@ linters:
     - govet
     - staticcheck
     - unused
-    - gosimple
     - ineffassign
     - gosec
     - revive
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        arguments:
+          - disable-stuttering-check

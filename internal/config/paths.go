@@ -1,3 +1,4 @@
+// Package config handles configuration directories and paths.
 package config
 
 import (
@@ -13,9 +14,9 @@ const (
 	EnvHome = "OPSPULSE_HOME"
 )
 
-// ConfigDir returns the configuration directory.
+// Dir returns the configuration directory.
 // Priority: OPSPULSE_HOME > ~/.opspulse (legacy) > $XDG_CONFIG_HOME/opspulse
-func ConfigDir() string {
+func Dir() string {
 	if env := os.Getenv(EnvHome); env != "" {
 		return env
 	}
