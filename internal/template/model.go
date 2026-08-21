@@ -33,8 +33,15 @@ type Template struct {
 	SourcePath string
 }
 
+// NormalizeLineEndings converts CRLF and CR to standard LF line endings.
+func NormalizeLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
+}
+
 // ParseTemplate parses a raw shell script and extracts YAML metadata if present in the header.
 func ParseTemplate(raw string, defaultName string) (*Template, error) {
+	raw = NormalizeLineEndings(raw)
 	meta, err := ExtractMetadata(raw)
 	if err != nil {
 		// Fallback to minimal metadata if none is provided

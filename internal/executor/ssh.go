@@ -130,6 +130,10 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 		return res, err
 	}
 
+	// Normalize script line endings to standard LF before executing remotely
+	scriptContent = strings.ReplaceAll(scriptContent, "\r\n", "\n")
+	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
+
 	// Run bash -s with the script piped into stdin
 	execErrChan := make(chan error, 1)
 	go func() {

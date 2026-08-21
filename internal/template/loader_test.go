@@ -3,8 +3,41 @@ package template
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestNormalizeLineEndings(t *testing.T) {
+	crlf := "echo 'hello'\r\necho 'world'\r\n"
+	want := "echo 'hello'\necho 'world'\n"
+
+	got := NormalizeLineEndings(crlf)
+	if got != want {
+		t.Errorf("NormalizeLineEndings(CRLF) = %q, want %q", got, want)
+	}
+
+	cr := "line 1\rline 2\r"
+	wantCR := "line 1\nline 2\n"
+	gotCR := NormalizeLineEndings(cr)
+	if gotCR != wantCR {
+		t.Errorf("NormalizeLineEndings(CR) = %q, want %q", gotCR, wantCR)
+	}
+}
+
+func TestParseTemplate_CRLF(t *testing.T) {
+	crlfScript := "#!/bin/bash\r\n# ---\r\n# name: crlf-test\r\n# version: 1\r\n# ---\r\necho 'running on linux'\r\n"
+	tmpl, err := ParseTemplate(crlfScript, "crlf-test")
+	if err != nil {
+		t.Fatalf("ParseTemplate() unexpected error: %v", err)
+	}
+
+	if tmpl.Metadata.Name != "crlf-test" {
+		t.Errorf("expected name 'crlf-test', got %q", tmpl.Metadata.Name)
+	}
+	if strings.Contains(tmpl.Content, "\r") {
+		t.Errorf("expected Content to contain no carriage returns, got %q", tmpl.Content)
+	}
+}
 
 func TestExtractMetadata(t *testing.T) {
 	scriptWithMeta := `#!/bin/bash
