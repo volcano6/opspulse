@@ -24,11 +24,11 @@ var (
 type Service struct {
 	serverStore    *server.Store
 	templateLoader *template.Loader
-	executor       *executor.SSHExecutor
+	executor       executor.Executor
 }
 
 // NewService creates a new bootstrap Service.
-func NewService(serverStore *server.Store, templateLoader *template.Loader, exec *executor.SSHExecutor) *Service {
+func NewService(serverStore *server.Store, templateLoader *template.Loader, exec executor.Executor) *Service {
 	return &Service{
 		serverStore:    serverStore,
 		templateLoader: templateLoader,
@@ -148,8 +148,9 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 				multiWriter = io.MultiWriter(prefixedConsole, logFile)
 			}
 
-			// Execute template
-			res, err := s.executor.Execute(ctx, srv, tmpl.Metadata.Name, tmpl.Content, multiWriter)
+			// Execute template via Executor interface
+			target := executor.NewServerTarget(srv)
+			res, err := s.executor.Execute(ctx, target, tmpl.Metadata.Name, tmpl.Content, multiWriter)
 			_ = prefixedConsole.Flush()
 
 			res.LogPath = logFilePath

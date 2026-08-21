@@ -133,7 +133,7 @@ var serverTestCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 
-		rtt, banner, err := exec.Test(ctx, *srv)
+		rtt, banner, err := exec.Test(ctx, executor.NewServerTarget(*srv))
 		if err != nil {
 			return fmt.Errorf("❌ Connection failed: %w", err)
 		}

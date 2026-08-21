@@ -9,9 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
 )
+
+// ErrInvalidTarget is returned when a target does not match the executor's requirements.
+var ErrInvalidTarget = errors.New("invalid target for executor")
 
 // SSHExecutor handles executing scripts and commands over SSH.
 type SSHExecutor struct {
@@ -28,7 +30,12 @@ func NewSSHExecutor() *SSHExecutor {
 }
 
 // Test checks SSH connectivity and returns latency and system info.
-func (e *SSHExecutor) Test(ctx context.Context, srv server.Server) (time.Duration, string, error) {
+func (e *SSHExecutor) Test(ctx context.Context, target Target) (time.Duration, string, error) {
+	if target.Server == nil {
+		return 0, "", fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
+	}
+	srv := *target.Server
+
 	config, err := BuildClientConfig(srv, e.ConnectTimeout)
 	if err != nil {
 		return 0, "", err
@@ -67,13 +74,21 @@ func (e *SSHExecutor) Test(ctx context.Context, srv server.Server) (time.Duratio
 }
 
 // Execute runs a script on the remote server, streaming stdout/stderr to outputWriter.
-func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateName string, scriptContent string, outputWriter io.Writer) (*Result, error) {
+func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName string, scriptContent string, outputWriter io.Writer) (*Result, error) {
 	startTime := time.Now()
 	res := &Result{
-		ServerName: srv.Name,
-		Template:   templateName,
+		ServerName: target.Name,
+		Template:   taskName,
 		StartTime:  startTime,
 	}
+
+	if target.Server == nil {
+		res.Error = fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
+		res.EndTime = time.Now()
+		res.Duration = res.EndTime.Sub(startTime)
+		return res, res.Error
+	}
+	srv := *target.Server
 
 	config, err := BuildClientConfig(srv, e.ConnectTimeout)
 	if err != nil {
@@ -166,7 +181,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, srv server.Server, templateNa
 				execError := &ExecutionError{
 					ExitCode: res.ExitCode,
 					Server:   srv.Name,
-					Message:  fmt.Sprintf("script '%s' exited with code %d", templateName, res.ExitCode),
+					Message:  fmt.Sprintf("script '%s' exited with code %d", taskName, res.ExitCode),
 				}
 				res.Error = execError
 				return res, execError
