@@ -12,4 +12,5 @@ linters-settings:
   gosec:
     excludes:
       - G106 # InsecureIgnoreHostKey for automated VPS bootstrapping
+      - G204 # Subprocess command execution (script runner core capability)
       - G304 # File paths from user config / CLI args
