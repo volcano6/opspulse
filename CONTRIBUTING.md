@@ -1,36 +1,40 @@
-# Contributing to OpsPulse
+# 贡献指南
 
-## Development Setup
+感谢你对 OpsPulse 的关注与支持！
 
-### Prerequisites
+---
 
-- Go 1.24+
-- golangci-lint
-- Docker (optional)
+## 🛠️ 本地开发环境准备
 
-### Build
+### 前置依赖
+
+- **Go 1.24+**
+- **golangci-lint**
+- **Docker**（可选）
+
+### 常用开发命令
 
 ```bash
+# 编译二进制
 make build
-```
 
-### Test
-
-```bash
+# 运行单元测试与竞态检测
 make test
-```
 
-### Lint
-
-```bash
+# 运行代码规范检查
 make lint
+
+# 运行本地全真 CI 流水线模拟
+make ci
 ```
 
-## Commit Convention
+---
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+## 📝 Commit 提交规范
 
-```
+请遵循 [Conventional Commits (约定式提交)](https://www.conventionalcommits.org/zh-hans/):
+
+```text
 feat: add server inventory
 fix: handle SSH timeout
 docs: update README
@@ -38,10 +42,12 @@ test: add executor tests
 ci: update GitHub Actions
 ```
 
-## Pull Requests
+---
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run `make lint && make test`
-5. Submit a pull request
+## 🚀 提交流程 (Pull Request)
+
+1. Fork 本仓库
+2. 创建新的功能分支 (`git checkout -b feat/my-new-feature`)
+3. 提交代码修改
+4. 运行 `make ci` 确保所有检查 100% 通过
+5. 提交 Pull Request
