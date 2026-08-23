@@ -15,17 +15,19 @@ import (
 
 // Runner coordinates the execution of restic backup jobs and records their status in SQLite.
 type Runner struct {
-	executor    executor.Executor
-	serverStore *server.Store
-	backupRepo  *storage.BackupRepo
+	executor      executor.Executor
+	localExecutor *executor.LocalExecutor
+	serverStore   *server.Store
+	backupRepo    *storage.BackupRepo
 }
 
 // NewRunner creates a new backup Runner.
 func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo *storage.BackupRepo) *Runner {
 	return &Runner{
-		executor:    exec,
-		serverStore: serverStore,
-		backupRepo:  backupRepo,
+		executor:      exec,
+		localExecutor: executor.NewLocalExecutor(),
+		serverStore:   serverStore,
+		backupRepo:    backupRepo,
 	}
 }
 
@@ -33,6 +35,10 @@ func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo *st
 func (r *Runner) ResolveTarget(serverName string) (executor.Target, error) {
 	if serverName == "local" || serverName == "" {
 		return executor.NewLocalTarget(), nil
+	}
+
+	if r.serverStore == nil {
+		return executor.Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
 	}
 
 	srv, err := r.serverStore.Get(serverName)
@@ -98,13 +104,18 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	_, _ = fmt.Fprintf(consoleOut, "--> Starting backup job %q on %s (Backend: %s)...\n",
 		job.Name, job.Server, job.Backend)
 
-	// 3. Build script and execute
+	// 3. Build script and execute via appropriate executor
 	script, err := BuildBackupScript(job)
 	if err != nil {
 		return r.finalizeRun(ctx, runRecord, false, 0, err, startTime, logFile, prefixedConsole)
 	}
 
-	execRes, execErr := r.executor.Execute(ctx, target, "backup-"+job.Name, script, multiWriter)
+	execToUse := r.executor
+	if target.IsLocal {
+		execToUse = r.localExecutor
+	}
+
+	execRes, execErr := execToUse.Execute(ctx, target, "backup-"+job.Name, script, multiWriter)
 	_ = prefixedConsole.Flush()
 
 	// 4. Parse restic summary from execution output
@@ -191,7 +202,13 @@ func (r *Runner) ListSnapshots(ctx context.Context, job Job) ([]Snapshot, error)
 
 	script := BuildSnapshotsScript(job)
 	var outputBuf bytes.Buffer
-	res, err := r.executor.Execute(ctx, target, "snapshots-"+job.Name, script, &outputBuf)
+
+	execToUse := r.executor
+	if target.IsLocal {
+		execToUse = r.localExecutor
+	}
+
+	res, err := execToUse.Execute(ctx, target, "snapshots-"+job.Name, script, &outputBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
