@@ -187,13 +187,14 @@ func TestRunner_Run_Failure(t *testing.T) {
 
 	backupRepo := storage.NewBackupRepo(db)
 	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "192.168.1.1", User: "root"})
 
 	exec := &mockExecutor{shouldFail: true}
 	runner := NewRunner(exec, serverStore, backupRepo)
 
 	job := Job{
-		Name:    "local-test",
-		Server:  "local",
+		Name:    "vps-test",
+		Server:  "vps-01",
 		Paths:   []string{"/tmp/data"},
 		Backend: "/tmp/backup",
 	}
@@ -210,7 +211,7 @@ func TestRunner_Run_Failure(t *testing.T) {
 	}
 
 	// Verify failure recorded in SQLite
-	latest, err := backupRepo.GetLatestRun(context.Background(), "local-test")
+	latest, err := backupRepo.GetLatestRun(context.Background(), "vps-test")
 	if err != nil {
 		t.Fatalf("backupRepo.GetLatestRun() error: %v", err)
 	}
@@ -224,11 +225,13 @@ func TestRunner_ListSnapshots(t *testing.T) {
 		{"id":"snap-1111","time":"2026-08-20T10:00:00Z","paths":["/data"],"hostname":"vps-01","username":"root"}
 	]`
 	exec := &mockExecutor{outputToReturn: mockSnapshots}
-	runner := NewRunner(exec, nil, nil)
+	serverStore := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "192.168.1.1", User: "root"})
+	runner := NewRunner(exec, serverStore, nil)
 
 	job := Job{
 		Name:    "test-job",
-		Server:  "local",
+		Server:  "vps-01",
 		Paths:   []string{"/data"},
 		Backend: "/backup",
 	}

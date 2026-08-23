@@ -26,9 +26,10 @@
 - **🚀 服务器清单管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持标签、SSH 密钥认证、密码备选与自定义端口。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **⚡ 通用执行引擎**：抽象 `Executor` 接口，支持远程 SSH 实时流式执行与本地 Local 执行，具备超时熔断、退出码捕获与换行符自动清洗机制。
+- **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🛡️ 默认安全原则**：私钥绝不离机，运行时按需注入敏感凭据，无任何外部遥测上报。
+- **🔒 默认安全原则**：私钥绝不离机，运行时按需注入敏感凭据，无任何外部遥测上报。
 
 ---
 
@@ -58,49 +59,39 @@ make build
 ./bin/opspulse server list
 ```
 
-### 3. 查看可用模板
+### 3. 查看可用模板并初始化服务器
 
 ```bash
-# 查看所有内置与自定义脚本模板
+# 查看所有可用脚本模板
 ./bin/opspulse template list
 
-# 查看特定模板的源码与元数据
-./bin/opspulse template show docker
-```
-
-### 4. 执行服务器初始化 (Bootstrap)
-
-```bash
 # 模拟执行（Dry Run）：仅打印执行计划与脚本信息，不建立真实连接
 ./bin/opspulse bootstrap vps-01 -t base,security,docker --dry-run
 
-# 正式执行初始化（按指定顺序串行执行）
+# 正式执行初始化
 ./bin/opspulse bootstrap vps-01 -t base,security,docker
 ```
 
-终端执行效果示例：
-```text
-[1/1] >>> Starting bootstrap on server: vps-01 (198.51.100.1:22) <<<
+### 4. 统一备份管理 (Backup)
 
---> [vps-01] Running template [1/2]: base (v1) - Install essential system tools and common packages
-[vps-01] Updating apt cache...
-[vps-01] Installing curl, wget, git, htop, ufw, fail2ban...
-[vps-01] ✅ Template base completed successfully (Duration: 8.24s)
+```bash
+# 查看已配置的备份任务
+./bin/opspulse backup list
 
---> [vps-01] Running template [2/2]: docker (v1) - Install official Docker CE and Docker Compose plugin
-[vps-01] Setting up Docker official repository...
-[vps-01] Installing docker-ce and docker-compose-plugin...
-[vps-01] Docker version 27.5.1, build 9f9e405 installed.
-[vps-01] ✅ Template docker completed successfully (Duration: 14.10s)
+# 模拟备份执行
+./bin/opspulse backup run web-data --dry-run
 
-==================== Bootstrap Summary ====================
-SERVER   TEMPLATE   STATUS    DURATION   LOG FILE
-------   --------   ------    --------   --------
-vps-01   base       SUCCESS   8.24s      /home/user/.local/share/opspulse/logs/bootstrap-vps-01-20260821T200000.log
-vps-01   docker     SUCCESS   14.10s     /home/user/.local/share/opspulse/logs/bootstrap-vps-01-20260821T200000.log
------------------------------------------------------------
-Total: 2 | Succeeded: 2 | Failed: 0 | Total Duration: 22.34s
-===========================================================
+# 执行备份（支持指定单/多任务或 all 全部执行，支持并发数设置）
+./bin/opspulse backup run all --parallel 2
+
+# 查看所有备份任务的最新一次执行状态与指标
+./bin/opspulse backup status
+
+# 查看特定任务的历史执行记录
+./bin/opspulse backup history web-data
+
+# 查询远端 restic 仓库中的实际快照列表
+./bin/opspulse backup snapshots web-data
 ```
 
 ---
@@ -112,6 +103,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | 路径 | 用途说明 |
 |------|---------|
 | `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单配置文件 |
+| `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务配置文件 |
 | `$XDG_CONFIG_HOME/opspulse/templates/*.sh` | 用户自定义 Shell 脚本模板目录 |
 | `$XDG_DATA_HOME/opspulse/logs/` | 任务执行完整日志落盘目录 (`bootstrap-<server>-<timestamp>.log`) |
 | `$XDG_DATA_HOME/opspulse/opspulse.db` | 本地 SQLite 数据库文件（执行历史、状态与指标） |
@@ -129,6 +121,11 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse template list` | 列出所有内置及自定义脚本模板 |
 | `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
 | `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
+| `opspulse backup list` | 列出所有配置的备份任务 |
+| `opspulse backup run <jobs... \| all> [-p N] [--dry-run]` | 执行备份任务（支持并发与模拟执行） |
+| `opspulse backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
+| `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录 |
+| `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
 | `opspulse version` | 输出当前版本号、Git Commit Hash 与构建日期 |
 
 ---
@@ -136,6 +133,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 ## 📖 使用文档
 
 * [新手入门教程](docs/tutorial/getting_started.md)
+* [备份管理指南](docs/reference/backup.md)
 * [脚本模板开发指南](docs/reference/templates.md)
 * [配置与存储目录规范](docs/reference/configuration.md)
 * [贡献指南](CONTRIBUTING.md)
