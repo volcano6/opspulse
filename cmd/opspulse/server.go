@@ -161,6 +161,26 @@ var serverRemoveCmd = &cobra.Command{
 	},
 }
 
+func completeServerNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	store := server.NewDefaultStore()
+	servers, err := store.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	var comps []string
+	for _, s := range servers {
+		if s.Description != "" {
+			comps = append(comps, fmt.Sprintf("%s\t%s (%s)", s.Name, s.Host, s.Description))
+		} else {
+			comps = append(comps, fmt.Sprintf("%s\t%s", s.Name, s.Host))
+		}
+	}
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	serverAddCmd.Flags().StringVar(&addHost, "host", "", "Server IP or hostname (required)")
 	serverAddCmd.Flags().IntVarP(&addPort, "port", "p", 22, "SSH port")
@@ -169,6 +189,9 @@ func init() {
 	serverAddCmd.Flags().StringVar(&addPassword, "password", "", "SSH password (optional)")
 	serverAddCmd.Flags().StringVarP(&addTags, "tags", "t", "", "Comma-separated tags (e.g. prod,web)")
 	serverAddCmd.Flags().StringVarP(&addDesc, "desc", "d", "", "Server description")
+
+	serverTestCmd.ValidArgsFunction = completeServerNames
+	serverRemoveCmd.ValidArgsFunction = completeServerNames
 
 	serverCmd.AddCommand(serverAddCmd)
 	serverCmd.AddCommand(serverListCmd)

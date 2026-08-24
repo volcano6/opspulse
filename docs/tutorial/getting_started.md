@@ -36,7 +36,62 @@ opspulse version
 
 ---
 
-## 3. 第一步：添加纳管服务器
+## 3. 配置 Shell 自动补全（强烈推荐）
+
+OpsPulse 支持全自动 Shell 补全（Tab 键自动补全子命令、标志、服务器名称、模板名称及备份任务）。
+
+### 各终端一键配置命令
+
+* **Bash（Linux / WSL / macOS）**：
+  ```bash
+  # 1. 确保安装了 Linux 补全库（Debian/Ubuntu 环境）
+  sudo apt-get install -y bash-completion
+
+  # 2. 写入系统级自动补全目录（全局生效）
+  opspulse completion bash | sudo tee /etc/bash_completion.d/opspulse > /dev/null
+  source /etc/bash_completion.d/opspulse
+  ```
+  *或者仅在当前用户生效（写入 `~/.bashrc`）：*
+  ```bash
+  echo 'source <(opspulse completion bash)' >> ~/.bashrc
+  source ~/.bashrc
+  ```
+
+* **Zsh（Oh-My-Zsh / Starship 用户）**：
+  ```bash
+  # 写入 ~/.zshrc（永久生效）
+  echo 'source <(opspulse completion zsh 2>/dev/null)' >> ~/.zshrc
+  source ~/.zshrc
+  ```
+
+* **Fish**：
+  ```bash
+  opspulse completion fish > ~/.config/fish/completions/opspulse.fish
+  ```
+
+* **PowerShell（Windows）**：
+  ```powershell
+  # 当前会话生效
+  opspulse completion powershell | Out-String | Invoke-Expression
+
+  # 永久生效（写入 PowerShell Profile）
+  if (!(Test-Path -Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force }
+  opspulse completion powershell >> $PROFILE
+  ```
+
+### 常见踩坑排查（FAQ / Troubleshooting）
+
+* ⚠️ **注意事项 1：必须使用系统全局命令名，不能带相对路径**
+  - **现象**：敲 `./bin/opspulse <Tab>` 无法触发补全，但敲 `opspulse <Tab>` 正常。
+  - **原因**：Cobra 补全规则默认绑定的是注册在系统的 `opspulse` 命令。若使用相对路径 `./bin/opspulse`，Shell 无法识别触发。建议通过 `sudo cp bin/opspulse /usr/local/bin/` 或将 `bin/` 目录加入 `$PATH`。
+* ⚠️ **注意事项 2：重新编译新版本后需同步二进制**
+  - 新增子命令或更新后，如果未将最新二进制覆盖到 `/usr/local/bin/opspulse`，补全列表依然会显示旧版命令集。
+* ⚠️ **注意事项 3：环境降级为“文件列表”的排查**
+  - 如果按 Tab 键只列出当前目录的文件，说明当前终端未加载 `bash-completion` 主引擎，需先执行 `source /usr/share/bash-completion/bash_completion`。
+
+---
+
+## 4. 第一步：添加纳管服务器
 
 将你的 VPS 注册进 OpsPulse 的清单库：
 
@@ -65,7 +120,7 @@ Connecting to web-01 (198.51.100.10:22)...
 
 ---
 
-## 4. 第二步：查看与发现可用模板
+## 5. 第二步：查看与发现可用模板
 
 OpsPulse 二进制中直接内置了常用的官方模板：
 
@@ -90,7 +145,7 @@ opspulse template show docker
 
 ---
 
-## 5. 第三步：执行服务器初始化 (Bootstrap)
+## 6. 第三步：执行服务器初始化 (Bootstrap)
 
 ### 安全模拟运行 (Dry Run)
 在向远程服务器下发指令前，可以先通过 `--dry-run` 预览执行流程与脚本大小：
