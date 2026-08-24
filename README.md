@@ -4,7 +4,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/volcano6/opspulse)](https://go.dev/)
 [![License](https://img.shields.io/github/license/volcano6/opspulse)](LICENSE)
 
-**Infrastructure Action Runner** — 面向个人开发者的自托管服务器运维编排、备份管理与安全操作工具。
+**Infrastructure Action Runner** — 面向个人开发者的自托管服务器全生命周期与无缝迁移平台。
 
 ---
 
@@ -14,16 +14,17 @@
 
 * 🔄 **重复初始化配置**：每次开通新 VPS 都要手动敲一遍重复的 curl、apt、常用工具和安全配置。
 * 📦 **备份脚本散落各处**：各台服务器上的备份脚本和 cron 任务缺乏统一监控，备份成功与否无感知。
+* 🚚 **机器到期迁移痛苦**：VPS 到期更换服务商时，数据导出、环境安装、路径调整、证书配置和重新上线流程繁琐且易出错。
 * 🔒 **敏感凭据散落**：各种密码和 API Token 散落在各个服务器的明文 `.env` 文件或记忆中。
-* 🚫 **现有工具过重**：Ansible、Terraform、Jenkins 等工业级方案对单节点或小型个人 VPS 集群来说过于沉重，学习和维护成本高。
 
-**OpsPulse** 采用单一可执行二进制文件，提供声明式服务器清单管理、可复用的 Shell 脚本模板、统一调度的 restic 备份管理，并将所有执行历史与状态结构化持久化至本地 SQLite 数据库。
+**OpsPulse** 采用单一可执行二进制文件，提供声明式服务器清单、有状态业务资产（Asset）管理、可复用的 Shell 模板、统一调度的 restic 备份与跨机重映射还原，并将所有执行历史与状态结构化持久化至本地 SQLite 数据库。
 
 ---
 
 ## ✨ 核心特性
 
 - **🚀 服务器清单管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持标签、SSH 密钥认证、密码备选与自定义端口。
+- **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **⚡ 通用执行引擎**：抽象 `Executor` 接口，支持远程 SSH 实时流式执行与本地 Local 执行，具备超时熔断、退出码捕获与换行符自动清洗机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
@@ -103,6 +104,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | 路径 | 用途说明 |
 |------|---------|
 | `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单配置文件 |
+| `$XDG_CONFIG_HOME/opspulse/assets.yaml` | 结构化业务资产定义文件 |
 | `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务配置文件 |
 | `$XDG_CONFIG_HOME/opspulse/templates/*.sh` | 用户自定义 Shell 脚本模板目录 |
 | `$XDG_DATA_HOME/opspulse/logs/` | 任务执行完整日志落盘目录 (`bootstrap-<server>-<timestamp>.log`) |
@@ -133,6 +135,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 ## 📖 使用文档
 
 * [新手入门教程](docs/tutorial/getting_started.md)
+* [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
 * [脚本模板开发指南](docs/reference/templates.md)
 * [配置与存储目录规范](docs/reference/configuration.md)
