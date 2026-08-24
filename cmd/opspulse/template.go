@@ -98,7 +98,29 @@ var templateShowCmd = &cobra.Command{
 	},
 }
 
+func completeTemplateNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	loader := template.NewDefaultLoader()
+	templates, err := loader.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	var comps []string
+	for _, t := range templates {
+		if t.Metadata.Description != "" {
+			comps = append(comps, fmt.Sprintf("%s\t%s", t.Metadata.Name, t.Metadata.Description))
+		} else {
+			comps = append(comps, t.Metadata.Name)
+		}
+	}
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
+	templateShowCmd.ValidArgsFunction = completeTemplateNames
+
 	templateCmd.AddCommand(templateListCmd)
 	templateCmd.AddCommand(templateShowCmd)
 

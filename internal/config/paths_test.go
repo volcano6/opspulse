@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestDir_EnvOverride(t *testing.T) {
 func TestDataDir_EnvOverride(t *testing.T) {
 	t.Setenv(EnvHome, "/custom/opspulse")
 	got := DataDir()
-	want := "/custom/opspulse/data"
+	want := filepath.Join("/custom/opspulse", "data")
 	if got != want {
 		t.Errorf("DataDir() = %q, want %q", got, want)
 	}

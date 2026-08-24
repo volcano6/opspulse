@@ -321,11 +321,77 @@ var backupSnapshotsCmd = &cobra.Command{
 	},
 }
 
+func completeBackupJobNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	store := backup.NewDefaultStore()
+	jobs, err := store.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+	var comps []string
+	for _, j := range jobs {
+		comps = append(comps, fmt.Sprintf("%s\t%s (%s)", j.Name, j.Server, j.Backend))
+	}
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	store := backup.NewDefaultStore()
+	jobs, err := store.List()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveError
+	}
+
+	selected := make(map[string]bool)
+	for _, arg := range args {
+		for _, part := range strings.Split(arg, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				selected[p] = true
+			}
+		}
+	}
+
+	if idx := strings.LastIndex(toComplete, ","); idx != -1 {
+		prefix := toComplete[:idx+1]
+		currentParts := strings.Split(toComplete[:idx], ",")
+		for _, p := range currentParts {
+			if p = strings.TrimSpace(p); p != "" {
+				selected[p] = true
+			}
+		}
+
+		var comps []string
+		for _, j := range jobs {
+			if !selected[j.Name] {
+				comps = append(comps, fmt.Sprintf("%s%s\t%s (%s)", prefix, j.Name, j.Server, j.Backend))
+			}
+		}
+		return comps, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	var comps []string
+	if len(args) == 0 && len(selected) == 0 {
+		comps = append(comps, "all\tExecute all configured backup jobs")
+	}
+	for _, j := range jobs {
+		if !selected[j.Name] {
+			comps = append(comps, fmt.Sprintf("%s\t%s (%s)", j.Name, j.Server, j.Backend))
+		}
+	}
+	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic")
 	backupRunCmd.Flags().IntVarP(&backupRunParallel, "parallel", "p", 0, "Maximum concurrent jobs (0 = unlimited)")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "Maximum number of history records to show")
+
+	backupRunCmd.ValidArgsFunction = completeBackupRunArgs
+	backupHistoryCmd.ValidArgsFunction = completeBackupJobNames
+	backupSnapshotsCmd.ValidArgsFunction = completeBackupJobNames
 
 	backupCmd.AddCommand(backupListCmd)
 	backupCmd.AddCommand(backupRunCmd)
