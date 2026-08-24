@@ -7,7 +7,10 @@ LDFLAGS     := -s -w \
                -X github.com/volcano6/opspulse/internal/version.Commit=$(COMMIT) \
                -X github.com/volcano6/opspulse/internal/version.Date=$(DATE)
 
-.PHONY: build test lint ci clean docker dev
+GOPATH_BIN  := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)/bin
+export PATH := $(GOPATH_BIN):$(PATH)
+
+.PHONY: build test lint ci clean docker dev tools
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) ./cmd/opspulse
@@ -20,6 +23,13 @@ lint:
 
 ci:
 	bash scripts/ci.sh
+
+tools:
+	go install github.com/mgechev/revive@latest
+	go install github.com/kisielk/errcheck@latest
+	go install github.com/gordonklaus/ineffassign@latest
+	go install github.com/securego/gosec/v2/cmd/gosec@latest
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
 
 clean:
 	rm -rf bin/ coverage.out
