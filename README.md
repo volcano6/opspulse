@@ -129,6 +129,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `opspulse server remove <name>` | 从清单中删除指定服务器 |
 | `opspulse ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
+| `opspulse exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码 |
 | `opspulse template list` | 列出所有内置及自定义脚本模板 |
 | `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
 | `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |

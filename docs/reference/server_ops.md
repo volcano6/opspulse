@@ -94,3 +94,21 @@ opspulse ssh oracle-sg -- tmux attach
 > **设计优势**：
 > - **Linux / macOS 平台**：采用系统底层进程替换（`syscall.Exec`），保证 100% 获得原生 PTY 交互体验（完美支持 vim、tmux、htop、Ctrl+C、窗口大小自适应 resize）。
 > - **Windows 平台**：自动桥接标准终端管道，无缝唤起 OpenSSH。
+
+---
+
+## 4. 远程单命令快速执行 (`exec`)
+
+无需登录交互终端，直接在本地对指定远程主机执行单条命令，实时流式返回标准输出/标准错误，并完整保留远程命令退出码：
+
+```bash
+# 1. 快速查看 Docker 容器列表
+opspulse exec oracle-sg "docker ps --format 'table {{.Names}}\t{{.Status}}'"
+
+# 2. 查看磁盘或内存情况（可直接在本地通过管道符处理）
+opspulse exec oracle-sg df -h /
+opspulse exec oracle-sg "cat /var/log/nginx/access.log" | grep 404 | wc -l
+
+# 3. 设置超时时间（默认 60 秒，传 0 禁用超时）
+opspulse exec oracle-sg "apt-get update" --timeout 120s
+```
