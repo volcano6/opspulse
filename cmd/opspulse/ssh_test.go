@@ -114,7 +114,7 @@ func TestReadSSHAskpassPasswordPreservesBytes(t *testing.T) {
 	if err := os.WriteFile(passwordPath, []byte(want), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(sshPasswordFileEnv, passwordPath)
+	t.Setenv(askpassDataFile, passwordPath)
 
 	got, err := readSSHAskpassPassword()
 	if err != nil {

@@ -110,8 +110,8 @@ func runInteractiveSSH(binary string, args []string) error {
 }
 
 const (
-	sshAskpassModeEnv  = "OPSPULSE_SSH_ASKPASS"
-	sshPasswordFileEnv = "OPSPULSE_SSH_PASSWORD_FILE"
+	askpassHelperFlag = "OPSPULSE_ASKPASS_HELPER"
+	askpassDataFile   = "OPSPULSE_ASKPASS_DATA_FILE"
 )
 
 func runPasswordSSH(binary string, args []string, password string) error {
@@ -136,14 +136,14 @@ func runPasswordSSH(binary string, args []string, password string) error {
 	cmd.Env = overrideEnv(os.Environ(), map[string]string{
 		"SSH_ASKPASS":         askpassPath,
 		"SSH_ASKPASS_REQUIRE": "force",
-		sshAskpassModeEnv:     "1",
-		sshPasswordFileEnv:    passwordPath,
+		askpassHelperFlag:     "1",
+		askpassDataFile:       passwordPath,
 	})
 	return cmd.Run()
 }
 
 func readSSHAskpassPassword() (string, error) {
-	password, err := os.ReadFile(os.Getenv(sshPasswordFileEnv))
+	password, err := os.ReadFile(os.Getenv(askpassDataFile)) // #nosec G703 -- parent creates and owns the 0600 file in a 0700 temporary directory
 	if err != nil {
 		return "", fmt.Errorf("read SSH password helper file: %w", err)
 	}

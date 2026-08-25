@@ -36,7 +36,7 @@ func init() {
 }
 
 func main() {
-	if os.Getenv(sshAskpassModeEnv) == "1" {
+	if os.Getenv(askpassHelperFlag) == "1" {
 		password, err := readSSHAskpassPassword()
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)

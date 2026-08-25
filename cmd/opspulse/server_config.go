@@ -155,7 +155,7 @@ func openEditor(path string, line int) error {
 	default:
 		args = append(args, path)
 	}
-	cmd := exec.Command(parts[0], args...)
+	cmd := exec.Command(parts[0], args...) // #nosec G702 -- invoking the user's explicitly configured VISUAL/EDITOR is this command's purpose
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

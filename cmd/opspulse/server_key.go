@@ -122,7 +122,7 @@ func derivePublicKey(privateKeyPath string) error {
 	if err != nil {
 		return fmt.Errorf("derive public key: %w", err)
 	}
-	if err := os.WriteFile(privateKeyPath+".pub", append(bytes.TrimSpace(publicKey), '\n'), 0o644); err != nil {
+	if err := os.WriteFile(privateKeyPath+".pub", append(bytes.TrimSpace(publicKey), '\n'), 0o600); err != nil {
 		return fmt.Errorf("write public key: %w", err)
 	}
 	return nil
