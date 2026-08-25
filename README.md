@@ -23,14 +23,14 @@
 
 ## ✨ 核心特性
 
-- **🚀 服务器清单管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持标签、SSH 密钥认证、密码备选与自定义端口。
+- **🚀 服务器清单与标签管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持键值 Labels、标签、SSH 密钥认证、密码备选与自定义端口，支持 `--filter` 快速筛选。
+- **🔍 Agentless 系统与硬件探测**：内置 `server info` 命令，单次 SSH 聚合采集 OS、Kernel、CPU 规格、内存/Swap 已用量、磁盘空间、开机时长、Docker 容器统计与 BBR 启用状态。
+- **⚡ 原生交互式 SSH 直连**：`opspulse ssh <name>` 免记 IP/端口/密钥，Unix 平台采用原生进程替换直连，100% 支持 vim/tmux/htop/resize。
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
-- **⚡ 通用执行引擎**：抽象 `Executor` 接口，支持远程 SSH 实时流式执行与本地 Local 执行，具备超时熔断、退出码捕获与换行符自动清洗机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **💡 智能 Shell 动态补全**：内置支持 Bash、Zsh、Fish 与 PowerShell 自动补全。支持命令、参数、服务器名、模板名与备份任务名的实时动态 Tab 联想与描述展示。
 - **🔒 默认安全原则**：私钥绝不离机，运行时按需注入敏感凭据，无任何外部遥测上报。
 
 ---
@@ -48,43 +48,39 @@ make build
 ./bin/opspulse version
 ```
 
-### 2. 配置 Shell 自动补全（可选）
+### 2. 添加并管理服务器 (Server Ops)
 
 ```bash
-# Bash (Linux/WSL)
-opspulse completion bash | sudo tee /etc/bash_completion.d/opspulse > /dev/null && source /etc/bash_completion.d/opspulse
+# 注册一台 VPS（支持指定 labels 键值对，默认自动扫描 ~/.ssh/id_ed25519 或 ~/.ssh/id_rsa）
+./bin/opspulse server add oracle-sg --host 168.138.1.1 --user ubuntu --labels provider=oracle,region=sg --tags prod,web --desc "主 Web 节点"
 
-# Zsh (Oh-My-Zsh / Starship)
-echo 'source <(opspulse completion zsh 2>/dev/null)' >> ~/.zshrc && source ~/.zshrc
+# 查看当前已配置的服务器列表（支持按 label 或 tag 过滤）
+./bin/opspulse server list --filter provider=oracle
+
+# 快速探查目标服务器的系统、硬件规格与 Docker 状态
+./bin/opspulse server info oracle-sg
+
+# 一键免密直连终端（支持 Tab 键自动补全服务器名称）
+./bin/opspulse ssh oracle-sg
+
+# 测试 SSH 连通性与网络延迟
+./bin/opspulse server test oracle-sg
 ```
 
-### 3. 添加并管理服务器
-
-```bash
-# 注册一台 VPS（默认自动扫描 ~/.ssh/id_ed25519 或 ~/.ssh/id_rsa 私钥）
-./bin/opspulse server add vps-01 --host 198.51.100.1 --user root --tags prod,web --desc "主 Web 节点"
-
-# 测试 SSH 连通性与延迟（支持按 Tab 键自动补全服务器名称）
-./bin/opspulse server test vps-01
-
-# 查看当前已配置的服务器列表
-./bin/opspulse server list
-```
-
-### 4. 查看可用模板并初始化服务器
+### 3. 查看可用模板并初始化服务器 (Bootstrap)
 
 ```bash
 # 查看所有可用脚本模板
 ./bin/opspulse template list
 
 # 模拟执行（Dry Run）：仅打印执行计划与脚本信息，不建立真实连接
-./bin/opspulse bootstrap vps-01 -t base,security,docker --dry-run
+./bin/opspulse bootstrap oracle-sg -t base,security,docker --dry-run
 
 # 正式执行初始化（支持按 Tab 自动补全服务器与 -t 模板列表）
-./bin/opspulse bootstrap vps-01 -t base,security,docker
+./bin/opspulse bootstrap oracle-sg -t base,security,docker
 ```
 
-### 5. 统一备份管理 (Backup)
+### 4. 统一备份管理 (Backup)
 
 ```bash
 # 查看已配置的备份任务
@@ -127,18 +123,20 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 
 | 命令 | 说明 |
 |------|------|
-| `opspulse server add <name> --host <ip>` | 向清单中添加或更新服务器配置 |
-| `opspulse server list` | 格式化表格列出所有已配置的服务器 |
-| `opspulse server test <name>` | 测试与目标服务器的 SSH 连通性（支持 Tab 动态补全服务器名） |
-| `opspulse server remove <name>` | 从清单中删除指定服务器（支持 Tab 动态补全服务器名） |
+| `opspulse server add <name> --host <ip> [--labels k=v]` | 向清单中添加或更新服务器配置 |
+| `opspulse server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器（支持标签筛选） |
+| `opspulse server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
+| `opspulse server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
+| `opspulse server remove <name>` | 从清单中删除指定服务器 |
+| `opspulse ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
 | `opspulse template list` | 列出所有内置及自定义脚本模板 |
-| `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容（支持 Tab 动态补全模板名） |
-| `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务（支持 Tab 动态补全服务器与模板） |
+| `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
+| `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
 | `opspulse backup list` | 列出所有配置的备份任务 |
-| `opspulse backup run <jobs... \| all> [-p N] [--dry-run]` | 执行备份任务（支持 Tab 动态补全任务名与 all） |
+| `opspulse backup run <jobs... \| all> [-p N] [--dry-run]` | 执行备份任务（支持并发与模拟执行） |
 | `opspulse backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
-| `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录（支持 Tab 动态补全任务名） |
-| `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表（支持 Tab 动态补全任务名） |
+| `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录 |
+| `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
 | `opspulse completion <bash\|zsh\|fish\|powershell>` | 生成指定 Shell 的自动补全脚本 |
 | `opspulse version` | 输出当前版本号、Git Commit Hash 与构建日期 |
 
@@ -147,6 +145,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 ## 📖 使用文档
 
 * [新手入门教程](docs/tutorial/getting_started.md)
+* [日常服务器管理指南](docs/reference/server_ops.md)
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
 * [脚本模板开发指南](docs/reference/templates.md)
