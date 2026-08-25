@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/volcano6/opspulse/internal/config"
@@ -26,6 +27,7 @@ func LogPathFor(serverName string, timestamp time.Time) (string, error) {
 type PrefixedWriter struct {
 	Prefix []byte
 	Writer io.Writer
+	mu     sync.Mutex
 	buf    bytes.Buffer
 }
 
@@ -39,6 +41,9 @@ func NewPrefixedWriter(prefix string, w io.Writer) *PrefixedWriter {
 
 // Write writes p to the underlying writer, prefixing lines.
 func (pw *PrefixedWriter) Write(p []byte) (n int, err error) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+
 	total := len(p)
 	for len(p) > 0 {
 		idx := bytes.IndexByte(p, '\n')
@@ -67,6 +72,9 @@ func (pw *PrefixedWriter) Write(p []byte) (n int, err error) {
 
 // Flush writes any remaining buffered data without a trailing newline.
 func (pw *PrefixedWriter) Flush() error {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+
 	if pw.buf.Len() > 0 {
 		_, err := pw.Writer.Write(append(pw.Prefix, pw.buf.Bytes()...))
 		pw.buf.Reset()
@@ -74,3 +82,4 @@ func (pw *PrefixedWriter) Flush() error {
 	}
 	return nil
 }
+

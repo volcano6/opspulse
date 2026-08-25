@@ -1,6 +1,7 @@
 #!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 export PATH="/usr/local/go/bin:$PATH"
-cd /path/to/opspulse
 
 echo "=== GO VERSION ==="
 go version

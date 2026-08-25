@@ -71,7 +71,7 @@ func (l *Loader) List() ([]Template, error) {
 
 // Get returns a single template by name. Custom template takes precedence over built-in.
 func (l *Loader) Get(name string) (*Template, error) {
-	// 1. Check custom directory first
+	// 1. Check custom directory first by filename
 	if l.customDir != "" {
 		customPath := filepath.Join(l.customDir, name+".sh")
 		if _, err := os.Stat(customPath); err == nil {
@@ -85,9 +85,18 @@ func (l *Loader) Get(name string) (*Template, error) {
 				}
 			}
 		}
+
+		// Also check if any custom template matches by Metadata.Name
+		customs, _ := l.loadCustoms()
+		for _, t := range customs {
+			if t.Metadata.Name == name {
+				tCopy := t
+				return &tCopy, nil
+			}
+		}
 	}
 
-	// 2. Check built-in templates
+	// 2. Check built-in templates by filename
 	builtinPath := name + ".sh"
 	content, err := builtin.FS.ReadFile(builtinPath)
 	if err == nil {
@@ -96,6 +105,15 @@ func (l *Loader) Get(name string) (*Template, error) {
 			tmpl.IsBuiltin = true
 			tmpl.SourcePath = "builtin:" + builtinPath
 			return tmpl, nil
+		}
+	}
+
+	// Also check if any built-in matches by Metadata.Name
+	builtins, _ := l.loadBuiltins()
+	for _, t := range builtins {
+		if t.Metadata.Name == name {
+			tCopy := t
+			return &tCopy, nil
 		}
 	}
 

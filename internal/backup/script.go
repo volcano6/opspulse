@@ -110,12 +110,18 @@ func BuildSnapshotsScript(job Job) string {
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("set -euo pipefail\n\n")
 
+	envKeys := make([]string, 0, len(job.Env))
+	for k := range job.Env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+
 	hasRepo := false
-	for k, v := range job.Env {
+	for _, k := range envKeys {
 		if k == "RESTIC_REPOSITORY" {
 			hasRepo = true
 		}
-		sb.WriteString(fmt.Sprintf("export %s=%q\n", k, v))
+		sb.WriteString(fmt.Sprintf("export %s=%q\n", k, job.Env[k]))
 	}
 
 	if !hasRepo && job.Backend != "" {

@@ -13,7 +13,7 @@ apt-get update -y
 apt-get install -y ufw fail2ban
 
 # Allow current SSH port
-SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | awk -F':' '{print $NF}' | head -n1)
+SSH_PORT=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | awk -F':' '{print $NF}' | head -n1 || true)
 if [ -z "$SSH_PORT" ]; then
     SSH_PORT=22
 fi

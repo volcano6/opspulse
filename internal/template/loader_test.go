@@ -201,3 +201,43 @@ echo "installing node"
 		t.Error("expected 'nodejs' template in List()")
 	}
 }
+
+func TestLoader_CustomNameMismatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	customScript := `#!/bin/bash
+# ---
+# name: custom-alias
+# version: 3
+# description: File named differently
+# ---
+echo "running alias"
+`
+	err := os.WriteFile(filepath.Join(tmpDir, "some_file.sh"), []byte(customScript), 0o600)
+	if err != nil {
+		t.Fatalf("failed to write custom template: %v", err)
+	}
+
+	loader := NewLoader(tmpDir)
+
+	// Get by Metadata.Name
+	tmpl, err := loader.Get("custom-alias")
+	if err != nil {
+		t.Fatalf("Get('custom-alias') error: %v", err)
+	}
+	if tmpl.Metadata.Name != "custom-alias" {
+		t.Errorf("expected name 'custom-alias', got %q", tmpl.Metadata.Name)
+	}
+	if tmpl.Metadata.Version != 3 {
+		t.Errorf("expected version 3, got %d", tmpl.Metadata.Version)
+	}
+
+	// Also get by filename without extension
+	tmplByFile, err := loader.Get("some_file")
+	if err != nil {
+		t.Fatalf("Get('some_file') error: %v", err)
+	}
+	if tmplByFile.Metadata.Name != "custom-alias" {
+		t.Errorf("expected name 'custom-alias', got %q", tmplByFile.Metadata.Name)
+	}
+}
+

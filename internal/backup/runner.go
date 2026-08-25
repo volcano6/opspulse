@@ -77,7 +77,9 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	}
 
 	if r.backupRepo != nil {
-		_, _ = r.backupRepo.CreateRun(ctx, runRecord)
+		if _, err := r.backupRepo.CreateRun(ctx, runRecord); err != nil {
+			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to record initial backup run in database: %v\n", err)
+		}
 	}
 
 	// 2. Set up logging (Console with prefix + Log File + In-Memory Buffer for JSON parsing)
@@ -181,7 +183,9 @@ func (r *Runner) finalizeRun(
 
 	// Update SQLite record
 	if r.backupRepo != nil && runRecord.ID > 0 {
-		_ = r.backupRepo.UpdateRun(ctx, runRecord)
+		if updateErr := r.backupRepo.UpdateRun(ctx, runRecord); updateErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to update backup run record in database: %v\n", updateErr)
+		}
 	}
 
 	if logFile != nil {
