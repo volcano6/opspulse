@@ -36,6 +36,15 @@ func init() {
 }
 
 func main() {
+	if os.Getenv(sshAskpassModeEnv) == "1" {
+		password, err := readSSHAskpassPassword()
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		_, _ = fmt.Fprint(os.Stdout, password)
+		return
+	}
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

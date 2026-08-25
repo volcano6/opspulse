@@ -120,6 +120,48 @@ func (s *Store) Delete(name string) error {
 	return s.write(cf)
 }
 
+// Validate checks a complete inventory document without writing it.
+func (s *Store) Validate(data []byte) error {
+	_, err := parseAndValidateConfig(data)
+	return err
+}
+
+// Replace validates and replaces the complete inventory while preserving the
+// caller-provided YAML formatting and comments.
+func (s *Store) Replace(data []byte) error {
+	if _, err := parseAndValidateConfig(data); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o750); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+	if err := os.WriteFile(s.filePath, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write servers file: %w", err)
+	}
+	return nil
+}
+
+func parseAndValidateConfig(data []byte) (*ConfigFile, error) {
+	var cf ConfigFile
+	if err := yaml.Unmarshal(data, &cf); err != nil {
+		return nil, fmt.Errorf("failed to parse servers YAML: %w", err)
+	}
+	seen := make(map[string]struct{}, len(cf.Servers))
+	for i := range cf.Servers {
+		if err := cf.Servers[i].Validate(); err != nil {
+			return nil, fmt.Errorf("invalid server entry %d: %w", i+1, err)
+		}
+		if _, exists := seen[cf.Servers[i].Name]; exists {
+			return nil, fmt.Errorf("duplicate server name %q", cf.Servers[i].Name)
+		}
+		seen[cf.Servers[i].Name] = struct{}{}
+	}
+	return &cf, nil
+}
+
 func (s *Store) read() (*ConfigFile, error) {
 	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
 		return &ConfigFile{Servers: []Server{}}, nil

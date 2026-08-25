@@ -45,6 +45,7 @@ func TestBuildSSHArgs(t *testing.T) {
 			want: []string{
 				"ssh",
 				"-p", "2222",
+				"-o", "IdentitiesOnly=yes",
 				"-i", filepath.Join(home, ".ssh/id_ed25519"),
 				"ubuntu@10.0.0.1",
 			},
@@ -59,6 +60,22 @@ func TestBuildSSHArgs(t *testing.T) {
 			},
 			extraArgs: []string{"-o", "StrictHostKeyChecking=no", "tmux"},
 			want:      []string{"ssh", "-o", "StrictHostKeyChecking=no", "tmux", "admin@1.2.3.4"},
+		},
+		{
+			name: "configured password disables public key attempts",
+			srv: server.Server{
+				Name:     "vps-password",
+				Host:     "1.2.3.5",
+				Port:     22,
+				User:     "root",
+				Password: "secret",
+			},
+			want: []string{
+				"ssh",
+				"-o", "PubkeyAuthentication=no",
+				"-o", "PreferredAuthentications=password,keyboard-interactive",
+				"root@1.2.3.5",
+			},
 		},
 	}
 
@@ -88,5 +105,22 @@ func TestExpandHome(t *testing.T) {
 
 	if got := expandHome("/absolute/path"); got != "/absolute/path" {
 		t.Errorf("expandHome('/absolute/path') = %q, want /absolute/path", got)
+	}
+}
+
+func TestReadSSHAskpassPasswordPreservesBytes(t *testing.T) {
+	want := "p@ss word\nwith-special-$'chars"
+	passwordPath := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(passwordPath, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(sshPasswordFileEnv, passwordPath)
+
+	got, err := readSSHAskpassPassword()
+	if err != nil {
+		t.Fatalf("readSSHAskpassPassword() error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("readSSHAskpassPassword() = %q, want %q", got, want)
 	}
 }

@@ -37,15 +37,18 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 
 	var authMethods []ssh.AuthMethod
 
-	// 1. Try explicit KeyPath
+	// An explicit key is authoritative. A configured password is also
+	// authoritative when no key is bound, avoiding unrelated default keys and
+	// remote "too many authentication failures" rejections.
 	if srv.KeyPath != "" {
 		signer, err := loadPrivateKey(ExpandPath(srv.KeyPath))
 		if err != nil {
 			return nil, &AuthError{User: srv.User, Host: srv.Host, Reason: fmt.Errorf("failed to load private key %s: %w", srv.KeyPath, err)}
 		}
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	} else if srv.Password != "" {
+		authMethods = append(authMethods, ssh.Password(srv.Password))
 	} else {
-		// 2. Try standard default key locations
 		defaultKeys := []string{
 			"~/.ssh/id_ed25519",
 			"~/.ssh/id_rsa",
@@ -61,11 +64,6 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 				}
 			}
 		}
-	}
-
-	// 3. Try password if provided
-	if srv.Password != "" {
-		authMethods = append(authMethods, ssh.Password(srv.Password))
 	}
 
 	if len(authMethods) == 0 {

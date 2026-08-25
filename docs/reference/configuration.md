@@ -65,8 +65,8 @@ servers:
 | `host` | 字符串 | **是** | - | IP 地址或域名 |
 | `port` | 整数 | 否 | `22` | SSH 端口号 |
 | `user` | 字符串 | 否 | `root` | SSH 登录用户名 |
-| `key_path` | 字符串 | 否 | `""` | 私钥文件路径（支持 `~` 自动展开）。若为空，自动扫描 `~/.ssh/id_ed25519`、`id_rsa` 等 |
-| `password` | 字符串 | 否 | `""` | SSH 密码（当未指定密钥或密钥不可用时的备用方式） |
+| `key_path` | 字符串 | 否 | `""` | 私钥文件路径（支持 `~` 自动展开）。配置后 OpenSSH 强制启用 `IdentitiesOnly=yes`，只提交该密钥；若密钥和密码均为空，则自动扫描默认密钥 |
+| `password` | 字符串 | 否 | `""` | SSH 密码。未绑定私钥时，`opspulse ssh` 使用它自动认证；`server setup-key` 使用它安装公钥但绝不修改远端密码 |
 | `tags` | 字符串列表 | 否 | `[]` | 标签分组列表（便于按标签批量执行） |
 | `labels` | 键值映射 | 否 | `{}` | 结构化元数据标签（如 `provider: oracle`, `region: sg`），支持 `server list --filter` 筛选 |
 | `description` | 字符串 | 否 | `""` | 备注描述信息 |

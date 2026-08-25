@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -259,6 +260,7 @@ func init() {
 	serverAddCmd.Flags().StringVarP(&addTags, "tags", "t", "", "Comma-separated tags (e.g. prod,web)")
 	serverAddCmd.Flags().StringVarP(&addLabels, "labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
 	serverAddCmd.Flags().StringVarP(&addDesc, "desc", "d", "", "Server description")
+	_ = serverAddCmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 
 	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
@@ -273,4 +275,41 @@ func init() {
 	serverCmd.AddCommand(serverRemoveCmd)
 
 	rootCmd.AddCommand(serverCmd)
+}
+
+func completePrivateKeyPath(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	expanded := expandHome(toComplete)
+	dir := filepath.Dir(expanded)
+	prefix := filepath.Base(expanded)
+	displayDir := filepath.Dir(toComplete)
+	if strings.HasSuffix(toComplete, "/") || strings.HasSuffix(toComplete, `\`) {
+		dir = strings.TrimRight(expanded, `/\`)
+		prefix = ""
+		displayDir = strings.TrimRight(toComplete, `/\`)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	if displayDir == "." && !strings.ContainsAny(toComplete, `/\`) {
+		displayDir = ""
+	}
+	completions := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !isPrivateKeyName(entry.Name()) {
+			continue
+		}
+		candidate := entry.Name()
+		if displayDir != "" {
+			candidate = filepath.Join(displayDir, entry.Name())
+		}
+		completions = append(completions, candidate)
+	}
+	return completions, cobra.ShellCompDirectiveNoFileComp
+}
+
+func isPrivateKeyName(name string) bool {
+	return (strings.HasPrefix(name, "id_") && !strings.HasSuffix(name, ".pub")) ||
+		strings.EqualFold(filepath.Ext(name), ".pem")
 }
