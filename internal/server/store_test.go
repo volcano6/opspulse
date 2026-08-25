@@ -75,6 +75,49 @@ func TestServer_Address(t *testing.T) {
 	}
 }
 
+func TestServer_LabelsAndFilter(t *testing.T) {
+	srv := Server{
+		Name: "oracle-sg",
+		Host: "1.1.1.1",
+		Tags: []string{"prod", "web"},
+		Labels: map[string]string{
+			"provider": "oracle",
+			"region":   "singapore",
+		},
+	}
+
+	// 1. FormatLabels
+	formatted := srv.FormatLabels()
+	if formatted != "provider=oracle,region=singapore" {
+		t.Errorf("FormatLabels() = %q, want %q", formatted, "provider=oracle,region=singapore")
+	}
+
+	srvEmpty := Server{Name: "empty"}
+	if srvEmpty.FormatLabels() != "-" {
+		t.Errorf("FormatLabels() on empty = %q, want '-'", srvEmpty.FormatLabels())
+	}
+
+	// 2. MatchFilter
+	if !srv.MatchFilter("") {
+		t.Error("expected empty filter to match")
+	}
+	if !srv.MatchFilter("provider=oracle") {
+		t.Error("expected provider=oracle to match")
+	}
+	if srv.MatchFilter("provider=aws") {
+		t.Error("expected provider=aws to NOT match")
+	}
+	if !srv.MatchFilter("singapore") {
+		t.Error("expected value singapore to match")
+	}
+	if !srv.MatchFilter("prod") {
+		t.Error("expected tag prod to match")
+	}
+	if !srv.MatchFilter("oracle-sg") {
+		t.Error("expected name oracle-sg to match")
+	}
+}
+
 func TestStore_Lifecycle(t *testing.T) {
 	tmpDir := t.TempDir()
 	filePath := filepath.Join(tmpDir, "servers.yaml")
@@ -101,6 +144,7 @@ func TestStore_Lifecycle(t *testing.T) {
 		User:        "ubuntu",
 		KeyPath:     "~/.ssh/id_rsa",
 		Tags:        []string{"prod", "web"},
+		Labels:      map[string]string{"provider": "oracle"},
 		Description: "Production web server",
 	}
 	if err := store.Save(s1); err != nil {
@@ -112,7 +156,7 @@ func TestStore_Lifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get('web-prod') error: %v", err)
 	}
-	if got.Host != "1.2.3.4" || got.User != "ubuntu" {
+	if got.Host != "1.2.3.4" || got.User != "ubuntu" || got.Labels["provider"] != "oracle" {
 		t.Errorf("Get() returned unexpected server: %+v", got)
 	}
 
