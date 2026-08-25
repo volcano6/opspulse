@@ -19,6 +19,19 @@ opspulse server add oracle-sg \
   --desc "生产环境博客主节点"
 ```
 
+### 增量更新与交互编辑
+
+```bash
+# 仅修改指定字段，其他配置保持不变；--key "" 可清除绑定密钥
+opspulse server set oracle-sg --port 2222
+opspulse server set oracle-sg --host 203.0.113.10 --key ~/.ssh/oracle-sg
+
+# 使用 $VISUAL、$EDITOR 或系统默认编辑器打开完整清单并定位该服务器
+opspulse server edit oracle-sg
+```
+
+`server edit` 在临时副本中编辑。编辑器正常退出后才校验 YAML、服务器字段和名称唯一性；校验失败或目标服务器被删除时，原 `servers.yaml` 保持不变。
+
 ### 多维筛选过滤 (`--filter`)
 
 `opspulse server list --filter <condition>` 支持灵活的筛选模式：
@@ -78,22 +91,29 @@ opspulse server info oracle-sg
 
 ## 3. 交互式原生 SSH 直连 (`ssh`)
 
-无需记忆每台服务器的 IP 地址、SSH 端口或对应私钥，直接通过服务器唯一标识名直连：
+无需记忆服务器地址、端口、密码或私钥，直接通过服务器名称进入终端：
 
 ```bash
-# 1. 一键交互式登录
+# 1. 一键交互式登录；配置 password 时自动认证，不再二次询问
 opspulse ssh oracle-sg
 
-# 2. 透传原生 SSH 客户端选项（使用 -- 分隔）
+# 2. 将密码认证转换为专用密钥认证
+opspulse server setup-key oracle-sg
+
+# 3. 透传原生 SSH 客户端选项（使用 -- 分隔）
 opspulse ssh oracle-sg -- -o StrictHostKeyChecking=no
 
-# 3. 远程快速启动特定命令或 tmux
+# 4. 远程快速启动特定命令或 tmux
 opspulse ssh oracle-sg -- tmux attach
 ```
 
+`setup-key` 会生成 `~/.ssh/opspulse_<服务器名>`，使用清单中的密码将公钥幂等追加到远端 `~/.ssh/authorized_keys`，成功后将私钥路径写回 `servers.yaml`。它不会修改或删除远端密码，也不会关闭远端密码登录。
+
+绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
+
 > **设计优势**：
-> - **Linux / macOS 平台**：采用系统底层进程替换（`syscall.Exec`），保证 100% 获得原生 PTY 交互体验（完美支持 vim、tmux、htop、Ctrl+C、窗口大小自适应 resize）。
-> - **Windows 平台**：自动桥接标准终端管道，无缝唤起 OpenSSH。
+> - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。
+> - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件向 OpenSSH `SSH_ASKPASS` 传递密码；密码不出现在命令参数或环境变量值中。
 
 ---
 

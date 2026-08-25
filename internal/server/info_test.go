@@ -135,6 +135,31 @@ NOT_INSTALLED
 	}
 }
 
+func TestFormatBox_MetricColumnsRemainCompactAndBounded(t *testing.T) {
+	info := &Info{
+		ServerName: "vps-01",
+		Host:       "127.0.0.1:2221",
+		OS:         "Ubuntu 22.04.5 LTS",
+		Kernel:     "6.6.87.2-microsoft-standard-WSL2",
+		CPUModel:   "Intel(R) Core(TM) i5-14400",
+		CPUCores:   6,
+	}
+
+	var buf bytes.Buffer
+	info.FormatBox(&buf)
+	box := buf.String()
+	if !strings.Contains(box, "║  OS      : Ubuntu 22.04.5 LTS") {
+		t.Fatalf("FormatBox metric columns are not compact:\n%s", box)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(box), "\n") {
+		if !strings.HasPrefix(line, "╔") && !strings.HasPrefix(line, "╠") &&
+			!strings.HasPrefix(line, "╟") && !strings.HasPrefix(line, "╚") &&
+			(!strings.HasPrefix(line, "║") || !strings.HasSuffix(line, "║")) {
+			t.Fatalf("FormatBox row is not bounded on both sides: %q\n%s", line, box)
+		}
+	}
+}
+
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		bytes int64

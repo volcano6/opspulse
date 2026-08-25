@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -206,5 +207,34 @@ func TestStore_Lifecycle(t *testing.T) {
 	// 7. Delete non-existent server
 	if err := store.Delete("non-existent"); err == nil {
 		t.Error("expected error deleting non-existent server, got nil")
+	}
+}
+
+func TestStoreReplaceValidationIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+	if err := store.Save(Server{Name: "web-01", Host: "192.0.2.10", Port: 22}); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := []byte("servers: [\n")
+	if err := store.Replace(invalid); err == nil {
+		t.Fatal("expected invalid YAML replacement to fail")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("invalid replacement changed the original configuration")
+	}
+
+	duplicate := []byte("servers:\n  - name: same\n    host: 192.0.2.1\n  - name: same\n    host: 192.0.2.2\n")
+	if err := store.Validate(duplicate); err == nil {
+		t.Fatal("expected duplicate server names to fail validation")
 	}
 }

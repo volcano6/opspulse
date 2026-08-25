@@ -2,12 +2,14 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 )
 
 // Info holds hardware, OS, and runtime status metrics for a server.
@@ -207,26 +209,51 @@ func (s *Info) FormatBox(w io.Writer) {
 		formatBytes(s.DiskTotalBytes), formatBytes(s.DiskUsedBytes), formatBytes(s.DiskFreeBytes))
 	swapStr := fmt.Sprintf("%s (%s used)", formatBytes(s.SwapTotalBytes), formatBytes(s.SwapUsedBytes))
 
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "\n╔═══════════════════════════════════════════════════════════════╗")
-	_, _ = fmt.Fprintf(w, "║  Server : %-50s  ║\n", s.ServerName)
-	_, _ = fmt.Fprintf(w, "║  Host   : %-50s  ║\n", s.Host)
-	_, _ = fmt.Fprintln(w, "╠═══════════════════════════════════════════════════════════════╣")
-	_, _ = fmt.Fprintf(tw, "   OS\t: %s\n", s.OS)
-	_, _ = fmt.Fprintf(tw, "   Kernel\t: %s\n", s.Kernel)
-	_, _ = fmt.Fprintf(tw, "   CPU\t: %s\n", cpuStr)
-	_, _ = fmt.Fprintf(tw, "   Memory\t: %s\n", memStr)
-	_, _ = fmt.Fprintf(tw, "   Disk\t: %s\n", diskStr)
-	_, _ = fmt.Fprintf(tw, "   Swap\t: %s\n", swapStr)
-	_, _ = fmt.Fprintf(tw, "   Uptime\t: %s\n", s.Uptime)
-	_, _ = fmt.Fprintln(tw, "   ------------------------------------------------------------\t")
-	_, _ = fmt.Fprintf(tw, "   Docker\t: %s\n", dockerStr)
+	var metrics bytes.Buffer
+	tw := tabwriter.NewWriter(&metrics, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(tw, "OS\t: %s\n", s.OS)
+	_, _ = fmt.Fprintf(tw, "Kernel\t: %s\n", s.Kernel)
+	_, _ = fmt.Fprintf(tw, "CPU\t: %s\n", cpuStr)
+	_, _ = fmt.Fprintf(tw, "Memory\t: %s\n", memStr)
+	_, _ = fmt.Fprintf(tw, "Disk\t: %s\n", diskStr)
+	_, _ = fmt.Fprintf(tw, "Swap\t: %s\n", swapStr)
+	_, _ = fmt.Fprintf(tw, "Uptime\t: %s\n", s.Uptime)
+	_, _ = fmt.Fprintf(tw, "Docker\t: %s\n", dockerStr)
 	if s.DockerInstalled {
-		_, _ = fmt.Fprintf(tw, "   Containers\t: %d running / %d stopped\n", s.ContainersRunning, s.ContainersStopped)
+		_, _ = fmt.Fprintf(tw, "Containers\t: %d running / %d stopped\n", s.ContainersRunning, s.ContainersStopped)
 	}
-	_, _ = fmt.Fprintf(tw, "   BBR\t: %s\n", bbrStr)
+	_, _ = fmt.Fprintf(tw, "BBR\t: %s\n", bbrStr)
 	_ = tw.Flush()
-	_, _ = fmt.Fprintln(w, "╚═══════════════════════════════════════════════════════════════╝")
+
+	headerRows := []string{
+		fmt.Sprintf("Server : %s", s.ServerName),
+		fmt.Sprintf("Host   : %s", s.Host),
+	}
+	metricRows := strings.Split(strings.TrimSuffix(metrics.String(), "\n"), "\n")
+	contentWidth := 59
+	for _, row := range append(headerRows, metricRows...) {
+		contentWidth = max(contentWidth, utf8.RuneCountInString(row))
+	}
+	borderWidth := contentWidth + 4
+
+	_, _ = fmt.Fprintf(w, "\n╔%s╗\n", strings.Repeat("═", borderWidth))
+	for _, row := range headerRows {
+		formatBoxRow(w, row, contentWidth)
+	}
+	_, _ = fmt.Fprintf(w, "╠%s╣\n", strings.Repeat("═", borderWidth))
+	for _, row := range metricRows[:7] {
+		formatBoxRow(w, row, contentWidth)
+	}
+	_, _ = fmt.Fprintf(w, "╟%s╢\n", strings.Repeat("─", borderWidth))
+	for _, row := range metricRows[7:] {
+		formatBoxRow(w, row, contentWidth)
+	}
+	_, _ = fmt.Fprintf(w, "╚%s╝\n", strings.Repeat("═", borderWidth))
+}
+
+func formatBoxRow(w io.Writer, row string, contentWidth int) {
+	padding := contentWidth - utf8.RuneCountInString(row)
+	_, _ = fmt.Fprintf(w, "║  %s%s  ║\n", row, strings.Repeat(" ", padding))
 }
 
 func formatBytes(b int64) string {

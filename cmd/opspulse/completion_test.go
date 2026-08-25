@@ -228,3 +228,34 @@ func TestCompleteBootstrapArgsAndFlags(t *testing.T) {
 		t.Errorf("expected 'base,custom-app' in comma-separated flag completions, got %v", flagComps)
 	}
 }
+
+func TestCompletePrivateKeyPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"id_ed25519", "id_ed25519.pub", "server.pem", "known_hosts"} {
+		if err := os.WriteFile(filepath.Join(sshDir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	completions, directive := completePrivateKeyPath(serverAddCmd, nil, "~/.ssh/")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("unexpected completion directive: %v", directive)
+	}
+	want := map[string]bool{
+		"~/.ssh/id_ed25519": true,
+		"~/.ssh/server.pem": true,
+	}
+	if len(completions) != len(want) {
+		t.Fatalf("private key completions = %v, want %v", completions, want)
+	}
+	for _, completion := range completions {
+		if !want[completion] {
+			t.Fatalf("unexpected private key completion %q", completion)
+		}
+	}
+}

@@ -60,8 +60,12 @@ make build
 # 快速探查目标服务器的系统、硬件规格与 Docker 状态
 ./bin/opspulse server info oracle-sg
 
-# 一键免密直连终端（支持 Tab 键自动补全服务器名称）
+# 使用已配置的密码自动认证并进入终端；绑定私钥时仅使用该密钥
 ./bin/opspulse ssh oracle-sg
+
+# 将本地生成的专用密钥追加到远端 authorized_keys，并写回 key_path
+# 远端密码及密码登录配置保持不变
+./bin/opspulse server setup-key oracle-sg
 
 # 测试 SSH 连通性与网络延迟
 ./bin/opspulse server test oracle-sg
