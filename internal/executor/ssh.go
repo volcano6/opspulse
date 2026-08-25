@@ -64,13 +64,27 @@ func (e *SSHExecutor) Test(ctx context.Context, target Target) (time.Duration, s
 	}
 	defer func() { _ = session.Close() }()
 
-	output, err := session.Output("uname -srm || ver")
-	duration := time.Since(start)
-	if err != nil {
-		return duration, "", fmt.Errorf("failed to execute test command: %w", err)
+	type testOutput struct {
+		output []byte
+		err    error
 	}
+	outChan := make(chan testOutput, 1)
+	go func() {
+		out, runErr := session.Output("uname -srm || ver")
+		outChan <- testOutput{output: out, err: runErr}
+	}()
 
-	return duration, strings.TrimSpace(string(output)), nil
+	select {
+	case <-ctx.Done():
+		_ = session.Close()
+		return time.Since(start), "", ctx.Err()
+	case res := <-outChan:
+		duration := time.Since(start)
+		if res.err != nil {
+			return duration, "", fmt.Errorf("failed to execute test command: %w", res.err)
+		}
+		return duration, strings.TrimSpace(string(res.output)), nil
+	}
 }
 
 // Execute runs a script on the remote server, streaming stdout/stderr to outputWriter.

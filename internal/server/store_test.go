@@ -65,14 +65,44 @@ func TestServer_Validate(t *testing.T) {
 }
 
 func TestServer_Address(t *testing.T) {
-	srv := Server{Host: "10.0.0.1", Port: 2222}
-	if got := srv.Address(); got != "10.0.0.1:2222" {
-		t.Errorf("Address() = %q, want %q", got, "10.0.0.1:2222")
+	tests := []struct {
+		name string
+		srv  Server
+		want string
+	}{
+		{
+			name: "IPv4 with custom port",
+			srv:  Server{Host: "10.0.0.1", Port: 2222},
+			want: "10.0.0.1:2222",
+		},
+		{
+			name: "IPv4 with default port",
+			srv:  Server{Host: "10.0.0.2"},
+			want: "10.0.0.2:22",
+		},
+		{
+			name: "IPv6 standard address",
+			srv:  Server{Host: "2001:db8::1", Port: 22},
+			want: "[2001:db8::1]:22",
+		},
+		{
+			name: "IPv6 loopback with custom port",
+			srv:  Server{Host: "::1", Port: 2222},
+			want: "[::1]:2222",
+		},
+		{
+			name: "Domain name",
+			srv:  Server{Host: "vps.example.com", Port: 2200},
+			want: "vps.example.com:2200",
+		},
 	}
 
-	srvDefault := Server{Host: "10.0.0.2"}
-	if got := srvDefault.Address(); got != "10.0.0.2:22" {
-		t.Errorf("Address() = %q, want %q", got, "10.0.0.2:22")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.srv.Address(); got != tt.want {
+				t.Errorf("Address() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -140,7 +142,10 @@ var backupRunCmd = &cobra.Command{
 		runner := backup.NewRunner(exec, serverStore, backupRepo)
 
 		pool := backup.NewPool(runner, backupRunParallel)
-		res, err := pool.RunAll(context.Background(), targetJobs, backupRunDryRun, os.Stdout)
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		res, err := pool.RunAll(ctx, targetJobs, backupRunDryRun, os.Stdout)
 		if res != nil {
 			res.PrintSummary(os.Stdout)
 		}

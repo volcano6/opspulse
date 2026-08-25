@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -122,3 +124,57 @@ func TestSummary_PrintTable(t *testing.T) {
 		t.Errorf("expected Total: 2 in summary, got:\n%s", output)
 	}
 }
+
+type mockFailingExecutor struct {
+	failOnServer string
+}
+
+func (m *mockFailingExecutor) Execute(_ context.Context, target executor.Target, taskName string, _ string, _ io.Writer) (*executor.Result, error) {
+	if target.Name == m.failOnServer {
+		return &executor.Result{
+			ServerName: target.Name,
+			Template:   taskName,
+			Success:    false,
+			Error:      errors.New("mock execution error"),
+		}, errors.New("mock execution error")
+	}
+	return &executor.Result{
+		ServerName: target.Name,
+		Template:   taskName,
+		Success:    true,
+	}, nil
+}
+
+func (m *mockFailingExecutor) Test(_ context.Context, _ executor.Target) (time.Duration, string, error) {
+	return 10 * time.Millisecond, "mock Linux", nil
+}
+
+func TestBootstrap_StopOnError_MultiServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	_ = serverStore.Save(server.Server{Name: "srv-01", Host: "1.1.1.1", User: "root"})
+	_ = serverStore.Save(server.Server{Name: "srv-02", Host: "1.1.1.2", User: "root"})
+
+	templateLoader := template.NewLoader("")
+	exec := &mockFailingExecutor{failOnServer: "srv-01"}
+	svc := NewService(serverStore, templateLoader, exec)
+
+	var console bytes.Buffer
+	summary, err := svc.Run(context.Background(), RunOptions{
+		ServerNames:   []string{"srv-01", "srv-02"},
+		TemplateNames: []string{"base", "docker"},
+		StopOnError:   true,
+	}, &console)
+
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if summary.FailureCount != 4 {
+		t.Errorf("expected 4 failed/skipped results, got %d", summary.FailureCount)
+	}
+	if summary.SuccessCount != 0 {
+		t.Errorf("expected 0 successes, got %d", summary.SuccessCount)
+	}
+}
+

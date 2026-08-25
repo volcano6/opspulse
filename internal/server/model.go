@@ -4,7 +4,9 @@ package server
 import (
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -58,7 +60,7 @@ func (s *Server) Address() string {
 	if port <= 0 {
 		port = 22
 	}
-	return fmt.Sprintf("%s:%d", s.Host, port)
+	return net.JoinHostPort(s.Host, strconv.Itoa(port))
 }
 
 // FormatLabels returns the labels formatted as sorted key=val,key2=val2 string.

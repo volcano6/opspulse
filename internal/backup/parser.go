@@ -27,6 +27,10 @@ type ResticSummary struct {
 // ParseResticSummary scans the lines of restic output to find and parse the JSON summary event.
 func ParseResticSummary(output string) *ResticSummary {
 	scanner := bufio.NewScanner(strings.NewReader(output))
+	const maxLineLength = 1024 * 1024 // 1MB buffer for large restic status lines
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, maxLineLength)
+
 	var latestSummary *ResticSummary
 
 	for scanner.Scan() {
@@ -35,16 +39,9 @@ func ParseResticSummary(output string) *ResticSummary {
 			continue
 		}
 
-		var rawMap map[string]any
-		if err := json.Unmarshal([]byte(line), &rawMap); err != nil {
-			continue
-		}
-
-		if msgType, ok := rawMap["message_type"].(string); ok && msgType == "summary" {
-			var summary ResticSummary
-			if err := json.Unmarshal([]byte(line), &summary); err == nil {
-				latestSummary = &summary
-			}
+		var summary ResticSummary
+		if err := json.Unmarshal([]byte(line), &summary); err == nil && summary.MessageType == "summary" {
+			latestSummary = &summary
 		}
 	}
 

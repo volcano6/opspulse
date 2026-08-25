@@ -135,11 +135,19 @@ func (s *Store) Replace(data []byte) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o750); err != nil {
+	dir := filepath.Dir(s.filePath)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	if err := os.WriteFile(s.filePath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write servers file: %w", err)
+
+	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write temporary servers file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile, s.filePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("failed to replace servers file: %w", err)
 	}
 	return nil
 }
@@ -195,8 +203,14 @@ func (s *Store) write(cf *ConfigFile) error {
 		return fmt.Errorf("failed to marshal servers YAML: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write servers file: %w", err)
+	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write temporary servers file: %w", err)
+	}
+
+	if err := os.Rename(tmpFile, s.filePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("failed to replace servers file: %w", err)
 	}
 
 	return nil

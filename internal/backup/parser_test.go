@@ -76,3 +76,25 @@ func TestParseSnapshotsJSON(t *testing.T) {
 		t.Errorf("expected empty slice for empty string, got %v (err: %v)", empty, err)
 	}
 }
+
+func TestBuildSnapshotsScript_DeterministicEnv(t *testing.T) {
+	job := Job{
+		Name:    "test-job",
+		Server:  "vps-01",
+		Backend: "s3:bucket/path",
+		Env: map[string]string{
+			"ZZZ_KEY": "val3",
+			"AAA_KEY": "val1",
+			"MMM_KEY": "val2",
+		},
+	}
+
+	first := BuildSnapshotsScript(job)
+	for i := 0; i < 10; i++ {
+		got := BuildSnapshotsScript(job)
+		if got != first {
+			t.Fatalf("BuildSnapshotsScript produced non-deterministic output at iteration %d:\nfirst:\n%s\ngot:\n%s", i, first, got)
+		}
+	}
+}
+

@@ -97,7 +97,6 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			if err == nil {
 				logFile, _ = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 				if logFile != nil {
-					defer func() { _ = logFile.Close() }()
 					_, _ = fmt.Fprintf(logFile, "=== Bootstrap Log for Server %s (%s) at %s ===\n\n",
 						srv.Name, srv.Address(), time.Now().Format(time.RFC3339))
 				}
@@ -172,6 +171,23 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			_, _ = fmt.Fprintf(logFile, "\n=== Finished Bootstrap for Server %s at %s ===\n",
 				srv.Name, time.Now().Format(time.RFC3339))
 			_ = logFile.Close()
+		}
+
+		if serverFailed && opts.StopOnError {
+			// Record skipped remaining servers and templates
+			for remIdx := serverIdx + 1; remIdx < len(targetServers); remIdx++ {
+				remSrv := targetServers[remIdx]
+				for _, tmpl := range targetTemplates {
+					summary.Results = append(summary.Results, executor.Result{
+						ServerName: remSrv.Name,
+						Template:   tmpl.Metadata.Name,
+						Success:    false,
+						Error:      errors.New("skipped due to previous server failure"),
+					})
+					summary.FailureCount++
+				}
+			}
+			break
 		}
 	}
 
