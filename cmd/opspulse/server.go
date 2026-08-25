@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ import (
 var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Manage server inventory",
-	Long:  "Add, list, test connectivity, and remove managed servers from servers.yaml.",
+	Long:  "Add, list, inspect, test connectivity, and remove managed servers from servers.yaml.",
 }
 
 var (
@@ -149,6 +150,40 @@ var serverListCmd = &cobra.Command{
 	},
 }
 
+var serverInfoCmd = &cobra.Command{
+	Use:   "info <name>",
+	Short: "Inspect system OS, hardware resources, and Docker status of a server",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		name := args[0]
+		store := server.NewDefaultStore()
+		srv, err := store.Get(name)
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("🔍 Probing system information for %s (%s)...\n", srv.Name, srv.Address())
+		exec := executor.NewSSHExecutor()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		var outBuf bytes.Buffer
+		script := server.BuildInfoProbeScript()
+		res, err := exec.Execute(ctx, executor.NewServerTarget(*srv), "probe-info", script, &outBuf)
+		if err != nil {
+			return fmt.Errorf("❌ Failed to inspect server %q: %w", name, err)
+		}
+		if !res.Success {
+			return fmt.Errorf("❌ Probe script failed on %q: %v", name, res.Error)
+		}
+
+		info := server.ParseInfo(srv.Name, srv.Address(), outBuf.String())
+		info.FormatBox(os.Stdout)
+		return nil
+	},
+}
+
 var serverTestCmd = &cobra.Command{
 	Use:   "test <name>",
 	Short: "Test SSH connectivity to a server",
@@ -227,11 +262,13 @@ func init() {
 
 	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
+	serverInfoCmd.ValidArgsFunction = completeServerNames
 	serverTestCmd.ValidArgsFunction = completeServerNames
 	serverRemoveCmd.ValidArgsFunction = completeServerNames
 
 	serverCmd.AddCommand(serverAddCmd)
 	serverCmd.AddCommand(serverListCmd)
+	serverCmd.AddCommand(serverInfoCmd)
 	serverCmd.AddCommand(serverTestCmd)
 	serverCmd.AddCommand(serverRemoveCmd)
 
