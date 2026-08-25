@@ -38,8 +38,38 @@ servers:
     tags:
       - prod
       - web
+    labels:
+      provider: oracle
+      region: singapore
+      purpose: blog
     description: 生产环境主 Web 节点
+
+  - name: db-01
+    host: 198.51.100.20
+    port: 2222
+    user: admin
+    tags:
+      - prod
+      - database
+    labels:
+      provider: hetzner
+      region: falkenstein
+    description: 主 PostgreSQL 数据库节点
 ```
+
+### 字段说明
+
+| 字段 | 类型 | 必填 | 默认值 | 详细说明 |
+|------|------|------|--------|---------|
+| `name` | 字符串 | **是** | - | 服务器唯一标识名 |
+| `host` | 字符串 | **是** | - | IP 地址或域名 |
+| `port` | 整数 | 否 | `22` | SSH 端口号 |
+| `user` | 字符串 | 否 | `root` | SSH 登录用户名 |
+| `key_path` | 字符串 | 否 | `""` | 私钥文件路径（支持 `~` 自动展开）。若为空，自动扫描 `~/.ssh/id_ed25519`、`id_rsa` 等 |
+| `password` | 字符串 | 否 | `""` | SSH 密码（当未指定密钥或密钥不可用时的备用方式） |
+| `tags` | 字符串列表 | 否 | `[]` | 标签分组列表（便于按标签批量执行） |
+| `labels` | 键值映射 | 否 | `{}` | 结构化元数据标签（如 `provider: oracle`, `region: sg`），支持 `server list --filter` 筛选 |
+| `description` | 字符串 | 否 | `""` | 备注描述信息 |
 
 ---
 
@@ -73,18 +103,6 @@ assets:
     source: /etc/letsencrypt
     description: SSL 证书目录
 ```
-
-### Asset 字段说明
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | 字符串 | **是** | 资产唯一稳定标识符（仅支持字母、数字、中划线与下划线） |
-| `type` | 枚举 | **是** | 资产类型：`docker_compose`, `volume`, `database`, `directory`, `file` |
-| `source` | 字符串 | **是** | 原始源绝对路径（如 `/opt/blog`, `/var/lib/mysql`） |
-| `engine` | 字符串 | 否 | 数据库引擎类型（`mysql`, `postgres`） |
-| `container` | 字符串 | 否 | 关联的 Docker 容器名称 |
-| `excludes` | 字符串列表 | 否 | 排除的文件模式列表 |
-| `description` | 字符串 | 否 | 资产备注说明 |
 
 ---
 

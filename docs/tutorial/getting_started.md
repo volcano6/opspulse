@@ -91,9 +91,9 @@ OpsPulse 支持全自动 Shell 补全（Tab 键自动补全子命令、标志、
 
 ---
 
-## 4. 第一步：添加纳管服务器
+## 4. 第一步：添加并管理服务器 (Server Ops)
 
-将你的 VPS 注册进 OpsPulse 的清单库：
+将你的 VPS 注册进 OpsPulse 的清单库（支持设置自定义 labels 标签）：
 
 ```bash
 # 使用默认 SSH 私钥添加一台 VPS
@@ -101,11 +101,22 @@ opspulse server add web-01 \
   --host 198.51.100.10 \
   --user root \
   --port 22 \
+  --labels provider=oracle,region=singapore,purpose=web \
   --tags prod,web \
   --desc "生产环境主 Web 节点"
 ```
 
-测试与目标服务器的 SSH 连通性：
+### 快速探查目标服务器硬件与系统状态：
+```bash
+opspulse server info web-01
+```
+
+### 免记密码/IP，一键建立原生交互式 SSH 终端连接：
+```bash
+opspulse ssh web-01
+```
+
+### 测试与目标服务器的 SSH 连通性：
 ```bash
 opspulse server test web-01
 ```
