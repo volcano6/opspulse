@@ -13,11 +13,17 @@ OpsPulse 不仅是一键初始化与灾备迁移平台，更是日常高效管�
 opspulse server add oracle-sg \
   --host 168.138.1.1 \
   --user ubuntu \
-  --key ~/.ssh/id_ed25519 \
+  --key ~/Downloads/oracle.pem \
   --labels provider=oracle,region=singapore,purpose=blog \
   --tags prod,web \
   --desc "生产环境博客主节点"
 ```
+
+> 🛡️ **私钥安全与自动连通性验证闭环**：
+> - **位置检测与自动迁移**：当 `--key <path>` 指向 `~/.ssh/` 之外的目录（例如 `~/Downloads/` 或临时目录）时，OpsPulse 会交互式询问是否将密钥复制到 `~/.ssh/opspulse_<server_name>.pem` 并自动设置为 `0600` 权限（可用 `--no-copy-key` 跳过复制）。
+> - **前置格式强校验**：自动校验文件内容是否为有效 SSH 私钥，拦截误选 `.pub` 公钥或非密钥文件。
+> - **即时连通性验证与失败回滚**：`server add` 默认自动测试 SSH 连通性。若认证失败（如密钥选错），**会自动删除刚刚复制到 `~/.ssh/` 的失效私钥，且不保存错误服务器**，杜绝垃圾文件残留（离线服务器可通过 `--skip-test` 跳过验证）。
+> - **生命周期自动清理**：通过 `server remove <name>` 删除服务器或 `server set <name> --key ...` 更换密钥时，自动清理 `~/.ssh/` 中对应的托管私钥文件。
 
 ### 增量更新与交互编辑
 

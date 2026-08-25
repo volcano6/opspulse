@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	setHost string
-	setPort int
-	setKey  string
+	setHost      string
+	setPort      int
+	setKey       string
+	setNoCopyKey bool
 )
 
 var serverSetCmd = &cobra.Command{
@@ -34,7 +35,15 @@ var serverSetCmd = &cobra.Command{
 			port = &setPort
 		}
 		if cmd.Flags().Changed("key") {
-			key = &setKey
+			if strings.TrimSpace(setKey) != "" {
+				securedKey, _, err := ResolveAndSecureKeyPath(os.Stdin, os.Stdout, args[0], setKey, setNoCopyKey)
+				if err != nil {
+					return err
+				}
+				key = &securedKey
+			} else {
+				key = &setKey
+			}
 		}
 		return setServerFields(server.NewDefaultStore(), args[0], host, port, key)
 	},
@@ -61,6 +70,9 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 		srv.Port = *port
 	}
 	if key != nil {
+		if srv.KeyPath != "" && srv.KeyPath != *key {
+			_ = CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, false)
+		}
 		srv.KeyPath = *key
 	}
 	if err := store.Save(*srv); err != nil {
@@ -180,6 +192,7 @@ func init() {
 	serverSetCmd.Flags().StringVar(&setHost, "host", "", "New server IP or hostname")
 	serverSetCmd.Flags().IntVarP(&setPort, "port", "p", 0, "New SSH port")
 	serverSetCmd.Flags().StringVarP(&setKey, "key", "k", "", "New private key path (empty clears it)")
+	serverSetCmd.Flags().BoolVar(&setNoCopyKey, "no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
 	_ = serverSetCmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 	serverSetCmd.ValidArgsFunction = completeServerNames
 	serverEditCmd.ValidArgsFunction = completeServerNames
