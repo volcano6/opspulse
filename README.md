@@ -25,7 +25,8 @@
 
 - **🚀 服务器清单与标签管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持键值 Labels、标签、SSH 密钥认证、密码备选与自定义端口，支持 `--filter` 快速筛选。
 - **🔍 Agentless 系统与硬件探测**：内置 `server info` 命令，单次 SSH 聚合采集 OS、Kernel、CPU 规格、内存/Swap 已用量、磁盘空间、开机时长、Docker 容器统计与 BBR 启用状态。
-- **⚡ 原生交互式 SSH 直连**：`opspulse ssh <name>` 免记 IP/端口/密钥，Unix 平台采用原生进程替换直连，100% 支持 vim/tmux/htop/resize。
+- **⚡ 原生交互式 SSH 直连**：`opspulse ssh <name>` 免记 IP/端口/密钥，自动桥接密码认证与原生密钥直连，100% 支持 vim/tmux/htop/resize。
+- **🔑 自动化密钥配对注入**：`opspulse server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成。
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
@@ -66,6 +67,13 @@ make build
 # 将本地生成的专用密钥追加到远端 authorized_keys，并写回 key_path
 # 远端密码及密码登录配置保持不变
 ./bin/opspulse server setup-key oracle-sg
+
+# 远程执行单条命令（实时流式输出）
+./bin/opspulse exec oracle-sg "docker ps"
+
+# 通过 SFTP 极速上传/下载配置文件
+./bin/opspulse upload oracle-sg ./nginx.conf /etc/nginx/nginx.conf
+./bin/opspulse download oracle-sg /var/log/nginx/error.log ./error.log
 
 # 测试 SSH 连通性与网络延迟
 ./bin/opspulse server test oracle-sg
@@ -129,11 +137,16 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 |------|------|
 | `opspulse server add <name> --host <ip> [--labels k=v]` | 向清单中添加或更新服务器配置 |
 | `opspulse server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器（支持标签筛选） |
+| `opspulse server set <name> [--host] [--port] [--key]` | 增量修改已有服务器配置字段 |
+| `opspulse server edit <name>` | 用本地编辑器安全打开并编辑服务器配置 |
+| `opspulse server setup-key <name>` | 自动为指定服务器生成并安装专用 SSH 密钥对 |
 | `opspulse server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
 | `opspulse server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `opspulse server remove <name>` | 从清单中删除指定服务器 |
 | `opspulse ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
 | `opspulse exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码 |
+| `opspulse upload <name> <src> <dst> [-r]` | 通过 SFTP 将本地文件或目录递归上传至远程服务器 |
+| `opspulse download <name> <src> <dst> [-r]` | 通过 SFTP 将远程文件或目录递归下载至本地 |
 | `opspulse template list` | 列出所有内置及自定义脚本模板 |
 | `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
 | `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
