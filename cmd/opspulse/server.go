@@ -26,6 +26,7 @@ var (
 	addKey      string
 	addPassword string
 	addTags     string
+	addLabels   string
 	addDesc     string
 )
 
@@ -48,6 +49,22 @@ var serverAddCmd = &cobra.Command{
 			}
 		}
 
+		labels := make(map[string]string)
+		if addLabels != "" {
+			for _, pair := range strings.Split(addLabels, ",") {
+				trimmed := strings.TrimSpace(pair)
+				if trimmed == "" {
+					continue
+				}
+				if strings.Contains(trimmed, "=") {
+					kv := strings.SplitN(trimmed, "=", 2)
+					labels[strings.TrimSpace(kv[0])] = strings.TrimSpace(kv[1])
+				} else {
+					labels[trimmed] = "true"
+				}
+			}
+		}
+
 		srv := server.Server{
 			Name:        name,
 			Host:        addHost,
@@ -56,6 +73,7 @@ var serverAddCmd = &cobra.Command{
 			KeyPath:     addKey,
 			Password:    addPassword,
 			Tags:        tags,
+			Labels:      labels,
 			Description: addDesc,
 		}
 
@@ -68,6 +86,8 @@ var serverAddCmd = &cobra.Command{
 		return nil
 	},
 }
+
+var listFilter string
 
 var serverListCmd = &cobra.Command{
 	Use:   "list",
@@ -84,11 +104,23 @@ var serverListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "NAME\tHOST\tPORT\tUSER\tAUTH\tTAGS\tDESCRIPTION")
-		_, _ = fmt.Fprintln(tw, "----\t----\t----\t----\t----\t----\t-----------")
-
+		var filtered []server.Server
 		for _, s := range servers {
+			if s.MatchFilter(listFilter) {
+				filtered = append(filtered, s)
+			}
+		}
+
+		if len(filtered) == 0 {
+			fmt.Printf("No servers matched filter %q.\n", listFilter)
+			return nil
+		}
+
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "NAME\tHOST\tPORT\tUSER\tAUTH\tLABELS\tTAGS\tDESCRIPTION")
+		_, _ = fmt.Fprintln(tw, "----\t----\t----\t----\t----\t------\t----\t-----------")
+
+		for _, s := range filtered {
 			var authMethod string
 			if s.KeyPath != "" {
 				authMethod = fmt.Sprintf("key (%s)", s.KeyPath)
@@ -103,13 +135,15 @@ var serverListCmd = &cobra.Command{
 				tagsStr = strings.Join(s.Tags, ",")
 			}
 
+			labelsStr := s.FormatLabels()
+
 			descStr := s.Description
 			if descStr == "" {
 				descStr = "-"
 			}
 
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\n",
-				s.Name, s.Host, s.Port, s.User, authMethod, tagsStr, descStr)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
+				s.Name, s.Host, s.Port, s.User, authMethod, labelsStr, tagsStr, descStr)
 		}
 		return tw.Flush()
 	},
@@ -188,7 +222,10 @@ func init() {
 	serverAddCmd.Flags().StringVarP(&addKey, "key", "k", "", "Path to private key file")
 	serverAddCmd.Flags().StringVar(&addPassword, "password", "", "SSH password (optional)")
 	serverAddCmd.Flags().StringVarP(&addTags, "tags", "t", "", "Comma-separated tags (e.g. prod,web)")
+	serverAddCmd.Flags().StringVarP(&addLabels, "labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
 	serverAddCmd.Flags().StringVarP(&addDesc, "desc", "d", "", "Server description")
+
+	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
 	serverTestCmd.ValidArgsFunction = completeServerNames
 	serverRemoveCmd.ValidArgsFunction = completeServerNames
