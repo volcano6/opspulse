@@ -98,7 +98,10 @@ func TestEditServerConfigValidatesBeforeReplacing(t *testing.T) {
 			}
 			editor := filepath.Join(dir, "editor.sh")
 			script := "#!/bin/sh\nfor last do :; done\nprintf '%s' '" + strings.ReplaceAll(tt.editedYAML, "'", "'\\''") + "' > \"$last\"\n"
-			if err := os.WriteFile(editor, []byte(script), 0o700); err != nil {
+			if err := os.WriteFile(editor, []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(editor, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("VISUAL", editor)
