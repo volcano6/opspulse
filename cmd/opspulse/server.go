@@ -22,14 +22,16 @@ var serverCmd = &cobra.Command{
 }
 
 var (
-	addHost     string
-	addPort     int
-	addUser     string
-	addKey      string
-	addPassword string
-	addTags     string
-	addLabels   string
-	addDesc     string
+	addHost      string
+	addPort      int
+	addUser      string
+	addKey       string
+	addNoCopyKey bool
+	addSkipTest  bool
+	addPassword  string
+	addTags      string
+	addLabels    string
+	addDesc      string
 )
 
 var serverAddCmd = &cobra.Command{
@@ -67,20 +69,51 @@ var serverAddCmd = &cobra.Command{
 			}
 		}
 
+		finalKeyPath := addKey
+		var keyWasCopied bool
+		if addKey != "" {
+			securedKey, copied, err := ResolveAndSecureKeyPath(os.Stdin, os.Stdout, name, addKey, addNoCopyKey)
+			if err != nil {
+				return err
+			}
+			finalKeyPath = securedKey
+			keyWasCopied = copied
+		}
+
 		srv := server.Server{
 			Name:        name,
 			Host:        addHost,
 			Port:        addPort,
 			User:        addUser,
-			KeyPath:     addKey,
+			KeyPath:     finalKeyPath,
 			Password:    addPassword,
 			Tags:        tags,
 			Labels:      labels,
 			Description: addDesc,
 		}
 
+		if !addSkipTest {
+			fmt.Printf("--> Verifying SSH connection to %s (%s)...\n", srv.Name, srv.Address())
+			exec := executor.NewSSHExecutor()
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			rtt, banner, err := exec.Test(ctx, executor.NewServerTarget(srv))
+			if err != nil {
+				if keyWasCopied {
+					cleanupManagedKey(finalKeyPath)
+					fmt.Printf("🧹 Cleaned up copied key: %s\n", finalKeyPath)
+				}
+				return fmt.Errorf("❌ Connection test failed: %w (server was not added; use --skip-test to add anyway)", err)
+			}
+			fmt.Printf("✅ Connection verified! (Latency: %.2f ms, %s)\n", float64(rtt.Microseconds())/1000.0, banner)
+		}
+
 		store := server.NewDefaultStore()
 		if err := store.Save(srv); err != nil {
+			if keyWasCopied {
+				cleanupManagedKey(finalKeyPath)
+			}
 			return fmt.Errorf("failed to save server: %w", err)
 		}
 
@@ -205,6 +238,10 @@ var serverTestCmd = &cobra.Command{
 
 		rtt, banner, err := exec.Test(ctx, executor.NewServerTarget(*srv))
 		if err != nil {
+			if isManagedKey(srv.KeyPath) {
+				fmt.Printf("💡 Note: This server uses an OpsPulse-managed key (%s).\n", srv.KeyPath)
+				fmt.Printf("   If the key is invalid, run 'opspulse server set %s --key <new_path>' to replace, or 'opspulse server remove %s' to clean up.\n", srv.Name, srv.Name)
+			}
 			return fmt.Errorf("❌ Connection failed: %w", err)
 		}
 
@@ -215,6 +252,8 @@ var serverTestCmd = &cobra.Command{
 	},
 }
 
+var removeKeepKey bool
+
 var serverRemoveCmd = &cobra.Command{
 	Use:     "remove <name>",
 	Aliases: []string{"rm", "delete"},
@@ -223,6 +262,13 @@ var serverRemoveCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
 		store := server.NewDefaultStore()
+		srv, err := store.Get(name)
+		if err != nil {
+			return err
+		}
+		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
+			return err
+		}
 		if err := store.Delete(name); err != nil {
 			return err
 		}
@@ -256,11 +302,15 @@ func init() {
 	serverAddCmd.Flags().IntVarP(&addPort, "port", "p", 22, "SSH port")
 	serverAddCmd.Flags().StringVarP(&addUser, "user", "u", "root", "SSH username")
 	serverAddCmd.Flags().StringVarP(&addKey, "key", "k", "", "Path to private key file")
+	serverAddCmd.Flags().BoolVar(&addNoCopyKey, "no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
+	serverAddCmd.Flags().BoolVar(&addSkipTest, "skip-test", false, "Skip SSH connectivity test when adding server")
 	serverAddCmd.Flags().StringVar(&addPassword, "password", "", "SSH password (optional)")
 	serverAddCmd.Flags().StringVarP(&addTags, "tags", "t", "", "Comma-separated tags (e.g. prod,web)")
 	serverAddCmd.Flags().StringVarP(&addLabels, "labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
 	serverAddCmd.Flags().StringVarP(&addDesc, "desc", "d", "", "Server description")
 	_ = serverAddCmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
+
+	serverRemoveCmd.Flags().BoolVar(&removeKeepKey, "keep-key", false, "Do not delete the managed private key file from disk")
 
 	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
