@@ -1,6 +1,6 @@
 # 日常服务器管理指南 (Server Operations)
 
-OpsPulse 不仅是一键初始化与灾备迁移工具，更是日常高效管理多台 VPS 的核心入口。
+OpsPulse 不仅是一键初始化与灾备迁移平台，更是日常高效管理多台 VPS 的核心入口。
 
 ---
 
@@ -131,4 +131,30 @@ opspulse exec oracle-sg "cat /var/log/nginx/access.log" | grep 404 | wc -l
 
 # 3. 设置超时时间（默认 60 秒，传 0 禁用超时）
 opspulse exec oracle-sg "apt-get update" --timeout 120s
+```
+
+---
+
+## 5. SFTP 文件与目录传输 (`upload` / `download`)
+
+基于高性能 SFTP 子系统，直接在本地与远程服务器之间上传或下载单个文件或递归目录，自动创建缺失的父级目录并保持权限：
+
+### 文件与目录上传 (`upload`)
+
+```bash
+# 1. 单个文件上传
+opspulse upload oracle-sg ./nginx.conf /etc/nginx/nginx.conf
+
+# 2. 递归目录上传（必须加 -r / --recursive 参数）
+opspulse upload oracle-sg ./configs/ /opt/app/configs/ --recursive
+```
+
+### 文件与目录下载 (`download`)
+
+```bash
+# 1. 单个文件下载到本地
+opspulse download oracle-sg /var/log/nginx/error.log ./error.log
+
+# 2. 递归目录下载到本地
+opspulse download oracle-sg /var/data/ghost/ ./ghost-backup/ --recursive
 ```
