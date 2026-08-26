@@ -209,29 +209,40 @@ func (s *Info) FormatBox(w io.Writer) {
 		formatBytes(s.DiskTotalBytes), formatBytes(s.DiskUsedBytes), formatBytes(s.DiskFreeBytes))
 	swapStr := fmt.Sprintf("%s (%s used)", formatBytes(s.SwapTotalBytes), formatBytes(s.SwapUsedBytes))
 
-	var metrics bytes.Buffer
-	tw := tabwriter.NewWriter(&metrics, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintf(tw, "OS\t: %s\n", s.OS)
-	_, _ = fmt.Fprintf(tw, "Kernel\t: %s\n", s.Kernel)
-	_, _ = fmt.Fprintf(tw, "CPU\t: %s\n", cpuStr)
-	_, _ = fmt.Fprintf(tw, "Memory\t: %s\n", memStr)
-	_, _ = fmt.Fprintf(tw, "Disk\t: %s\n", diskStr)
-	_, _ = fmt.Fprintf(tw, "Swap\t: %s\n", swapStr)
-	_, _ = fmt.Fprintf(tw, "Uptime\t: %s\n", s.Uptime)
-	_, _ = fmt.Fprintf(tw, "Docker\t: %s\n", dockerStr)
+	var sysMetrics bytes.Buffer
+	twSys := tabwriter.NewWriter(&sysMetrics, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(twSys, "OS\t: %s\n", s.OS)
+	_, _ = fmt.Fprintf(twSys, "Kernel\t: %s\n", s.Kernel)
+	_, _ = fmt.Fprintf(twSys, "CPU\t: %s\n", cpuStr)
+	_, _ = fmt.Fprintf(twSys, "Memory\t: %s\n", memStr)
+	_, _ = fmt.Fprintf(twSys, "Disk\t: %s\n", diskStr)
+	_, _ = fmt.Fprintf(twSys, "Swap\t: %s\n", swapStr)
+	_, _ = fmt.Fprintf(twSys, "Uptime\t: %s\n", s.Uptime)
+	_ = twSys.Flush()
+
+	var runtimeMetrics bytes.Buffer
+	twRuntime := tabwriter.NewWriter(&runtimeMetrics, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintf(twRuntime, "Docker\t: %s\n", dockerStr)
 	if s.DockerInstalled {
-		_, _ = fmt.Fprintf(tw, "Containers\t: %d running / %d stopped\n", s.ContainersRunning, s.ContainersStopped)
+		_, _ = fmt.Fprintf(twRuntime, "Containers\t: %d running / %d stopped\n", s.ContainersRunning, s.ContainersStopped)
 	}
-	_, _ = fmt.Fprintf(tw, "BBR\t: %s\n", bbrStr)
-	_ = tw.Flush()
+	_, _ = fmt.Fprintf(twRuntime, "BBR\t: %s\n", bbrStr)
+	_ = twRuntime.Flush()
 
 	headerRows := []string{
 		fmt.Sprintf("Server : %s", s.ServerName),
 		fmt.Sprintf("Host   : %s", s.Host),
 	}
-	metricRows := strings.Split(strings.TrimSuffix(metrics.String(), "\n"), "\n")
+	sysRows := strings.Split(strings.TrimSuffix(sysMetrics.String(), "\n"), "\n")
+	runtimeRows := strings.Split(strings.TrimSuffix(runtimeMetrics.String(), "\n"), "\n")
+
+	var allRows []string
+	allRows = append(allRows, headerRows...)
+	allRows = append(allRows, sysRows...)
+	allRows = append(allRows, runtimeRows...)
+
 	contentWidth := 59
-	for _, row := range append(headerRows, metricRows...) {
+	for _, row := range allRows {
 		contentWidth = max(contentWidth, utf8.RuneCountInString(row))
 	}
 	borderWidth := contentWidth + 4
@@ -241,11 +252,11 @@ func (s *Info) FormatBox(w io.Writer) {
 		formatBoxRow(w, row, contentWidth)
 	}
 	_, _ = fmt.Fprintf(w, "╠%s╣\n", strings.Repeat("═", borderWidth))
-	for _, row := range metricRows[:7] {
+	for _, row := range sysRows {
 		formatBoxRow(w, row, contentWidth)
 	}
 	_, _ = fmt.Fprintf(w, "╟%s╢\n", strings.Repeat("─", borderWidth))
-	for _, row := range metricRows[7:] {
+	for _, row := range runtimeRows {
 		formatBoxRow(w, row, contentWidth)
 	}
 	_, _ = fmt.Fprintf(w, "╚%s╝\n", strings.Repeat("═", borderWidth))
