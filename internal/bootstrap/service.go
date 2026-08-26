@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/volcano6/opspulse/internal/executor"
@@ -64,14 +65,42 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 		targetServers = append(targetServers, *srv)
 	}
 
-	// 2. Resolve all templates in specified order
-	var targetTemplates []template.Template
-	for _, name := range opts.TemplateNames {
+	// 2. Resolve all templates and inline arguments in specified order
+	type resolvedTemplate struct {
+		template.Template
+		DisplayName string
+		Argument    string
+		ExecContent string
+	}
+
+	var targetTemplates []resolvedTemplate
+	for _, spec := range opts.TemplateNames {
+		name := spec
+		var arg string
+		if idx := strings.Index(spec, ":"); idx != -1 {
+			name = spec[:idx]
+			arg = spec[idx+1:]
+		} else if idx := strings.Index(spec, "="); idx != -1 {
+			name = spec[:idx]
+			arg = spec[idx+1:]
+		}
+
 		tmpl, err := s.templateLoader.Get(name)
 		if err != nil {
 			return nil, fmt.Errorf("template %q not found: %w", name, err)
 		}
-		targetTemplates = append(targetTemplates, *tmpl)
+
+		execContent := tmpl.Content
+		if arg != "" {
+			execContent = fmt.Sprintf("set -- %q\nexport SCRIPT_ARG=%q\n%s", arg, arg, tmpl.Content)
+		}
+
+		targetTemplates = append(targetTemplates, resolvedTemplate{
+			Template:    *tmpl,
+			DisplayName: spec,
+			Argument:    arg,
+			ExecContent: execContent,
+		})
 	}
 
 	totalStartTime := time.Now()
@@ -106,12 +135,12 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 		serverFailed := false
 
 		// 4. Sequential template execution loop on current server
-		for tmplIdx, tmpl := range targetTemplates {
+		for tmplIdx, targetTmpl := range targetTemplates {
 			if serverFailed && opts.StopOnError {
 				// Record skipped template
 				summary.Results = append(summary.Results, executor.Result{
 					ServerName: srv.Name,
-					Template:   tmpl.Metadata.Name,
+					Template:   targetTmpl.DisplayName,
 					Success:    false,
 					Error:      errors.New("skipped due to previous error"),
 					LogPath:    logFilePath,
@@ -121,14 +150,14 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			}
 
 			_, _ = fmt.Fprintf(consoleOut, "\n--> [%s] Running template [%d/%d]: %s (v%d) - %s\n",
-				srv.Name, tmplIdx+1, len(targetTemplates), tmpl.Metadata.Name, tmpl.Metadata.Version, tmpl.Metadata.Description)
+				srv.Name, tmplIdx+1, len(targetTemplates), targetTmpl.DisplayName, targetTmpl.Metadata.Version, targetTmpl.Metadata.Description)
 
 			if opts.DryRun {
 				_, _ = fmt.Fprintf(consoleOut, "[DRY-RUN] Would execute script (%d bytes) on %s\n",
-					len(tmpl.Content), srv.Address())
+					len(targetTmpl.ExecContent), srv.Address())
 				summary.Results = append(summary.Results, executor.Result{
 					ServerName: srv.Name,
-					Template:   tmpl.Metadata.Name,
+					Template:   targetTmpl.DisplayName,
 					Success:    true,
 					Duration:   10 * time.Millisecond,
 					LogPath:    "dry-run",
@@ -143,13 +172,13 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 
 			var multiWriter io.Writer = prefixedConsole
 			if logFile != nil {
-				_, _ = fmt.Fprintf(logFile, "\n--- Template: %s ---\n", tmpl.Metadata.Name)
+				_, _ = fmt.Fprintf(logFile, "\n--- Template: %s ---\n", targetTmpl.DisplayName)
 				multiWriter = io.MultiWriter(prefixedConsole, logFile)
 			}
 
 			// Execute template via Executor interface
 			target := executor.NewServerTarget(srv)
-			res, err := s.executor.Execute(ctx, target, tmpl.Metadata.Name, tmpl.Content, multiWriter)
+			res, err := s.executor.Execute(ctx, target, targetTmpl.DisplayName, targetTmpl.ExecContent, multiWriter)
 			_ = prefixedConsole.Flush()
 
 			res.LogPath = logFilePath
@@ -159,11 +188,11 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 				serverFailed = true
 				summary.FailureCount++
 				_, _ = fmt.Fprintf(consoleOut, "[%s] ❌ Template %s failed: %v (Duration: %.2fs)\n",
-					srv.Name, tmpl.Metadata.Name, res.Error, res.Duration.Seconds())
+					srv.Name, targetTmpl.DisplayName, res.Error, res.Duration.Seconds())
 			} else {
 				summary.SuccessCount++
 				_, _ = fmt.Fprintf(consoleOut, "[%s] ✅ Template %s completed successfully (Duration: %.2fs)\n",
-					srv.Name, tmpl.Metadata.Name, res.Duration.Seconds())
+					srv.Name, targetTmpl.DisplayName, res.Duration.Seconds())
 			}
 		}
 
@@ -177,10 +206,10 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			// Record skipped remaining servers and templates
 			for remIdx := serverIdx + 1; remIdx < len(targetServers); remIdx++ {
 				remSrv := targetServers[remIdx]
-				for _, tmpl := range targetTemplates {
+				for _, targetTmpl := range targetTemplates {
 					summary.Results = append(summary.Results, executor.Result{
 						ServerName: remSrv.Name,
-						Template:   tmpl.Metadata.Name,
+						Template:   targetTmpl.DisplayName,
 						Success:    false,
 						Error:      errors.New("skipped due to previous server failure"),
 					})

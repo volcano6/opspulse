@@ -86,15 +86,22 @@ func TestLoader_BuiltinTemplates(t *testing.T) {
 		t.Fatalf("List() error: %v", err)
 	}
 
-	if len(list) < 4 {
-		t.Fatalf("expected at least 4 built-in templates, got %d", len(list))
+	if len(list) < 9 {
+		t.Fatalf("expected at least 9 built-in templates, got %d", len(list))
 	}
 
 	expectedNames := map[string]bool{
-		"base":     false,
-		"docker":   false,
-		"security": false,
-		"restic":   false,
+		"base":         false,
+		"security":     false,
+		"timezone":     false,
+		"swap":         false,
+		"caddy":        false,
+		"tmux":         false,
+		"zsh-starship": false,
+		"clean":        false,
+		"upgrade":      false,
+		"docker":       false,
+		"restic":       false,
 	}
 
 	for _, tmpl := range list {

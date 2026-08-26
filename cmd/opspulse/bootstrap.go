@@ -136,7 +136,11 @@ func completeBootstrapTemplateFlag(_ *cobra.Command, _ []string, toComplete stri
 		currentParts := strings.Split(toComplete[:idx], ",")
 		for _, p := range currentParts {
 			if p = strings.TrimSpace(p); p != "" {
-				selected[p] = true
+				name := p
+				if colonIdx := strings.IndexAny(p, ":="); colonIdx != -1 {
+					name = p[:colonIdx]
+				}
+				selected[name] = true
 			}
 		}
 
