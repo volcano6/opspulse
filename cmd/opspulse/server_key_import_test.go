@@ -38,7 +38,7 @@ func TestResolveAndSecureKeyPath_AlreadyInSSHDir(t *testing.T) {
 	}
 
 	keyFile := filepath.Join(sshDir, "id_ed25519")
-	if err := os.WriteFile(keyFile, generateTestKey(t), 0o644); err != nil {
+	if err := os.WriteFile(keyFile, generateTestKey(t), 0o644); err != nil { //nolint:gosec // G306: Testing permission tightening from 0644 to 0600
 		t.Fatal(err)
 	}
 
@@ -74,7 +74,7 @@ func TestResolveAndSecureKeyPath_OutsideSSHDir_UserConfirms(t *testing.T) {
 	}
 
 	downloadedKey := filepath.Join(downloadsDir, "oracle.pem")
-	if err := os.WriteFile(downloadedKey, generateTestKey(t), 0o644); err != nil {
+	if err := os.WriteFile(downloadedKey, generateTestKey(t), 0o644); err != nil { //nolint:gosec // G306: Testing permission tightening from 0644 to 0600
 		t.Fatal(err)
 	}
 
@@ -115,7 +115,7 @@ func TestResolveAndSecureKeyPath_OutsideSSHDir_UserDeclines(t *testing.T) {
 	}
 
 	customKey := filepath.Join(customDir, "custom.key")
-	if err := os.WriteFile(customKey, generateTestKey(t), 0o644); err != nil {
+	if err := os.WriteFile(customKey, generateTestKey(t), 0o644); err != nil { //nolint:gosec // G306: Testing permission tightening from 0644 to 0600
 		t.Fatal(err)
 	}
 
@@ -152,7 +152,7 @@ func TestResolveAndSecureKeyPath_NoCopyFlag(t *testing.T) {
 	_ = os.MkdirAll(customDir, 0o755)
 
 	customKey := filepath.Join(customDir, "my.key")
-	_ = os.WriteFile(customKey, generateTestKey(t), 0o644)
+	_ = os.WriteFile(customKey, generateTestKey(t), 0o644) //nolint:gosec // G306: Testing mock key permissions
 
 	var out bytes.Buffer
 	got, copied, err := ResolveAndSecureKeyPath(nil, &out, "server-a", customKey, true)
@@ -169,7 +169,7 @@ func TestResolveAndSecureKeyPath_NoCopyFlag(t *testing.T) {
 
 func TestResolveAndSecureKeyPath_InvalidKeyContent(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "invalid.txt")
-	_ = os.WriteFile(tmpFile, []byte("this is just a text file, not a key"), 0o644)
+	_ = os.WriteFile(tmpFile, []byte("this is just a text file, not a key"), 0o644) //nolint:gosec // G306: Testing invalid key handling
 
 	_, _, err := ResolveAndSecureKeyPath(nil, nil, "srv", tmpFile, false)
 	if err == nil {

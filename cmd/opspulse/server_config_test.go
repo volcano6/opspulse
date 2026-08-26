@@ -108,7 +108,7 @@ set "LAST=%%~1"
 for %%%%a in (%%*) do set "LAST=%%%%~a"
 powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes($env:LAST, [System.Convert]::FromBase64String('%s'))"
 `, b64)
-				if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
+				if err := os.WriteFile(editor, []byte(script), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			} else {
