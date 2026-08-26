@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
@@ -78,21 +79,7 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string
 }
 
 func expandHome(path string) string {
-	if path == "" {
-		return ""
-	}
-	if path == "~" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return home
-		}
-	} else if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
+	return executor.ExpandPath(path)
 }
 
 func runInteractiveSSH(binary string, args []string) error {

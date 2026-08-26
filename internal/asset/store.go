@@ -186,8 +186,14 @@ func (s *Store) writeConfig(cfg *assetConfig) error {
 		return fmt.Errorf("failed to marshal asset config to YAML: %w", err)
 	}
 
-	if err := os.WriteFile(s.filePath, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write asset config file %q: %w", s.filePath, err)
+	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
+	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+		return fmt.Errorf("failed to write temporary asset config file %q: %w", tmpFile, err)
+	}
+
+	if err := os.Rename(tmpFile, s.filePath); err != nil {
+		_ = os.Remove(tmpFile)
+		return fmt.Errorf("failed to replace asset config file %q: %w", s.filePath, err)
 	}
 
 	return nil

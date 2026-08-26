@@ -58,13 +58,34 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 		shell = "sh"
 	}
 
-	cmd := exec.CommandContext(ctx, shell, "-c", scriptContent) //nolint:gosec // G204: Subprocess launched to execute script on local machine
+	cmd := exec.CommandContext(ctx, shell, "-s") //nolint:gosec // G204: Subprocess launched to execute script on local machine
 	if outputWriter != nil {
 		cmd.Stdout = outputWriter
 		cmd.Stderr = outputWriter
 	}
 
-	runErr := cmd.Run()
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		res.Error = err
+		res.EndTime = time.Now()
+		res.Duration = res.EndTime.Sub(startTime)
+		return res, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		_ = stdinPipe.Close()
+		res.Error = err
+		res.EndTime = time.Now()
+		res.Duration = res.EndTime.Sub(startTime)
+		return res, err
+	}
+
+	go func() {
+		defer func() { _ = stdinPipe.Close() }()
+		_, _ = io.WriteString(stdinPipe, scriptContent)
+	}()
+
+	runErr := cmd.Wait()
 	res.EndTime = time.Now()
 	res.Duration = res.EndTime.Sub(startTime)
 
