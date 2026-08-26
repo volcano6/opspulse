@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -29,7 +30,7 @@ func generateTestKey(t *testing.T) []byte {
 
 func TestResolveAndSecureKeyPath_AlreadyInSSHDir(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
@@ -58,14 +59,14 @@ func TestResolveAndSecureKeyPath_AlreadyInSSHDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("expected 0600 mode, got %o", info.Mode().Perm())
 	}
 }
 
 func TestResolveAndSecureKeyPath_OutsideSSHDir_UserConfirms(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	downloadsDir := filepath.Join(home, "Downloads")
 	if err := os.MkdirAll(downloadsDir, 0o755); err != nil {
@@ -99,14 +100,14 @@ func TestResolveAndSecureKeyPath_OutsideSSHDir_UserConfirms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("destination key not found: %v", err)
 	}
-	if destInfo.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && destInfo.Mode().Perm() != 0o600 {
 		t.Errorf("expected destination mode 0600, got %o", destInfo.Mode().Perm())
 	}
 }
 
 func TestResolveAndSecureKeyPath_OutsideSSHDir_UserDeclines(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	customDir := filepath.Join(home, "keys")
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
@@ -138,14 +139,14 @@ func TestResolveAndSecureKeyPath_OutsideSSHDir_UserDeclines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Errorf("expected 0600 mode on original file, got %o", info.Mode().Perm())
 	}
 }
 
 func TestResolveAndSecureKeyPath_NoCopyFlag(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	customDir := filepath.Join(home, "keys")
 	_ = os.MkdirAll(customDir, 0o755)
@@ -185,7 +186,7 @@ func TestResolveAndSecureKeyPath_NonExistentKey(t *testing.T) {
 
 func TestCleanupManagedKey(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	sshDir := filepath.Join(home, ".ssh")
 	_ = os.MkdirAll(sshDir, 0o700)
@@ -243,7 +244,7 @@ func TestIsKeyUsedByOtherServers(t *testing.T) {
 
 func TestCleanupManagedKeyWithRefCheck(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	sshDir := filepath.Join(home, ".ssh")
 	_ = os.MkdirAll(sshDir, 0o700)

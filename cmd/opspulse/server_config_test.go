@@ -1,8 +1,11 @@
 package main
 
 import (
+	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -96,13 +99,27 @@ func TestEditServerConfigValidatesBeforeReplacing(t *testing.T) {
 			if err := store.Save(server.Server{Name: "web-01", Host: "192.0.2.10", Port: 22}); err != nil {
 				t.Fatal(err)
 			}
-			editor := filepath.Join(dir, "editor.sh")
-			script := "#!/bin/sh\nfor last do :; done\nprintf '%s' '" + strings.ReplaceAll(tt.editedYAML, "'", "'\\''") + "' > \"$last\"\n"
-			if err := os.WriteFile(editor, []byte(script), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Chmod(editor, 0o700); err != nil {
-				t.Fatal(err)
+			var editor string
+			if runtime.GOOS == "windows" {
+				editor = filepath.Join(dir, "editor.cmd")
+				b64 := base64.StdEncoding.EncodeToString([]byte(tt.editedYAML))
+				script := fmt.Sprintf(`@echo off
+set "LAST=%%~1"
+for %%%%a in (%%*) do set "LAST=%%%%~a"
+powershell -NoProfile -Command "[System.IO.File]::WriteAllBytes($env:LAST, [System.Convert]::FromBase64String('%s'))"
+`, b64)
+				if err := os.WriteFile(editor, []byte(script), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				editor = filepath.Join(dir, "editor.sh")
+				script := "#!/bin/sh\nfor last do :; done\nprintf '%s' '" + strings.ReplaceAll(tt.editedYAML, "'", "'\\''") + "' > \"$last\"\n"
+				if err := os.WriteFile(editor, []byte(script), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(editor, 0o700); err != nil {
+					t.Fatal(err)
+				}
 			}
 			t.Setenv("VISUAL", editor)
 			t.Setenv("EDITOR", "")
