@@ -60,8 +60,9 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 
 	cmd := exec.CommandContext(ctx, shell, "-s") //nolint:gosec // G204: Subprocess launched to execute script on local machine
 	if outputWriter != nil {
-		cmd.Stdout = outputWriter
-		cmd.Stderr = outputWriter
+		safeWriter := NewSyncWriter(outputWriter)
+		cmd.Stdout = safeWriter
+		cmd.Stderr = safeWriter
 	}
 
 	stdinPipe, err := cmd.StdinPipe()

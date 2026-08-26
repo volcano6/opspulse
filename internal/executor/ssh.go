@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -145,34 +146,31 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	}
 	defer func() { _ = session.Close() }()
 
-	// Stream stdout and stderr
+	// Stream stdout and stderr thread-safely (prevent data race on shared bytes.Buffer)
 	if outputWriter != nil {
-		session.Stdout = outputWriter
-		session.Stderr = outputWriter
-	}
-
-	stdinPipe, err := session.StdinPipe()
-	if err != nil {
-		res.Error = err
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
-		return res, err
+		safeWriter := NewSyncWriter(outputWriter)
+		session.Stdout = safeWriter
+		session.Stderr = safeWriter
 	}
 
 	// Normalize script line endings to standard LF before executing remotely
 	scriptContent = strings.ReplaceAll(scriptContent, "\r\n", "\n")
 	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
 
-	// Run bash -s with the script piped into stdin
+	// For robust, race-free remote execution across high-latency networks,
+	// encode scripts <= 64KB into the exec command directly via base64.
+	var execCmd string
+	if len(scriptContent) <= 64*1024 {
+		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
+		execCmd = fmt.Sprintf("printf '%%s' '%s' | base64 -d | (bash || sh)", encoded)
+	} else {
+		session.Stdin = strings.NewReader(scriptContent)
+		execCmd = "bash -s || sh -s"
+	}
+
 	execErrChan := make(chan error, 1)
 	go func() {
-		execErrChan <- session.Run("bash -s")
-	}()
-
-	// Write script to stdin and close pipe
-	go func() {
-		defer func() { _ = stdinPipe.Close() }()
-		_, _ = io.WriteString(stdinPipe, scriptContent)
+		execErrChan <- session.Run(execCmd)
 	}()
 
 	// Wait for execution or context cancellation

@@ -213,7 +213,16 @@ var serverInfoCmd = &cobra.Command{
 			return fmt.Errorf("❌ Probe script failed on %q: %v", name, res.Error)
 		}
 
-		info := server.ParseInfo(srv.Name, srv.Address(), outBuf.String())
+		outputStr := outBuf.String()
+		if strings.TrimSpace(outputStr) == "" || !strings.Contains(outputStr, "---OS_RELEASE---") {
+			trimmed := strings.TrimSpace(outputStr)
+			if trimmed == "" {
+				return fmt.Errorf("❌ Probe script returned empty output for %q. Please check server status and retry", name)
+			}
+			return fmt.Errorf("❌ Probe script returned unexpected output for %q:\n%s", name, trimmed)
+		}
+
+		info := server.ParseInfo(srv.Name, srv.Address(), outputStr)
 		info.FormatBox(os.Stdout)
 		return nil
 	},
