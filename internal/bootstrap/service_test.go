@@ -178,3 +178,66 @@ func TestBootstrap_StopOnError_MultiServer(t *testing.T) {
 	}
 }
 
+type mockCapturingExecutor struct {
+	capturedTasks   []string
+	capturedScripts []string
+}
+
+func (m *mockCapturingExecutor) Execute(_ context.Context, target executor.Target, taskName string, script string, _ io.Writer) (*executor.Result, error) {
+	m.capturedTasks = append(m.capturedTasks, taskName)
+	m.capturedScripts = append(m.capturedScripts, script)
+	return &executor.Result{
+		ServerName: target.Name,
+		Template:   taskName,
+		Success:    true,
+	}, nil
+}
+
+func (m *mockCapturingExecutor) Test(_ context.Context, _ executor.Target) (time.Duration, string, error) {
+	return 10 * time.Millisecond, "mock Linux", nil
+}
+
+func TestBootstrap_TemplateArguments(t *testing.T) {
+	tmpDir := t.TempDir()
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "1.2.3.4", User: "root"})
+
+	templateLoader := template.NewLoader("")
+	exec := &mockCapturingExecutor{}
+	svc := NewService(serverStore, templateLoader, exec)
+
+	var console bytes.Buffer
+	summary, err := svc.Run(context.Background(), RunOptions{
+		ServerNames:   []string{"vps-01"},
+		TemplateNames: []string{"swap:4", "timezone:UTC"},
+	}, &console)
+
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if summary.SuccessCount != 2 {
+		t.Fatalf("expected 2 successful tasks, got %d", summary.SuccessCount)
+	}
+
+	if len(exec.capturedTasks) != 2 {
+		t.Fatalf("expected 2 captured tasks, got %d", len(exec.capturedTasks))
+	}
+
+	// Verify task names preserved the argument
+	if exec.capturedTasks[0] != "swap:4" {
+		t.Errorf("expected task 0 to be 'swap:4', got %q", exec.capturedTasks[0])
+	}
+	if exec.capturedTasks[1] != "timezone:UTC" {
+		t.Errorf("expected task 1 to be 'timezone:UTC', got %q", exec.capturedTasks[1])
+	}
+
+	// Verify script content had arguments injected
+	if !strings.Contains(exec.capturedScripts[0], `set -- "4"`) {
+		t.Errorf("expected script 0 to inject 'set -- \"4\"', got:\n%s", exec.capturedScripts[0])
+	}
+	if !strings.Contains(exec.capturedScripts[1], `set -- "UTC"`) {
+		t.Errorf("expected script 1 to inject 'set -- \"UTC\"', got:\n%s", exec.capturedScripts[1])
+	}
+}
+
