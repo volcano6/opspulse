@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -352,7 +353,11 @@ func completePrivateKeyPath(_ *cobra.Command, _ []string, toComplete string) ([]
 		}
 		candidate := entry.Name()
 		if displayDir != "" {
-			candidate = filepath.Join(displayDir, entry.Name())
+			if strings.Contains(toComplete, "/") && !strings.Contains(toComplete, `\`) {
+				candidate = path.Join(displayDir, entry.Name())
+			} else {
+				candidate = filepath.Join(displayDir, entry.Name())
+			}
 		}
 		completions = append(completions, candidate)
 	}

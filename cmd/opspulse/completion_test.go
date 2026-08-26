@@ -231,7 +231,7 @@ func TestCompleteBootstrapArgsAndFlags(t *testing.T) {
 
 func TestCompletePrivateKeyPath(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	sshDir := filepath.Join(home, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o700); err != nil {
 		t.Fatal(err)
