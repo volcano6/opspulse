@@ -18,24 +18,7 @@ func BuildBackupScript(job Job) (string, error) {
 	sb.WriteString("set -euo pipefail\n\n")
 
 	// 1. Export environment variables
-	envKeys := make([]string, 0, len(job.Env))
-	for k := range job.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-
-	hasRepo := false
-	for _, k := range envKeys {
-		if k == "RESTIC_REPOSITORY" {
-			hasRepo = true
-		}
-		sb.WriteString(fmt.Sprintf("export %s=%q\n", k, job.Env[k]))
-	}
-
-	if !hasRepo && job.Backend != "" {
-		sb.WriteString(fmt.Sprintf("export RESTIC_REPOSITORY=%q\n", job.Backend))
-	}
-	sb.WriteString("\n")
+	writeEnvBlock(&sb, job)
 
 	// 2. Check restic installation
 	sb.WriteString(`if ! command -v restic >/dev/null 2>&1; then
@@ -110,6 +93,73 @@ func BuildSnapshotsScript(job Job) string {
 	sb.WriteString("#!/bin/bash\n")
 	sb.WriteString("set -euo pipefail\n\n")
 
+	writeEnvBlock(&sb, job)
+
+	sb.WriteString("restic snapshots --json\n")
+	return sb.String()
+}
+
+// BuildRestoreScript generates a shell script that executes `restic restore` to restore
+// files from a specific snapshot. Optionally filters by include patterns for targeted asset restore.
+func BuildRestoreScript(job Job, snapshotID string, targetPath string, includePatterns []string) string {
+	var sb strings.Builder
+	sb.WriteString("#!/bin/bash\n")
+	sb.WriteString("set -euo pipefail\n\n")
+
+	writeEnvBlock(&sb, job)
+
+	// Check restic installation
+	sb.WriteString(`if ! command -v restic >/dev/null 2>&1; then
+  echo "Error: restic is not installed on target host." >&2
+  exit 127
+fi
+`)
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("echo \"Starting restic restore (snapshot: %s, target: %s)...\"\n", snapshotID, targetPath))
+	sb.WriteString(fmt.Sprintf("restic restore %q --target %q", snapshotID, targetPath))
+
+	for _, pattern := range includePatterns {
+		sb.WriteString(fmt.Sprintf(" --include %q", pattern))
+	}
+
+	sb.WriteString(" --verbose\n")
+
+	sb.WriteString("echo \"Restore completed successfully.\"\n")
+	return sb.String()
+}
+
+// BuildRestoreDryRunScript generates a shell script that uses `restic ls` to preview
+// which files would be restored from a snapshot, without actually writing any data.
+func BuildRestoreDryRunScript(job Job, snapshotID string, includePatterns []string) string {
+	var sb strings.Builder
+	sb.WriteString("#!/bin/bash\n")
+	sb.WriteString("set -euo pipefail\n\n")
+
+	writeEnvBlock(&sb, job)
+
+	// Check restic installation
+	sb.WriteString(`if ! command -v restic >/dev/null 2>&1; then
+  echo "Error: restic is not installed on target host." >&2
+  exit 127
+fi
+`)
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("echo \"[DRY-RUN] Listing files in snapshot %s...\"\n", snapshotID))
+	sb.WriteString(fmt.Sprintf("restic ls %q", snapshotID))
+
+	for _, pattern := range includePatterns {
+		sb.WriteString(fmt.Sprintf(" --include %q", pattern))
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// writeEnvBlock writes the common environment variable export block for a backup job,
+// including RESTIC_REPOSITORY if not already set via Env map.
+func writeEnvBlock(sb *strings.Builder, job Job) {
 	envKeys := make([]string, 0, len(job.Env))
 	for k := range job.Env {
 		envKeys = append(envKeys, k)
@@ -128,7 +178,5 @@ func BuildSnapshotsScript(job Job) string {
 		sb.WriteString(fmt.Sprintf("export RESTIC_REPOSITORY=%q\n", job.Backend))
 	}
 	sb.WriteString("\n")
-
-	sb.WriteString("restic snapshots --json\n")
-	return sb.String()
 }
+
