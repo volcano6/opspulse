@@ -40,8 +40,8 @@ var backupListCmd = &cobra.Command{
 		}
 
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "NAME\tSERVER\tBACKEND\tPATHS\tRETENTION\tTAGS")
-		_, _ = fmt.Fprintln(tw, "----\t------\t-------\t-----\t---------\t----")
+		_, _ = fmt.Fprintln(tw, "NAME\tSERVER\tBACKEND\tPATHS\tSCHEDULE\tRETENTION\tTAGS")
+		_, _ = fmt.Fprintln(tw, "----\t------\t-------\t-----\t--------\t---------\t----")
 
 		for _, j := range jobs {
 			pathsStr := strings.Join(j.Paths, ", ")
@@ -67,8 +67,13 @@ var backupListCmd = &cobra.Command{
 				tagsStr = strings.Join(j.Tags, ",")
 			}
 
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				j.Name, j.Server, j.Backend, pathsStr, retentionStr, tagsStr)
+			scheduleStr := "-"
+			if j.Schedule != "" {
+				scheduleStr = j.Schedule
+			}
+
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				j.Name, j.Server, j.Backend, pathsStr, scheduleStr, retentionStr, tagsStr)
 		}
 
 		return tw.Flush()

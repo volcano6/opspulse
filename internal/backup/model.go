@@ -40,6 +40,7 @@ type Job struct {
 	Excludes    []string          `yaml:"excludes,omitempty" json:"excludes,omitempty"`
 	Tags        []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
+	Schedule    string            `yaml:"schedule,omitempty" json:"schedule,omitempty"` // Cron expression (e.g. "0 2 * * *", "@daily")
 }
 
 // Validate checks that the backup job contains all required fields and valid data.
