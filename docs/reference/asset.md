@@ -64,8 +64,57 @@ assets:
 
 ---
 
-## 4. 与 Backup / Restore / Migration 的协同
+## 4. CLI 命令
 
-1. **Backup Job 引用**：`backups.yaml` 中通过 `assets: [blog-compose, blog-mysql]` 声明需要打包的资产列表。
-2. **Restore 精准还原**：在还原时，可以通过 `--asset blog-mysql` 精准还原单个数据库，或通过 `--dest /mnt/new-path` 实现路径重映射。
-3. **Blueprint 蓝图画像**：Blueprint 通过引用 Asset ID，描述一台服务器需要挂载哪些业务服务。
+### 添加资产
+
+```bash
+# Docker Compose 项目
+opspulse asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
+
+# 数据库资产（指定引擎与容器名）
+opspulse asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db --desc "博客数据库"
+
+# 通用目录（支持排除模式）
+opspulse asset add blog-nginx --type directory --source /etc/nginx/sites-enabled --excludes "*.bak,*.tmp" --desc "Nginx 配置"
+
+# 单文件或文件组
+opspulse asset add blog-ssl --type file --source /etc/letsencrypt --desc "SSL 证书"
+```
+
+### 查看资产
+
+```bash
+# 列出所有资产
+opspulse asset list
+
+# 查看单个资产详情
+opspulse asset show blog-mysql
+```
+
+### 删除资产
+
+```bash
+opspulse asset remove blog-mysql
+```
+
+### `asset add` 完整参数
+
+| 参数 | 是否必填 | 说明 |
+|:---|:---|:---|
+| `<id>` | **是** | 资产唯一标识（仅字母、数字、`-`、`_`） |
+| `--type` | **是** | 资产类型：`docker_compose`、`volume`、`database`、`directory`、`file` |
+| `--source` | **是** | 服务器上的源路径 |
+| `--engine` | 否 | 数据库引擎（`mysql`、`postgres`），仅 `database` 类型使用 |
+| `--container` | 否 | Docker 容器名称，仅 `database` 类型使用 |
+| `--excludes` | 否 | 逗号分隔的排除 Glob 模式 |
+| `--desc, -d` | 否 | 资产描述 |
+
+---
+
+## 5. 与 Backup / Restore 的协同
+
+1. **Restore 精准还原**：在还原时，通过 `--asset blog-mysql` 精准还原单个资产，仅恢复该资产 `source` 路径下的文件。
+2. **跨机迁移重映射**：配合 `--target-server new-vps --target-path /data/blog` 实现路径重映射与跨机迁移。
+3. **Dry-Run 预览**：通过 `opspulse restore run <job> --asset blog-mysql --dry-run` 预览将被还原的文件列表，不执行实际写入。
+
