@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -136,7 +138,7 @@ func (s *Store) Replace(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
@@ -154,7 +156,16 @@ func (s *Store) Replace(data []byte) error {
 
 func parseAndValidateConfig(data []byte) (*ConfigFile, error) {
 	var cf ConfigFile
-	if err := yaml.Unmarshal(data, &cf); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cf); err != nil {
+		return nil, fmt.Errorf("failed to parse servers YAML: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("failed to parse servers YAML: multiple documents are not supported")
+		}
 		return nil, fmt.Errorf("failed to parse servers YAML: %w", err)
 	}
 	seen := make(map[string]struct{}, len(cf.Servers))
@@ -184,17 +195,12 @@ func (s *Store) read() (*ConfigFile, error) {
 		return &ConfigFile{Servers: []Server{}}, nil
 	}
 
-	var cf ConfigFile
-	if err := yaml.Unmarshal(data, &cf); err != nil {
-		return nil, fmt.Errorf("failed to parse servers YAML: %w", err)
-	}
-
-	return &cf, nil
+	return parseAndValidateConfig(data)
 }
 
 func (s *Store) write(cf *ConfigFile) error {
 	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 

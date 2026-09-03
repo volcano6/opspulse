@@ -3,6 +3,9 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -115,5 +118,40 @@ func TestSSHExecutor_InvalidTarget(t *testing.T) {
 	_, execErr := exec.Execute(ctx, localTarget, "test", "echo 1", nil)
 	if execErr == nil {
 		t.Error("expected error when passing local target to SSHExecutor Execute, got nil")
+	}
+}
+
+func TestRemoteShellCommandPreservesScriptExitStatus(t *testing.T) {
+	command, stdin := remoteShellCommand("exit 42\n")
+	if stdin != nil {
+		t.Fatal("small script must be embedded in the remote command")
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("remote shell command error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != 42 {
+		t.Fatalf("remote shell command exit code = %d, want 42", exitErr.ExitCode())
+	}
+}
+
+func TestRemoteShellCommandStreamsLargeScript(t *testing.T) {
+	script := strings.Repeat("#", 64*1024+1)
+	command, stdin := remoteShellCommand(script)
+	if stdin == nil {
+		t.Fatal("large script must be streamed to the remote shell")
+	}
+	if strings.Contains(command, "bash -s || sh -s") {
+		t.Fatalf("remote shell fallback can mask script failures: %q", command)
+	}
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != script {
+		t.Fatal("streamed script changed")
 	}
 }

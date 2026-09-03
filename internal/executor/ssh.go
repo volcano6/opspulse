@@ -157,15 +157,9 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	scriptContent = strings.ReplaceAll(scriptContent, "\r\n", "\n")
 	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
 
-	// For robust, race-free remote execution across high-latency networks,
-	// encode scripts <= 64KB into the exec command directly via base64.
-	var execCmd string
-	if len(scriptContent) <= 64*1024 {
-		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
-		execCmd = fmt.Sprintf("printf '%%s' '%s' | base64 -d | (bash || sh)", encoded)
-	} else {
-		session.Stdin = strings.NewReader(scriptContent)
-		execCmd = "bash -s || sh -s"
+	execCmd, stdin := remoteShellCommand(scriptContent)
+	if stdin != nil {
+		session.Stdin = stdin
 	}
 
 	execErrChan := make(chan error, 1)
@@ -206,4 +200,13 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 		res.ExitCode = 0
 		return res, nil
 	}
+}
+func remoteShellCommand(scriptContent string) (string, io.Reader) {
+	// Select one available shell before execution. Using "bash || sh" would
+	// rerun an already-consumed script with sh and mask bash's exit status.
+	if len(scriptContent) <= 64*1024 {
+		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
+		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; printf '%%s' '%s' | base64 -d | \"$shell\"", encoded), nil
+	}
+	return "if command -v bash >/dev/null 2>&1; then bash -s; else sh -s; fi", strings.NewReader(scriptContent)
 }

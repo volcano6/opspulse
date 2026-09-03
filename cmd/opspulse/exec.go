@@ -44,11 +44,7 @@ Streams stdout and stderr in real-time and preserves command exit status for scr
 		if err != nil {
 			return fmt.Errorf("execution error on %s: %w", serverName, err)
 		}
-
 		if !res.Success {
-			if res.ExitCode != 0 {
-				os.Exit(res.ExitCode)
-			}
 			return fmt.Errorf("command failed on %s (exit code %d): %v", serverName, res.ExitCode, res.Error)
 		}
 

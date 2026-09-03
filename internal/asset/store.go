@@ -1,7 +1,9 @@
 package asset
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -167,11 +169,29 @@ func (s *Store) readConfig() (*assetConfig, error) {
 		return &assetConfig{Assets: []Asset{}}, nil
 	}
 
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	var cfg assetConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML asset config: %w", err)
 	}
-
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("failed to parse YAML asset config: multiple documents are not supported")
+		}
+		return nil, fmt.Errorf("failed to parse YAML asset config: %w", err)
+	}
+	seen := make(map[string]struct{}, len(cfg.Assets))
+	for i := range cfg.Assets {
+		if err := cfg.Assets[i].Validate(); err != nil {
+			return nil, fmt.Errorf("invalid asset entry %d: %w", i+1, err)
+		}
+		if _, exists := seen[cfg.Assets[i].ID]; exists {
+			return nil, fmt.Errorf("duplicate asset id %q", cfg.Assets[i].ID)
+		}
+		seen[cfg.Assets[i].ID] = struct{}{}
+	}
 	return &cfg, nil
 }
 

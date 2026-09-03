@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -214,5 +215,16 @@ func TestStore_Concurrency(t *testing.T) {
 	}
 	if len(jobs) != workers {
 		t.Errorf("expected %d jobs, got %d", workers, len(jobs))
+	}
+}
+
+func TestStoreReadRejectsInvalidConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backups.yaml")
+	data := []byte("backups:\n  - name: duplicate\n    server: local\n    paths: [/one]\n    backend: /repo\n  - name: duplicate\n    server: local\n    paths: [/two]\n    backend: /repo\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path).List(); err == nil {
+		t.Fatal("List() accepted duplicate backup names")
 	}
 }

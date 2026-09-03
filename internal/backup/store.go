@@ -1,7 +1,9 @@
 package backup
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -140,11 +142,29 @@ func (s *Store) readConfig() (*backupConfig, error) {
 		return &backupConfig{Backups: []Job{}}, nil
 	}
 
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	var cfg backupConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := decoder.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML backup config: %w", err)
 	}
-
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("failed to parse YAML backup config: multiple documents are not supported")
+		}
+		return nil, fmt.Errorf("failed to parse YAML backup config: %w", err)
+	}
+	seen := make(map[string]struct{}, len(cfg.Backups))
+	for i := range cfg.Backups {
+		if err := cfg.Backups[i].Validate(); err != nil {
+			return nil, fmt.Errorf("invalid backup entry %d: %w", i+1, err)
+		}
+		if _, exists := seen[cfg.Backups[i].Name]; exists {
+			return nil, fmt.Errorf("duplicate backup name %q", cfg.Backups[i].Name)
+		}
+		seen[cfg.Backups[i].Name] = struct{}{}
+	}
 	return &cfg, nil
 }
 

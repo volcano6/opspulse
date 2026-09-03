@@ -117,6 +117,8 @@ opspulse ssh oracle-sg -- tmux attach
 
 绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
 
+非交互 SSH 执行与 SFTP 使用 TOFU 主机密钥策略：首次连接将主机密钥写入 `~/.ssh/known_hosts`，后续密钥不匹配时拒绝连接。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key` 后从配置中移除密码。
+
 > **设计优势**：
 > - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。
 > - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件向 OpenSSH `SSH_ASKPASS` 传递密码；密码不出现在命令参数或环境变量值中。

@@ -4,7 +4,7 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/volcano6/opspulse)](https://go.dev/)
 [![License](https://img.shields.io/github/license/volcano6/opspulse)](LICENSE)
 
-**Infrastructure Action Runner** — 面向个人开发者的自托管服务器全生命周期与无缝迁移平台。
+**Infrastructure Action Runner** — 面向个人开发者的自托管服务器自动化与备份编排工具。
 
 ---
 
@@ -17,7 +17,7 @@
 * 🚚 **机器到期迁移痛苦**：VPS 到期更换服务商时，数据导出、环境安装、路径调整、证书配置和重新上线流程繁琐且易出错。
 * 🔒 **敏感凭据散落**：各种密码和 API Token 散落在各个服务器的明文 `.env` 文件或记忆中。
 
-**OpsPulse** 采用单一可执行二进制文件，提供声明式服务器清单、有状态业务资产（Asset）管理、可复用的 Shell 模板、统一调度的 restic 备份与跨机重映射还原，并将所有执行历史与状态结构化持久化至本地 SQLite 数据库。
+**OpsPulse** 采用单一可执行二进制文件，提供声明式服务器清单、有状态业务资产（Asset）管理、可复用的 Shell 模板、SFTP 文件传输、统一调度的 restic 备份与跨机重映射还原，并将所有执行历史与状态结构化持久化至本地 SQLite 数据库。
 
 ---
 
@@ -32,7 +32,7 @@
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🔒 默认安全原则**：私钥绝不离机，运行时按需注入敏感凭据，无任何外部遥测上报。
+- **🔒 本地安全边界**：私钥绝不离机，SSH/SFTP 首次连接采用 TOFU 写入 `~/.ssh/known_hosts`，后续拒绝主机密钥变化；无任何外部遥测上报。SSH 密码与备份凭据仍以明文保存在权限为 `0600` 的本地 YAML 中。
 
 ---
 
@@ -160,7 +160,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 |------|---------|
 | `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单配置文件 |
 | `$XDG_CONFIG_HOME/opspulse/assets.yaml` | 结构化业务资产定义文件 |
-| `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务配置文件 |
+| `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务配置文件，可能包含明文凭据，权限为 `0600` |
 | `$XDG_CONFIG_HOME/opspulse/templates/*.sh` | 用户自定义 Shell 脚本模板目录 |
 | `$XDG_DATA_HOME/opspulse/logs/` | 任务执行完整日志落盘目录 (`bootstrap-<server>-<timestamp>.log`) |
 | `$XDG_DATA_HOME/opspulse/opspulse.db` | 本地 SQLite 数据库文件（执行历史、状态与指标） |
