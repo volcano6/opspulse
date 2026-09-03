@@ -114,6 +114,42 @@ make build
 ./bin/opspulse backup snapshots web-data
 ```
 
+### 5. 业务资产管理 (Asset)
+
+```bash
+# 注册业务资产（Docker Compose 项目、数据库、Nginx 配置等）
+./bin/opspulse asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
+./bin/opspulse asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db
+
+# 查看所有已配置的资产
+./bin/opspulse asset list
+
+# 查看资产详情
+./bin/opspulse asset show blog-mysql
+
+# 删除资产
+./bin/opspulse asset remove blog-mysql
+```
+
+### 6. 精准还原与跨机迁移 (Restore)
+
+```bash
+# 全量还原最新快照到原始服务器
+./bin/opspulse restore run web-data
+
+# 精准还原单个资产
+./bin/opspulse restore run web-data --asset blog-mysql
+
+# 跨机迁移（还原到新 VPS，支持路径重映射）
+./bin/opspulse restore run web-data --target-server new-vps --target-path /data/web
+
+# Dry-Run 预览将还原的文件列表
+./bin/opspulse restore run web-data --dry-run
+
+# 查看还原历史
+./bin/opspulse restore history web-data
+```
+
 ---
 
 ## 📂 配置与数据目录规范
@@ -155,6 +191,12 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
 | `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录 |
 | `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
+| `opspulse asset add <id> --type <type> --source <path>` | 注册或更新有状态业务资产 |
+| `opspulse asset list` | 格式化表格列出所有已配置的资产 |
+| `opspulse asset show <id>` | 查看指定资产的详细配置信息 |
+| `opspulse asset remove <id>` | 从配置中删除指定资产 |
+| `opspulse restore run <job> [--snapshot id] [--asset id]` | 从 restic 快照执行还原（支持跨机迁移与精准资产还原） |
+| `opspulse restore history [job-name]` | 查看还原操作的历史执行记录 |
 | `opspulse completion <bash\|zsh\|fish\|powershell>` | 生成指定 Shell 的自动补全脚本 |
 | `opspulse version` | 输出当前版本号、Git Commit Hash 与构建日期 |
 
@@ -166,6 +208,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 * [日常服务器管理指南](docs/reference/server_ops.md)
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
+* [还原管理指南](docs/reference/restore.md)
 * [脚本模板开发指南](docs/reference/templates.md)
 * [配置与存储目录规范](docs/reference/configuration.md)
 * [贡献指南](CONTRIBUTING.md)
