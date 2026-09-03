@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/volcano6/opspulse/internal/executor"
 )
 
 func TestParseExecArgs(t *testing.T) {
@@ -44,5 +47,15 @@ func TestParseExecArgs(t *testing.T) {
 				t.Errorf("commandStr = %q, want %q", commandStr, tt.wantCommand)
 			}
 		})
+	}
+}
+
+func TestCommandExitCode(t *testing.T) {
+	err := fmt.Errorf("remote command failed: %w", &executor.ExecutionError{ExitCode: 42, Server: "vps-01"})
+	if got := commandExitCode(err); got != 42 {
+		t.Fatalf("commandExitCode() = %d, want 42", got)
+	}
+	if got := commandExitCode(fmt.Errorf("ordinary error")); got != 1 {
+		t.Fatalf("commandExitCode() = %d, want 1", got)
 	}
 }

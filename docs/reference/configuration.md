@@ -15,9 +15,9 @@ OpsPulse 严格按照各操作系统的 XDG Base Directory 规范组织配置文
 
 | 文件路径 | 用途说明 |
 |---------|---------|
-| `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单配置文件 |
-| `$XDG_CONFIG_HOME/opspulse/assets.yaml` | 结构化业务资产定义文件 |
-| `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务编排配置文件 |
+| `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单；可能包含明文 SSH 密码，文件权限为 `0600` |
+| `$XDG_CONFIG_HOME/opspulse/assets.yaml` | 结构化业务资产定义文件（可通过 `opspulse asset` 注册管理） |
+| `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务；`env` 中的凭据以明文保存，文件权限为 `0600` |
 | `$XDG_CONFIG_HOME/opspulse/templates/*.sh` | 自定义 Shell 脚本模板目录 |
 | `$XDG_DATA_HOME/opspulse/logs/` | 执行日志文件落盘目录 |
 | `$XDG_DATA_HOME/opspulse/opspulse.db` | 本地 SQLite 数据库文件 |
@@ -66,7 +66,7 @@ servers:
 | `port` | 整数 | 否 | `22` | SSH 端口号 |
 | `user` | 字符串 | 否 | `root` | SSH 登录用户名 |
 | `key_path` | 字符串 | 否 | `""` | 私钥文件路径（支持 `~` 自动展开）。配置后 OpenSSH 强制启用 `IdentitiesOnly=yes`，只提交该密钥；若密钥和密码均为空，则自动扫描默认密钥 |
-| `password` | 字符串 | 否 | `""` | SSH 密码。未绑定私钥时，`opspulse ssh` 使用它自动认证；`server setup-key` 使用它安装公钥但绝不修改远端密码 |
+| `password` | 字符串 | 否 | `""` | SSH 密码，以明文保存在权限为 `0600` 的 `servers.yaml` 中。未绑定私钥时用于自动认证；`server setup-key` 使用它安装公钥但不修改远端密码 |
 | `tags` | 字符串列表 | 否 | `[]` | 标签分组列表（便于按标签批量执行） |
 | `labels` | 键值映射 | 否 | `{}` | 结构化元数据标签（如 `provider: oracle`, `region: sg`），支持 `server list --filter` 筛选 |
 | `description` | 字符串 | 否 | `""` | 备注描述信息 |
@@ -77,7 +77,7 @@ servers:
 
 路径：`$XDG_CONFIG_HOME/opspulse/assets.yaml`
 
-Asset 描述服务器上的有状态数据资产，每个资产拥有**稳定的唯一 ID**，跨机迁移或还原时通过 ID 引用并支持路径重映射（Remap）。
+Asset 描述服务器上的有状态数据资产，每个资产拥有**稳定的唯一 ID**，跨机迁移或还原时通过 ID 引用并支持路径重映射（Remap）。可通过 `opspulse asset` 命令行子命令进行增删查改。
 
 ```yaml
 assets:
@@ -112,8 +112,8 @@ assets:
 
 OpsPulse 使用纯 Go 实现的 `modernc.org/sqlite` 驱动管理状态与历史指标：
 
-* **WAL 模式**：默认开启 Write-Ahead Logging，支持高并发读写，零锁冲突。
-* **自动迁移**：内置的数据库 Schema 脚本（`migrations/*.sql`）会在应用启动时自动检测并幂等迁移。
+* **WAL 模式**：默认开启 Write-Ahead Logging，支持并发读写。
+* **自动迁移**：内置数据库 Schema 会在数据库打开时自动检测并幂等迁移。
 * **核心数据表**：
   - `schema_migrations`：记录数据库 Schema 版本与应用时间。
   - `backup_runs`：记录每次备份执行的快照 ID、文件变更量、新增大小、耗时与状态。

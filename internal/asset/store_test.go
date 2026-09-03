@@ -1,6 +1,7 @@
 package asset
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -192,5 +193,16 @@ func TestStore_Concurrency(t *testing.T) {
 	}
 	if len(list) != workers {
 		t.Errorf("expected %d assets, got %d", workers, len(list))
+	}
+}
+
+func TestStoreReadRejectsInvalidConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "assets.yaml")
+	data := []byte("assets:\n  - id: duplicate\n    type: file\n    source: /one\n  - id: duplicate\n    type: file\n    source: /two\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path).List(); err == nil {
+		t.Fatal("List() accepted duplicate asset ids")
 	}
 }

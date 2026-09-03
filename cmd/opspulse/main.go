@@ -2,10 +2,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/logger"
 	"github.com/volcano6/opspulse/internal/version"
 )
@@ -46,6 +48,14 @@ func main() {
 		return
 	}
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(commandExitCode(err))
 	}
+}
+
+func commandExitCode(err error) int {
+	var executionErr *executor.ExecutionError
+	if errors.As(err, &executionErr) && executionErr.ExitCode > 0 {
+		return executionErr.ExitCode
+	}
+	return 1
 }

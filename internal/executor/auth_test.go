@@ -2,14 +2,19 @@ package executor
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/server"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestExpandPath(t *testing.T) {
@@ -99,6 +104,45 @@ func TestPrefixedWriter(t *testing.T) {
 	if buf.String() != "[vps-01] partial line" {
 		t.Errorf("Flush output = %q, want %q", buf.String(), "[vps-01] partial line")
 	}
+}
+
+func TestTOFUHostKeyCallbackTrustsFirstKeyAndRejectsChanges(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	callback := tofuHostKeyCallbackFor(knownHostsPath)
+	remote := &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 2222}
+	hostname := "example.test:2222"
+
+	firstKey := newTestHostKey(t)
+	if err := callback(hostname, remote, firstKey); err != nil {
+		t.Fatalf("first host key must be trusted: %v", err)
+	}
+	if err := callback(hostname, remote, firstKey); err != nil {
+		t.Fatalf("stored host key must be accepted: %v", err)
+	}
+	if err := callback(hostname, remote, newTestHostKey(t)); err == nil {
+		t.Fatal("changed host key must be rejected")
+	}
+
+	info, err := os.Stat(knownHostsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("known_hosts mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func newTestHostKey(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func TestLogPathFor(t *testing.T) {

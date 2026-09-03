@@ -109,7 +109,9 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return 0, fmt.Errorf("failed to upload data to %q: %w", remotePath, err)
 	}
 
-	_ = c.sftpClient.Chmod(remotePath, srcStat.Mode().Perm())
+	if err := c.sftpClient.Chmod(remotePath, srcStat.Mode().Perm()); err != nil {
+		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", remotePath, err)
+	}
 	return n, nil
 }
 
@@ -153,7 +155,9 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, err)
 	}
 
-	_ = os.Chmod(localPath, srcStat.Mode().Perm())
+	if err := os.Chmod(localPath, srcStat.Mode().Perm()); err != nil {
+		return n, fmt.Errorf("failed to set local file permissions on %q: %w", localPath, err)
+	}
 	return n, nil
 }
 

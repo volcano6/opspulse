@@ -268,3 +268,25 @@ func TestStoreReplaceValidationIsAtomic(t *testing.T) {
 		t.Fatal("expected duplicate server names to fail validation")
 	}
 }
+
+func TestStoreReadRejectsInvalidConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	data := []byte("servers:\n  - name: same\n    host: 192.0.2.1\n  - name: same\n    host: 192.0.2.2\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path).List(); err == nil {
+		t.Fatal("List() accepted duplicate server names")
+	}
+}
+
+func TestStoreReadRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	data := []byte("servers:\n  - name: web-01\n    host: 192.0.2.1\n    typo_field: value\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStore(path).List(); err == nil {
+		t.Fatal("List() accepted an unknown server field")
+	}
+}

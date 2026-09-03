@@ -1,19 +1,14 @@
 # 业务资产模型指南 (Asset Model)
 
-在 OpsPulse 的架构中，**Asset（资产）** 是承载服务器有状态业务数据的核心概念，用于将无序的磁盘目录升维为结构化的业务单元。
+Asset（资产）是仓库中的数据模型，用于描述服务器上的有状态业务数据。当前版本仅实现模型、校验与 YAML 存储层，尚未提供 `asset`、`restore`、路径重映射或 Blueprint CLI；生产操作请使用现有 `backup` 命令中的 `paths`。
 
 ---
 
 ## 1. 核心设计原则
 
-1. **Asset 具有全局稳定的唯一 ID (Stable ID)**：
-   - 跨机器迁移或跨版本迭代时，Asset 的 `ID` 保持不变（如 `blog-mysql`）。
-   - 原始路径（`source`）仅代表当前机器上的位置，在跨机迁移或还原时可以被灵活重映射（Remap）。
-2. **区分无状态环境与有状态资产**：
-   - **Template**：无状态的基础系统安装（如 Docker、UFW 防火墙、Fail2ban）。
-   - **Asset**：有状态的业务数据（Docker Compose 项目、Volume 挂载卷、数据库逻辑 Dump、Nginx 站点配置、SSL 证书）。
-3. **支持部分还原与灵活重映射**：
-   - 用户可以针对单一 Asset 进行独立备份与精准还原，而不必每次全盘机械复制。
+1. **稳定 ID**：`id` 用于唯一标识资产记录。
+2. **类型与来源**：`type` 描述资产类别，`source` 描述其来源路径。
+3. **当前边界**：模型尚未接入备份与还原执行流程，配置 `assets.yaml` 不会改变 `backup run` 的行为。
 
 ---
 
@@ -64,57 +59,8 @@ assets:
 
 ---
 
-## 4. CLI 命令
+## 4. 当前集成状态
 
-### 添加资产
-
-```bash
-# Docker Compose 项目
-opspulse asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
-
-# 数据库资产（指定引擎与容器名）
-opspulse asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db --desc "博客数据库"
-
-# 通用目录（支持排除模式）
-opspulse asset add blog-nginx --type directory --source /etc/nginx/sites-enabled --excludes "*.bak,*.tmp" --desc "Nginx 配置"
-
-# 单文件或文件组
-opspulse asset add blog-ssl --type file --source /etc/letsencrypt --desc "SSL 证书"
-```
-
-### 查看资产
-
-```bash
-# 列出所有资产
-opspulse asset list
-
-# 查看单个资产详情
-opspulse asset show blog-mysql
-```
-
-### 删除资产
-
-```bash
-opspulse asset remove blog-mysql
-```
-
-### `asset add` 完整参数
-
-| 参数 | 是否必填 | 说明 |
-|:---|:---|:---|
-| `<id>` | **是** | 资产唯一标识（仅字母、数字、`-`、`_`） |
-| `--type` | **是** | 资产类型：`docker_compose`、`volume`、`database`、`directory`、`file` |
-| `--source` | **是** | 服务器上的源路径 |
-| `--engine` | 否 | 数据库引擎（`mysql`、`postgres`），仅 `database` 类型使用 |
-| `--container` | 否 | Docker 容器名称，仅 `database` 类型使用 |
-| `--excludes` | 否 | 逗号分隔的排除 Glob 模式 |
-| `--desc, -d` | 否 | 资产描述 |
-
----
-
-## 5. 与 Backup / Restore 的协同
-
-1. **Restore 精准还原**：在还原时，通过 `--asset blog-mysql` 精准还原单个资产，仅恢复该资产 `source` 路径下的文件。
-2. **跨机迁移重映射**：配合 `--target-server new-vps --target-path /data/blog` 实现路径重映射与跨机迁移。
-3. **Dry-Run 预览**：通过 `opspulse restore run <job> --asset blog-mysql --dry-run` 预览将被还原的文件列表，不执行实际写入。
-
+- `backups.yaml` 当前仅接受 `paths`，不接受 `assets` 字段。
+- 当前没有 `asset` 或 `restore` CLI 命令。
+- `restore_runs` 数据表仅为存储层预留，不代表还原流程已经实现。
