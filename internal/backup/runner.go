@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
@@ -19,16 +20,37 @@ type Runner struct {
 	localExecutor *executor.LocalExecutor
 	serverStore   *server.Store
 	backupRepo    *storage.BackupRepo
+	backupStore   *Store
+	assetStore    *asset.Store
 }
 
 // NewRunner creates a new backup Runner.
 func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo *storage.BackupRepo) *Runner {
+	return NewRunnerWithStores(exec, serverStore, backupRepo, nil, nil)
+}
+
+// NewRunnerWithStores creates a backup Runner with all persistence stores configured.
+func NewRunnerWithStores(
+	exec executor.Executor,
+	serverStore *server.Store,
+	backupRepo *storage.BackupRepo,
+	backupStore *Store,
+	assetStore *asset.Store,
+) *Runner {
 	return &Runner{
 		executor:      exec,
 		localExecutor: executor.NewLocalExecutor(),
 		serverStore:   serverStore,
 		backupRepo:    backupRepo,
+		backupStore:   backupStore,
+		assetStore:    assetStore,
 	}
+}
+
+// SetStores configures optional backup and asset stores on the Runner.
+func (r *Runner) SetStores(backupStore *Store, assetStore *asset.Store) {
+	r.backupStore = backupStore
+	r.assetStore = assetStore
 }
 
 // ResolveTarget determines whether the target is local or a remote server from inventory.
@@ -51,6 +73,15 @@ func (r *Runner) ResolveTarget(serverName string) (executor.Target, error) {
 
 // Run executes a backup job on the resolved target, streams logs, and records structured metrics in SQLite.
 func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*storage.BackupRun, error) {
+	// Dynamically resolve paths from referenced assets if specified
+	if len(job.Assets) > 0 && r.assetStore != nil {
+		resolved, err := job.ResolveAllPaths(r.assetStore)
+		if err != nil {
+			return nil, err
+		}
+		job.Paths = resolved
+	}
+
 	if err := job.Validate(); err != nil {
 		return nil, err
 	}

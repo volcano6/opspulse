@@ -3,7 +3,10 @@ package backup
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/asset"
 )
 
 var (
@@ -33,7 +36,8 @@ type RetentionPolicy struct {
 type Job struct {
 	Name        string            `yaml:"name" json:"name"`
 	Server      string            `yaml:"server" json:"server"`
-	Paths       []string          `yaml:"paths" json:"paths"`
+	Paths       []string          `yaml:"paths,omitempty" json:"paths,omitempty"`
+	Assets      []string          `yaml:"assets,omitempty" json:"assets,omitempty"`
 	Backend     string            `yaml:"backend" json:"backend"`
 	Env         map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
 	Retention   *RetentionPolicy  `yaml:"retention,omitempty" json:"retention,omitempty"`
@@ -51,7 +55,7 @@ func (j *Job) Validate() error {
 	if strings.TrimSpace(j.Server) == "" {
 		return ErrInvalidJobServer
 	}
-	if len(j.Paths) == 0 {
+	if len(j.Paths) == 0 && len(j.Assets) == 0 {
 		return ErrInvalidJobPaths
 	}
 	for _, p := range j.Paths {
@@ -64,3 +68,50 @@ func (j *Job) Validate() error {
 	}
 	return nil
 }
+
+// ParseContainerTarget inspects an argument string for the <server>:<container> format.
+func ParseContainerTarget(arg string) (serverName, containerName string, isContainer bool) {
+	trimmed := strings.TrimSpace(arg)
+	if !strings.Contains(trimmed, ":") {
+		return "", "", false
+	}
+	parts := strings.SplitN(trimmed, ":", 2)
+	srv := strings.TrimSpace(parts[0])
+	ctr := strings.TrimSpace(parts[1])
+	if srv == "" || ctr == "" {
+		return "", "", false
+	}
+	return srv, ctr, true
+}
+
+// ResolveAllPaths merges explicit Paths with sources resolved from referenced Assets.
+func (j *Job) ResolveAllPaths(assetStore *asset.Store) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, p := range j.Paths {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" && !seen[trimmed] {
+			seen[trimmed] = true
+			result = append(result, trimmed)
+		}
+	}
+
+	if assetStore != nil && len(j.Assets) > 0 {
+		for _, assetID := range j.Assets {
+			a, err := assetStore.Get(assetID)
+			if err != nil {
+				return nil, fmt.Errorf("asset %q referenced by job %q not found: %w", assetID, j.Name, err)
+			}
+			src := strings.TrimSpace(a.Source)
+			if src != "" && !seen[src] {
+				seen[src] = true
+				result = append(result, src)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+
