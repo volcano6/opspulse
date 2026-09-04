@@ -30,6 +30,7 @@
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
+- **🐳 容器智能备份与跨机快起**：无需预先编写 YAML，直接 `opspulse backup run <server>:<container> [--as <name>]`。野生容器自动逆向转译为标准 `compose.yaml`，MySQL/PostgreSQL 自动执行容器内在途热 Dump 与 gzip 即时压缩，跨机还原 `opspulse restore run <name> --target-server <vps>` 默认自动自适应拉起容器并自动灌库。
 - **⏰ 定时调度与自动化守护**：支持标准 Cron 表达式（`@daily`、`@hourly` 等），内置防重叠并发保护与优雅退出，通过 `opspulse daemon` 长期驻留或 `--once` 单次批量触发。
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
@@ -213,7 +214,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
 | `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
 | `opspulse backup list` | 列出所有配置的备份任务 |
-| `opspulse backup run <jobs... \| all> [-p N] [--dry-run]` | 执行备份任务（支持并发与模拟执行） |
+| `opspulse backup run <jobs... \| all \| srv:ctr> [--as name]` | 执行备份任务或一键智能备份容器 |
 | `opspulse backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
 | `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录 |
 | `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
@@ -221,7 +222,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse asset list` | 格式化表格列出所有已配置的资产 |
 | `opspulse asset show <id>` | 查看指定资产的详细配置信息 |
 | `opspulse asset remove <id>` | 从配置中删除指定资产 |
-| `opspulse restore run <job> [--snapshot id] [--asset id]` | 从 restic 快照执行还原（支持跨机迁移与精准资产还原） |
+| `opspulse restore run <job> [--target-server vps] [--as name] [--no-start]` | 从快照执行还原（默认自动跨机拉起容器并灌库） |
 | `opspulse restore history [job-name]` | 查看还原操作的历史执行记录 |
 | `opspulse daemon [--once]` | 运行定时调度守护进程自动执行备份（支持单次批量模式） |
 | `opspulse notify list` | 查看所有配置的 Webhook 告警渠道 |
@@ -234,6 +235,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 ## 📖 使用文档
 
 * [新手入门教程](docs/tutorial/getting_started.md)
+* [容器备份与跨机无缝迁移实战指南](docs/tutorial/container_migration.md)
 * [日常服务器管理指南](docs/reference/server_ops.md)
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)

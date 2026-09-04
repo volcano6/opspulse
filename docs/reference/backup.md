@@ -57,7 +57,8 @@ backups:
 |------|------|----------|------|
 | `name` | 字符串 | **是** | 备份任务的唯一标识名称 |
 | `server` | 字符串 | **是** | 目标主机。可填 `servers.yaml` 中的服务器名，或填 `local`（本机执行） |
-| `paths` | 字符串列表 | **是** | 待备份的文件或目录绝对路径列表 |
+| `paths` | 字符串列表 | 否 | 待备份的文件或目录绝对路径列表（与 `assets` 至少填一项） |
+| `assets` | 字符串列表 | 否 | 关联的业务资产 ID 列表，自动解析其 Source 路径 |
 | `backend` | 字符串 | **是** | Restic 仓库地址（支持 S3、B2、Azure、SFTP、本地目录等所有 restic 支持的后端） |
 | `schedule` | 字符串 | 否 | Cron 调度表达式（如 `"0 2 * * *"` 或 `"@daily"`），详见 [调度指南](scheduler.md) |
 | `env` | 键值对映射 | 否 | 运行时注入的环境变量（如 `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID` 等） |
@@ -83,7 +84,7 @@ opspulse backup list
 opspulse backup run web-data --dry-run
 ```
 
-### 执行备份
+### 执行传统声明式任务备份
 ```bash
 # 执行单个任务
 opspulse backup run web-data
@@ -94,6 +95,21 @@ opspulse backup run web-data,local-configs --parallel 2
 # 执行全部配置的备份任务
 opspulse backup run all
 ```
+
+### 一键容器智能备份 (无需前置配置)
+无需提前编写 YAML，直接对目标 VPS 上的运行容器进行智能热备份：
+```bash
+# 直接备份远端 vps-01 上的 my-app 容器与挂载数据
+opspulse backup run vps-01:my-app
+
+# 备份时重命名（例如将测试容器 nginx-test 转换为规范的 nginx）
+opspulse backup run vps-01:nginx-test --as nginx
+```
+> **自动处理**：
+> - 自动探测是否为 Compose 项目，非 Compose 则自动逆向反编译生成 `compose.yaml`。
+> - 若为 MySQL / PostgreSQL 数据库，自动执行容器内在线热 Dump 并管道压缩。
+> - 自动继承默认存储仓库并将配置持久化登记至 `backups.yaml` 与 `assets.yaml`。
+> - 详见 [容器迁移指南](../tutorial/container_migration.md)。
 
 ### 查看最新备份状态
 展示所有任务的最新一次备份运行时间、状态、快照 ID、新增数据量及总容量：
