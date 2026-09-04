@@ -30,6 +30,8 @@
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
+- **⏰ 定时调度与自动化守护**：支持标准 Cron 表达式（`@daily`、`@hourly` 等），内置防重叠并发保护与优雅退出，通过 `opspulse daemon` 长期驻留或 `--once` 单次批量触发。
+- **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
 - **🔒 本地安全边界**：私钥绝不离机，SSH/SFTP 首次连接采用 TOFU 写入 `~/.ssh/known_hosts`，后续拒绝主机密钥变化；无任何外部遥测上报。SSH 密码与备份凭据仍以明文保存在权限为 `0600` 的本地 YAML 中。
@@ -150,6 +152,29 @@ make build
 ./bin/opspulse restore history web-data
 ```
 
+### 7. 定时调度与自动化守护 (Scheduler)
+
+```bash
+# 启动调度守护进程（前台运行，按 backups.yaml 中的 schedule 自动执行备份并触发告警）
+./bin/opspulse daemon
+
+# 单次按序执行全部已调度任务后退出（适配外部 crontab 或 systemd timer）
+./bin/opspulse daemon --once
+```
+
+### 8. 告警通知与连通性自测 (Notifications)
+
+```bash
+# 查看所有已配置的通知渠道
+./bin/opspulse notify list
+
+# 发送测试消息验证指定 Webhook 渠道的连通性
+./bin/opspulse notify test slack-ops
+
+# 验证所有配置渠道
+./bin/opspulse notify test
+```
+
 ---
 
 ## 📂 配置与数据目录规范
@@ -161,6 +186,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `$XDG_CONFIG_HOME/opspulse/servers.yaml` | 服务器清单配置文件 |
 | `$XDG_CONFIG_HOME/opspulse/assets.yaml` | 结构化业务资产定义文件 |
 | `$XDG_CONFIG_HOME/opspulse/backups.yaml` | 备份任务配置文件，可能包含明文凭据，权限为 `0600` |
+| `$XDG_CONFIG_HOME/opspulse/notifications.yaml` | Webhook 告警渠道配置文件 |
 | `$XDG_CONFIG_HOME/opspulse/templates/*.sh` | 用户自定义 Shell 脚本模板目录 |
 | `$XDG_DATA_HOME/opspulse/logs/` | 任务执行完整日志落盘目录 (`bootstrap-<server>-<timestamp>.log`) |
 | `$XDG_DATA_HOME/opspulse/opspulse.db` | 本地 SQLite 数据库文件（执行历史、状态与指标） |
@@ -197,6 +223,9 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `opspulse asset remove <id>` | 从配置中删除指定资产 |
 | `opspulse restore run <job> [--snapshot id] [--asset id]` | 从 restic 快照执行还原（支持跨机迁移与精准资产还原） |
 | `opspulse restore history [job-name]` | 查看还原操作的历史执行记录 |
+| `opspulse daemon [--once]` | 运行定时调度守护进程自动执行备份（支持单次批量模式） |
+| `opspulse notify list` | 查看所有配置的 Webhook 告警渠道 |
+| `opspulse notify test [channel-name]` | 发送测试事件验证通知渠道的连通性 |
 | `opspulse completion <bash\|zsh\|fish\|powershell>` | 生成指定 Shell 的自动补全脚本 |
 | `opspulse version` | 输出当前版本号、Git Commit Hash 与构建日期 |
 
@@ -209,6 +238,8 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
 * [还原管理指南](docs/reference/restore.md)
+* [定时调度指南](docs/reference/scheduler.md)
+* [告警通知指南](docs/reference/notifications.md)
 * [脚本模板开发指南](docs/reference/templates.md)
 * [配置与存储目录规范](docs/reference/configuration.md)
 * [贡献指南](CONTRIBUTING.md)

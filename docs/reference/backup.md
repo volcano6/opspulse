@@ -18,6 +18,7 @@ backups:
       - /var/www
       - /etc/nginx
     backend: s3:s3.amazonaws.com/my-backup-bucket # 或本地路径 /mnt/backup/repo
+    schedule: "0 2 * * *"                   # 定时调度 cron 表达式（可选）
     env:
       AWS_ACCESS_KEY_ID: "your-access-key"
       AWS_SECRET_ACCESS_KEY: "your-secret-key"
@@ -40,6 +41,7 @@ backups:
     paths:
       - ~/.config
     backend: /mnt/backups/local-repo
+    schedule: "@daily"                      # 快捷宏调度
     env:
       RESTIC_PASSWORD: "my-local-password"
     retention:
@@ -57,6 +59,7 @@ backups:
 | `server` | 字符串 | **是** | 目标主机。可填 `servers.yaml` 中的服务器名，或填 `local`（本机执行） |
 | `paths` | 字符串列表 | **是** | 待备份的文件或目录绝对路径列表 |
 | `backend` | 字符串 | **是** | Restic 仓库地址（支持 S3、B2、Azure、SFTP、本地目录等所有 restic 支持的后端） |
+| `schedule` | 字符串 | 否 | Cron 调度表达式（如 `"0 2 * * *"` 或 `"@daily"`），详见 [调度指南](scheduler.md) |
 | `env` | 键值对映射 | 否 | 运行时注入的环境变量（如 `RESTIC_PASSWORD`, `AWS_ACCESS_KEY_ID` 等） |
 | `retention` | 对象 | 否 | 快照保留策略（`keep_daily`, `keep_weekly`, `keep_monthly`, `keep_yearly`, `keep_last`, `keep_tags`） |
 | `excludes` | 字符串列表 | 否 | 排除模式匹配规则 |
