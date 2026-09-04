@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
@@ -83,13 +84,62 @@ var backupListCmd = &cobra.Command{
 var (
 	backupRunDryRun   bool
 	backupRunParallel int
+	backupRunAs       string
 )
 
 var backupRunCmd = &cobra.Command{
-	Use:   "run <job1,job2... | all>",
-	Short: "Execute one or more backup jobs",
+	Use:   "run <job1,job2... | all | server:container>",
+	Short: "Execute one or more backup jobs or back up a container directly",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
+		// Check for container target syntax: opspulse backup run <server>:<container> [--as <alias>]
+		if len(args) == 1 {
+			if srv, ctr, isContainer := backup.ParseContainerTarget(args[0]); isContainer {
+				db, err := storage.OpenDefault()
+				if err != nil {
+					return fmt.Errorf("failed to open database: %w", err)
+				}
+				defer func() { _ = db.Close() }()
+
+				store := backup.NewDefaultStore()
+				backupRepo := storage.NewBackupRepo(db)
+				serverStore := server.NewDefaultStore()
+				assetStore := asset.NewDefaultStore()
+				exec := executor.NewSSHExecutor()
+				runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
+
+				ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+				defer cancel()
+
+				opts := backup.ContainerBackupOptions{
+					Server:        srv,
+					ContainerName: ctr,
+					AliasName:     backupRunAs,
+				}
+
+				res, err := runner.RunContainerBackup(ctx, opts, os.Stdout)
+				if err != nil {
+					return err
+				}
+
+				fmt.Printf("\n✅ Container backup completed successfully!\n")
+				fmt.Printf("   Job Name:     %s\n", res.JobName)
+				fmt.Printf("   Server:       %s\n", res.ServerName)
+				if res.SnapshotID != "" {
+					fmt.Printf("   Snapshot ID:  %s\n", res.SnapshotID)
+				}
+				if res.ComposePath != "" {
+					fmt.Printf("   Compose File: %s\n", res.ComposePath)
+				}
+				if res.IsDatabase {
+					fmt.Printf("   Database:     Online hot dump created & archived\n")
+				}
+				fmt.Printf("\nTo restore on another VPS and auto-start:\n")
+				fmt.Printf("   opspulse restore run %s --target-server <target-vps>\n\n", res.JobName)
+				return nil
+			}
+		}
+
 		store := backup.NewDefaultStore()
 		allJobs, err := store.List()
 		if err != nil {
@@ -396,6 +446,7 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 func init() {
 	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic")
 	backupRunCmd.Flags().IntVarP(&backupRunParallel, "parallel", "p", 0, "Maximum concurrent jobs (0 = unlimited)")
+	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "Rename container in generated Compose and backup job (when using <server>:<container>)")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "Maximum number of history records to show")
 

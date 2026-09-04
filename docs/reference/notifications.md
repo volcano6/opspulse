@@ -13,19 +13,19 @@ channels:
   # Slack 告警（仅在任务失败时通知）
   - name: slack-ops
     type: webhook
-    url: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+    url: "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK_URL"
     on: failure
 
   # Discord 运维群（仅在任务失败时通知）
   - name: discord-alerts
     type: webhook
-    url: "https://discord.com/api/webhooks/1234567890/abcdefghijklmnopqrstuvwxyz"
+    url: "https://discord.com/api/webhooks/YOUR/DISCORD/WEBHOOK_URL"
     on: failure
 
   # 飞书 / 钉钉 / 企业微信（支持所有状态）
   - name: feishu-bot
     type: webhook
-    url: "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    url: "https://open.feishu.cn/open-apis/bot/v2/hook/YOUR-BOT-TOKEN"
     on: always
 
   # 自定义内部运维监控平台

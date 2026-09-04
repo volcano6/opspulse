@@ -30,6 +30,8 @@ var (
 	restoreRunTargetPath   string
 	restoreRunAssetID      string
 	restoreRunDryRun       bool
+	restoreRunNoStart      bool
+	restoreRunAs           string
 )
 
 var restoreRunCmd = &cobra.Command{
@@ -81,6 +83,8 @@ Examples:
 			TargetPath:   restoreRunTargetPath,
 			AssetID:      restoreRunAssetID,
 			DryRun:       restoreRunDryRun,
+			NoStart:      restoreRunNoStart,
+			AliasName:    restoreRunAs,
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -166,6 +170,8 @@ func init() {
 	restoreRunCmd.Flags().StringVar(&restoreRunTargetPath, "target-path", "", "Override restore target path for path remapping (default: original paths)")
 	restoreRunCmd.Flags().StringVar(&restoreRunAssetID, "asset", "", "Restore a specific asset only (by asset ID)")
 	restoreRunCmd.Flags().BoolVar(&restoreRunDryRun, "dry-run", false, "Preview files without actually restoring")
+	restoreRunCmd.Flags().BoolVar(&restoreRunNoStart, "no-start", false, "Do not automatically start containers or import database after restore")
+	restoreRunCmd.Flags().StringVar(&restoreRunAs, "as", "", "Rename container/service project name on target server")
 
 	restoreHistoryCmd.Flags().IntVarP(&restoreHistoryLimit, "limit", "n", 20, "Maximum number of history records to show")
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/volcano6/opspulse/internal/asset"
+	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
@@ -21,6 +22,8 @@ type RestoreOptions struct {
 	TargetPath   string // Override restore target path (empty = original paths)
 	AssetID      string // Optional asset ID for targeted single-asset restore
 	DryRun       bool   // Only preview files without writing
+	NoStart      bool   // If true, do not automatically start containers or import database
+	AliasName    string // Optional rename alias for container/service
 }
 
 // RestoreRunner coordinates the execution of restic restore operations and records metrics in SQLite.
@@ -199,6 +202,11 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	if execErr == nil && execRes != nil && execRes.Success {
 		runRecord.Status = "success"
 		_, _ = fmt.Fprintf(consoleOut, "✅ Restore completed successfully (Duration: %.2fs)\n", runRecord.DurationSeconds)
+
+		// Auto-start containers by default unless explicitly suppressed via --no-start
+		if !opts.NoStart && !opts.DryRun {
+			r.autoStartContainers(ctx, target, job, opts, consoleOut)
+		}
 	} else {
 		runRecord.Status = "failed"
 		if execErr != nil {
@@ -267,3 +275,56 @@ func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.
 		}
 	}
 }
+
+func (r *RestoreRunner) autoStartContainers(
+	ctx context.Context,
+	target executor.Target,
+	job Job,
+	opts RestoreOptions,
+	consoleOut io.Writer,
+) {
+	_, _ = fmt.Fprintf(consoleOut, "--> Inspecting restored files for container services (auto-start enabled)...\n")
+
+	var candidateDirs []string
+	if opts.TargetPath != "" && opts.TargetPath != "/" {
+		candidateDirs = append(candidateDirs, opts.TargetPath)
+	}
+	candidateDirs = append(candidateDirs, fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name))
+	candidateDirs = append(candidateDirs, job.Paths...)
+
+	autoOpts := docker.AutoStartOptions{
+		ComposeDirs: dedupPaths(candidateDirs),
+		AliasName:   opts.AliasName,
+	}
+
+	// Check if asset is a database container
+	if r.assetStore != nil {
+		targetAssetID := opts.AssetID
+		if targetAssetID == "" {
+			targetAssetID = job.Name
+		}
+		if a, err := r.assetStore.Get(targetAssetID); err == nil && a.Type == asset.TypeDatabase {
+			autoOpts.DatabaseEngine = a.Engine
+			autoOpts.DatabaseContainer = a.Container
+			if autoOpts.DatabaseContainer == "" {
+				autoOpts.DatabaseContainer = job.Name
+			}
+			autoOpts.DatabaseDump = fmt.Sprintf("/tmp/opspulse-dumps/%s", docker.DumpFileName(job.Name))
+		}
+	}
+
+	script := docker.BuildAutoStartScript(autoOpts)
+
+	execToUse := r.executor
+	if target.IsLocal {
+		execToUse = r.localExecutor
+	}
+
+	res, err := execToUse.Execute(ctx, target, "autostart-"+job.Name, script, consoleOut)
+	if err != nil || (res != nil && !res.Success) {
+		_, _ = fmt.Fprintf(consoleOut, "Warning: container auto-start encountered an issue: %v\n", err)
+	} else {
+		_, _ = fmt.Fprintf(consoleOut, "🚀 Container services are up and running on %s!\n", target.Name)
+	}
+}
+
