@@ -87,7 +87,7 @@ OpsPulse 发送标准 HTTP POST 请求，Header 包含：
 ### 查看所有已配置的通知渠道
 
 ```bash
-opspulse notify list
+ops notify list
 ```
 
 输出示例：
@@ -105,8 +105,8 @@ feishu-bot      webhook    always    https://open.feishu.cn/open-apis/bot/v2/hoo
 
 ```bash
 # 测试指定渠道
-opspulse notify test slack-ops
+ops notify test slack-ops
 
 # 测试全部已配置的渠道
-opspulse notify test
+ops notify test
 ```

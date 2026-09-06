@@ -75,35 +75,35 @@ backups:
 
 ### 查看配置的任务
 ```bash
-opspulse backup list
+ops backup list
 ```
 
 ### 模拟执行 (Dry Run)
 在不真实连接或运行备份的情况下，预览生成的 restic 脚本与执行动作：
 ```bash
-opspulse backup run web-data --dry-run
+ops backup run web-data --dry-run
 ```
 
 ### 执行传统声明式任务备份
 ```bash
 # 执行单个任务
-opspulse backup run web-data
+ops backup run web-data
 
 # 并发执行多个任务（例如限制最大并发数为 2）
-opspulse backup run web-data,local-configs --parallel 2
+ops backup run web-data,local-configs --parallel 2
 
 # 执行全部配置的备份任务
-opspulse backup run all
+ops backup run all
 ```
 
 ### 一键容器智能备份 (无需前置配置)
 无需提前编写 YAML，直接对目标 VPS 上的运行容器进行智能热备份：
 ```bash
 # 直接备份远端 vps-01 上的 my-app 容器与挂载数据
-opspulse backup run vps-01:my-app
+ops backup run vps-01:my-app
 
 # 备份时重命名（例如将测试容器 nginx-test 转换为规范的 nginx）
-opspulse backup run vps-01:nginx-test --as nginx
+ops backup run vps-01:nginx-test --as nginx
 ```
 > **自动处理**：
 > - 自动探测是否为 Compose 项目，非 Compose 则自动逆向反编译生成 `compose.yaml`。
@@ -114,17 +114,17 @@ opspulse backup run vps-01:nginx-test --as nginx
 ### 查看最新备份状态
 展示所有任务的最新一次备份运行时间、状态、快照 ID、新增数据量及总容量：
 ```bash
-opspulse backup status
+ops backup status
 ```
 
 ### 查看历史运行记录
 从 SQLite 数据库中调取指定任务的历次执行历史：
 ```bash
-opspulse backup history web-data --limit 10
+ops backup history web-data --limit 10
 ```
 
 ### 查询远端仓库快照
 直接连接目标仓库，列出实际存储的所有快照列表：
 ```bash
-opspulse backup snapshots web-data
+ops backup snapshots web-data
 ```

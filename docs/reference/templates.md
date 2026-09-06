@@ -45,7 +45,7 @@ npm -v
 | `name` | 字符串 | 否 | 模板唯一标识名。若未填写，默认使用去除 `.sh` 后的文件名。 |
 | `version` | 整数 | 否 | 模板版本号（默认为 `1`）。 |
 | `os` | 字符串列表 | 否 | 支持的目标操作系统列表（例如 `[ubuntu, debian]`）。 |
-| `description` | 字符串 | 否 | 模板功能简介，展示在 `opspulse template list` 中。 |
+| `description` | 字符串 | 否 | 模板功能简介，展示在 `ops template list` 中。 |
 
 ---
 
@@ -80,7 +80,7 @@ EOF
 
 运行查看命令验证自定义模板是否已被正确识别：
 ```bash
-opspulse template list
+ops template list
 ```
 
 ### 同名优先覆盖机制

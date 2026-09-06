@@ -334,7 +334,18 @@ func init() {
 	serverCmd.AddCommand(serverTestCmd)
 	serverCmd.AddCommand(serverRemoveCmd)
 
+	lsCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by key=value, tag, or name")
+
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(lsCmd)
+}
+
+var lsCmd = &cobra.Command{
+	Use:   "ls",
+	Short: "List all configured servers (shortcut for 'ops server list')",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return serverListCmd.RunE(cmd, args)
+	},
 }
 
 func completePrivateKeyPath(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {

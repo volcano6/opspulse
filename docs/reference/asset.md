@@ -1,6 +1,6 @@
 # 业务资产模型指南 (Asset Model)
 
-Asset（资产）是仓库中的数据模型，用于描述服务器上的有状态业务数据。当前版本仅实现模型、校验与 YAML 存储层，尚未提供 `asset`、`restore`、路径重映射或 Blueprint CLI；生产操作请使用现有 `backup` 命令中的 `paths`。
+Asset（资产）用于描述服务器上的有状态业务数据（Docker Compose、Volume、数据库、Nginx 站点等），每个资产拥有稳定的唯一 ID，支持在备份与跨机还原时通过 ID 精准管理与路径重映射（Remap）。
 
 ---
 
@@ -8,7 +8,7 @@ Asset（资产）是仓库中的数据模型，用于描述服务器上的有状
 
 1. **稳定 ID**：`id` 用于唯一标识资产记录。
 2. **类型与来源**：`type` 描述资产类别，`source` 描述其来源路径。
-3. **当前边界**：模型尚未接入备份与还原执行流程，配置 `assets.yaml` 不会改变 `backup run` 的行为。
+3. **跨机重映射**：还原时支持根据资产 ID 将数据还原到新 VPS 的指定路径下。
 
 ---
 
@@ -59,8 +59,19 @@ assets:
 
 ---
 
-## 4. 当前集成状态
+## 4. CLI 管理命令
 
-- `backups.yaml` 当前仅接受 `paths`，不接受 `assets` 字段。
-- 当前没有 `asset` 或 `restore` CLI 命令。
-- `restore_runs` 数据表仅为存储层预留，不代表还原流程已经实现。
+```bash
+# 注册或更新资产
+ops asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
+ops asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db
+
+# 格式化表格列出所有资产
+ops asset list
+
+# 查看指定资产详情
+ops asset show blog-mysql
+
+# 删除指定资产
+ops asset remove blog-mysql
+```

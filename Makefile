@@ -1,4 +1,4 @@
-APP_NAME    := opspulse
+APP_NAME    := ops
 VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT      := $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE        := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -10,10 +10,17 @@ LDFLAGS     := -s -w \
 GOPATH_BIN  := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)/bin
 export PATH := $(GOPATH_BIN):$(PATH)
 
-.PHONY: build test lint ci clean docker dev tools
+.PHONY: build install test lint ci clean docker dev tools
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) ./cmd/opspulse
+	@cp bin/$(APP_NAME) bin/opspulse 2>/dev/null || true
+
+install: build
+	@mkdir -p $(GOPATH_BIN)
+	@cp bin/$(APP_NAME) $(GOPATH_BIN)/$(APP_NAME)
+	@cp bin/$(APP_NAME) $(GOPATH_BIN)/opspulse 2>/dev/null || true
+	@echo "✅ Installed $(APP_NAME) to $(GOPATH_BIN)/$(APP_NAME)"
 
 test:
 	go test -race -coverprofile=coverage.out ./...

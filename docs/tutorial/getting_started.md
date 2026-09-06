@@ -14,90 +14,63 @@
 
 ## 2. 编译与安装
 
-### 方式 A：源码编译
+### 推荐方式：一键安装到用户目录
 
 ```bash
 git clone https://github.com/volcano6/opspulse.git
 cd opspulse
-make build
+make install
 
 # 验证编译产物
-./bin/opspulse version
+ops version
 ```
 
-### 方式 B：加入系统 PATH
-
-你可以将编译出的二进制文件移动到系统的 PATH 路径中，方便全局直接调用：
+`make install` 会自动将可执行文件安装到 `$(go env GOPATH)/bin` 或 `~/.local/bin`。如果你的终端找不到命令，也可以手动放入系统 PATH：
 
 ```bash
-sudo cp ./bin/opspulse /usr/local/bin/
-opspulse version
+sudo cp ./bin/ops /usr/local/bin/
+ops version
 ```
 
 ---
 
 ## 3. 配置 Shell 自动补全（强烈推荐）
 
-OpsPulse 支持全自动 Shell 补全（Tab 键自动补全子命令、标志、服务器名称、模板名称及备份任务）。
+Ops 支持全自动 Shell 补全（Tab 键自动补全子命令、标志、服务器名称、模板名称及备份任务）。
 
-### 各终端一键配置命令
+### 全自动一键安装（推荐）
 
-* **Bash（Linux / WSL / macOS）**：
-  ```bash
-  # 1. 确保安装了 Linux 补全库（Debian/Ubuntu 环境）
-  sudo apt-get install -y bash-completion
+直接在终端执行：
 
-  # 2. 写入系统级自动补全目录（全局生效）
-  opspulse completion bash | sudo tee /etc/bash_completion.d/opspulse > /dev/null
-  source /etc/bash_completion.d/opspulse
-  ```
-  *或者仅在当前用户生效（写入 `~/.bashrc`）：*
-  ```bash
-  echo 'source <(opspulse completion bash)' >> ~/.bashrc
-  source ~/.bashrc
-  ```
+```bash
+ops completion --install
+source ~/.zshrc  # 若使用 Bash 则执行 source ~/.bashrc
+```
 
-* **Zsh（Oh-My-Zsh / Starship 用户）**：
-  ```bash
-  # 写入 ~/.zshrc（永久生效）
-  echo 'source <(opspulse completion zsh 2>/dev/null)' >> ~/.zshrc
-  source ~/.zshrc
-  ```
-
-* **Fish**：
-  ```bash
-  opspulse completion fish > ~/.config/fish/completions/opspulse.fish
-  ```
-
-* **PowerShell（Windows）**：
-  ```powershell
-  # 当前会话生效
-  opspulse completion powershell | Out-String | Invoke-Expression
-
-  # 永久生效（写入 PowerShell Profile）
-  if (!(Test-Path -Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force }
-  opspulse completion powershell >> $PROFILE
-  ```
+该命令会自动探测你当前使用的 Shell（Bash / Zsh / Fish / PowerShell），并将对应的补全逻辑安全、幂等地写入用户 Profile，同时若系统 PATH 中尚未发现 `ops`，会自动将其安装至 `~/.local/bin/ops`。
 
 ### 常见踩坑排查（FAQ / Troubleshooting）
 
-* ⚠️ **注意事项 1：必须使用系统全局命令名，不能带相对路径**
-  - **现象**：敲 `./bin/opspulse <Tab>` 无法触发补全，但敲 `opspulse <Tab>` 正常。
-  - **原因**：Cobra 补全规则默认绑定的是注册在系统的 `opspulse` 命令。若使用相对路径 `./bin/opspulse`，Shell 无法识别触发。建议通过 `sudo cp bin/opspulse /usr/local/bin/` 或将 `bin/` 目录加入 `$PATH`。
+* ⚠️ **注意事项 1：按 Tab 键补全时不要带 `-h`**
+  - **现象**：敲 `ops -h <Tab>` 时，终端列出了当前目录下的所有文件。
+  - **原因**：`-h`（即 `--help`）是一个没有后续参数的布尔开关。在 `-h` 后面按下 Tab 时，补全引擎判断该选项已完结且无参数，Zsh / Bash 会自动触发兜底的文件名补全机制。
+  - **正确操作**：
+    - 想查看帮助：输入 `ops -h` 然后按 **回车 (Enter)**。
+    - 想使用自动补全：输入 `ops <Tab>`（空格后直接按 Tab），即可列出所有子命令；输入 `ops l<Tab>` 会自动补全为 `ops ls`。
 * ⚠️ **注意事项 2：重新编译新版本后需同步二进制**
-  - 新增子命令或更新后，如果未将最新二进制覆盖到 `/usr/local/bin/opspulse`，补全列表依然会显示旧版命令集。
-* ⚠️ **注意事项 3：环境降级为“文件列表”的排查**
-  - 如果按 Tab 键只列出当前目录的文件，说明当前终端未加载 `bash-completion` 主引擎，需先执行 `source /usr/share/bash-completion/bash_completion`。
+  - 新增子命令或更新后，运行 `make install` 即可同步覆盖最新二进制。
+* ⚠️ **注意事项 3：当前打开的终端未生效**
+  - 在当前打开的终端中执行一次 `rehash` 或 `source ~/.zshrc` 即可使新加入 PATH 的命令立即生效。
 
 ---
 
 ## 4. 第一步：添加并管理服务器 (Server Ops)
 
-将你的 VPS 注册进 OpsPulse 的清单库（支持设置自定义 labels 标签）：
+将你的 VPS 注册进 Ops 的清单库（支持设置自定义 labels 标签）：
 
 ```bash
 # 使用默认 SSH 私钥添加一台 VPS
-opspulse server add web-01 \
+ops server add web-01 \
   --host 198.51.100.10 \
   --user root \
   --port 22 \
@@ -106,19 +79,26 @@ opspulse server add web-01 \
   --desc "生产环境主 Web 节点"
 ```
 
+### 极速查看所有服务器清单：
+```bash
+ops ls
+# 支持按标签筛选
+ops ls --filter provider=oracle
+```
+
 ### 快速探查目标服务器硬件与系统状态：
 ```bash
-opspulse server info web-01
+ops server info web-01
 ```
 
 ### 免记密码/IP，一键建立原生交互式 SSH 终端连接：
 ```bash
-opspulse ssh web-01
+ops ssh web-01
 ```
 
 ### 测试与目标服务器的 SSH 连通性：
 ```bash
-opspulse server test web-01
+ops server test web-01
 ```
 
 输出示例：
@@ -133,10 +113,10 @@ Connecting to web-01 (198.51.100.10:22)...
 
 ## 5. 第二步：查看与发现可用模板
 
-OpsPulse 二进制中直接内置了常用的官方模板：
+Ops 二进制中直接内置了常用的官方模板：
 
 ```bash
-opspulse template list
+ops template list
 ```
 
 输出示例：
@@ -151,7 +131,7 @@ security   v1    built-in   ubuntu,debian   基础安全加固（UFW 防火墙�
 
 查看某个具体模板的脚本源码与元数据：
 ```bash
-opspulse template show docker
+ops template show docker
 ```
 
 ---
@@ -162,17 +142,17 @@ opspulse template show docker
 在向远程服务器下发指令前，可以先通过 `--dry-run` 预览执行流程与脚本大小：
 
 ```bash
-opspulse bootstrap web-01 -t base,security,docker --dry-run
+ops bootstrap web-01 -t base,security,docker --dry-run
 ```
 
 ### 正式执行初始化
 确认无误后，去掉 `--dry-run` 开始正式执行：
 
 ```bash
-opspulse bootstrap web-01 -t base,security,docker
+ops bootstrap web-01 -t base,security,docker
 ```
 
-OpsPulse 将按以下流程工作：
+Ops 将按以下流程工作：
 1. 在终端实时输出带有 `[web-01]` 标签的前缀日志。
 2. 自动在本地 `$XDG_DATA_HOME/opspulse/logs/bootstrap-web-01-<timestamp>.log` 记录全量日志。
 3. 执行完成后输出结构化的结果汇总表格。

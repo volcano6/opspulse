@@ -24,41 +24,41 @@ OpsPulse 提供基于 restic 快照的精准还原能力，支持同机还原、
 
 ```bash
 # 还原最新快照到原始服务器和路径
-opspulse restore run web-data
+ops restore run web-data
 
 # 跨机迁移：还原到新 VPS 并默认自动拉起容器（无需额外参数！）
-opspulse restore run my-app --target-server new-vps
+ops restore run my-app --target-server new-vps
 
 # 跨机迁移时改名
-opspulse restore run my-app --target-server new-vps --as clean-app
+ops restore run my-app --target-server new-vps --as clean-app
 
 # 仅恢复文件，不自动启动容器
-opspulse restore run my-app --target-server new-vps --no-start
+ops restore run my-app --target-server new-vps --no-start
 
 # 指定特定快照 ID
-opspulse restore run web-data --snapshot abc12345
+ops restore run web-data --snapshot abc12345
 
 # 跨机迁移 + 路径重映射
-opspulse restore run web-data --target-server new-vps --target-path /data/web
+ops restore run web-data --target-server new-vps --target-path /data/web
 
 # 单资产精准还原（仅恢复 blog-mysql 资产路径下的文件）
-opspulse restore run web-data --asset blog-mysql
+ops restore run web-data --asset blog-mysql
 
 # Dry-Run：预览文件列表
-opspulse restore run web-data --dry-run
+ops restore run web-data --dry-run
 ```
 
 ### 查看还原历史
 
 ```bash
 # 查看所有还原历史
-opspulse restore history
+ops restore history
 
 # 按任务名筛选
-opspulse restore history web-data
+ops restore history web-data
 
 # 限制显示条数
-opspulse restore history web-data --limit 5
+ops restore history web-data --limit 5
 ```
 
 ---
@@ -84,40 +84,40 @@ opspulse restore history web-data --limit 5
 
 ```bash
 # 查看可用快照
-opspulse backup snapshots web-data
+ops backup snapshots web-data
 
 # 还原最新快照到原始位置
-opspulse restore run web-data
+ops restore run web-data
 ```
 
 ### 场景 2：VPS 到期迁移
 
 ```bash
 # 1. 在旧机器上备份
-opspulse backup run web-data
+ops backup run web-data
 
 # 2. 在新机器上还原（跨机 + 路径重映射）
-opspulse restore run web-data --target-server new-vps --target-path /opt/web
+ops restore run web-data --target-server new-vps --target-path /opt/web
 
 # 3. 查看还原历史确认结果
-opspulse restore history web-data
+ops restore history web-data
 ```
 
 ### 场景 3：精准还原单个数据库
 
 ```bash
 # 仅还原 blog-mysql 资产的文件（不影响其他数据）
-opspulse restore run web-data --asset blog-mysql
+ops restore run web-data --asset blog-mysql
 
 # 先预览将还原哪些文件
-opspulse restore run web-data --asset blog-mysql --dry-run
+ops restore run web-data --asset blog-mysql --dry-run
 ```
 
 ---
 
 ## 5. 数据持久化
 
-每次还原操作（包括 Dry-Run）均自动记录到 SQLite 数据库中，通过 `opspulse restore history` 可查看：
+每次还原操作（包括 Dry-Run）均自动记录到 SQLite 数据库中，通过 `ops restore history` 可查看：
 
 | 字段 | 说明 |
 |:---|:---|

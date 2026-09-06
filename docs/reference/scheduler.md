@@ -71,7 +71,7 @@ backups:
 | `@every 1h30m` | 每隔 1 小时 30 分钟周期执行一次 |
 
 > [!NOTE]
-> 如果某个备份任务未配置 `schedule` 字段或留空，该任务将仅支持手动通过 `opspulse backup run <name>` 触发，不会被调度器自动执行。
+> 如果某个备份任务未配置 `schedule` 字段或留空，该任务将仅支持手动通过 `ops backup run <name>` 触发，不会被调度器自动执行。
 
 ---
 
@@ -80,7 +80,7 @@ backups:
 ### 前台运行守护进程
 
 ```bash
-opspulse daemon
+ops daemon
 ```
 
 输出示例：
@@ -96,20 +96,20 @@ opspulse daemon
 适合由系统自带的 cron 调度，或者在维护时手动执行一次全部定时任务：
 
 ```bash
-opspulse daemon --once
+ops daemon --once
 ```
 
 ---
 
 ## 4. 生产环境部署 (Systemd)
 
-在生产 VPS 或管理机上，推荐将 OpsPulse 注册为 systemd 服务长期保持后台运行：
+在生产 VPS 或管理机上，推荐将 Ops 注册为 systemd 服务长期保持后台运行：
 
-创建 `/etc/systemd/system/opspulse.service`：
+创建 `/etc/systemd/system/ops.service`：
 
 ```ini
 [Unit]
-Description=OpsPulse Automated Backup Scheduler Daemon
+Description=Ops Automated Backup Scheduler Daemon
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -118,7 +118,7 @@ Type=simple
 User=root
 # 指定执行用户与环境路径（如需自定义配置目录可注入 OPSPULSE_HOME）
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
-ExecStart=/usr/local/bin/opspulse daemon
+ExecStart=/usr/local/bin/ops daemon
 Restart=always
 RestartSec=10s
 KillMode=mixed
