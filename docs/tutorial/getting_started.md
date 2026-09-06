@@ -69,11 +69,8 @@ source ~/.zshrc  # 若使用 Bash 则执行 source ~/.bashrc
 将你的 VPS 注册进 Ops 的清单库（支持设置自定义 labels 标签）：
 
 ```bash
-# 使用默认 SSH 私钥添加一台 VPS
-ops server add web-01 \
-  --host 198.51.100.10 \
-  --user root \
-  --port 22 \
+# 极简添加 VPS（密码静默交互输入，自动引导一键注入公钥免密直连）
+ops add web-01 198.51.100.10 \
   --labels provider=oracle,region=singapore,purpose=web \
   --tags prod,web \
   --desc "生产环境主 Web 节点"
