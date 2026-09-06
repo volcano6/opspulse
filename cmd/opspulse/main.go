@@ -15,9 +15,10 @@ import (
 var debugFlag bool
 
 var rootCmd = &cobra.Command{
-	Use:   "opspulse",
-	Short: "Personal infrastructure lifecycle management",
-	Long:  "OpsPulse — Self-hosted server automation, backup orchestration, and secure operations.",
+	Use:     "ops",
+	Aliases: []string{"opspulse"},
+	Short:   "Personal infrastructure lifecycle management",
+	Long:    "Ops — Self-hosted server automation, backup orchestration, and secure operations.",
 	PersistentPreRun: func(_ *cobra.Command, _ []string) {
 		logger.Setup(debugFlag)
 	},
@@ -27,7 +28,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(_ *cobra.Command, _ []string) {
-		fmt.Printf("opspulse %s (commit: %s, built: %s)\n",
+		fmt.Printf("ops %s (commit: %s, built: %s)\n",
 			version.Version, version.Commit, version.Date)
 	},
 }

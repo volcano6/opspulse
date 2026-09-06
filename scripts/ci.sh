@@ -43,8 +43,9 @@ echo "  -> Unit tests: PASSED"
 
 echo ""
 echo "[4/4] Building binary (CGO_ENABLED=0)..."
-CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/opspulse ./cmd/opspulse
-./bin/opspulse version
+CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/ops ./cmd/opspulse
+cp bin/ops bin/opspulse 2>/dev/null || true
+./bin/ops version
 echo "  -> Build: PASSED"
 
 echo ""

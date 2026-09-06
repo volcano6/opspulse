@@ -25,13 +25,13 @@
 
 - **🚀 服务器清单与标签管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持键值 Labels、标签、SSH 密钥认证、密码备选与自定义端口，支持 `--filter` 快速筛选。
 - **🔍 Agentless 系统与硬件探测**：内置 `server info` 命令，单次 SSH 聚合采集 OS、Kernel、CPU 规格、内存/Swap 已用量、磁盘空间、开机时长、Docker 容器统计与 BBR 启用状态。
-- **⚡ 原生交互式 SSH 直连**：`opspulse ssh <name>` 免记 IP/端口/密钥，自动桥接密码认证与原生密钥直连，100% 支持 vim/tmux/htop/resize。
-- **🔑 自动化密钥配对注入**：`opspulse server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成。
+- **⚡ 原生交互式 SSH 直连**：`ops ssh <name>` 免记 IP/端口/密钥，自动桥接密码认证与原生密钥直连，100% 支持 vim/tmux/htop/resize。
+- **🔑 自动化密钥配对注入**：`ops server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成。
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
-- **🐳 容器智能备份与跨机快起**：无需预先编写 YAML，直接 `opspulse backup run <server>:<container> [--as <name>]`。野生容器自动逆向转译为标准 `compose.yaml`，MySQL/PostgreSQL 自动执行容器内在途热 Dump 与 gzip 即时压缩，跨机还原 `opspulse restore run <name> --target-server <vps>` 默认自动自适应拉起容器并自动灌库。
-- **⏰ 定时调度与自动化守护**：支持标准 Cron 表达式（`@daily`、`@hourly` 等），内置防重叠并发保护与优雅退出，通过 `opspulse daemon` 长期驻留或 `--once` 单次批量触发。
+- **🐳 容器智能备份与跨机快起**：无需预先编写 YAML，直接 `ops backup run <server>:<container> [--as <name>]`。野生容器自动逆向转译为标准 `compose.yaml`，MySQL/PostgreSQL 自动执行容器内在途热 Dump 与 gzip 即时压缩，跨机还原 `ops restore run <name> --target-server <vps>` 默认自动自适应拉起容器并自动灌库。
+- **⏰ 定时调度与自动化守护**：支持标准 Cron 表达式（`@daily`、`@hourly` 等），内置防重叠并发保护与优雅退出，通过 `ops daemon` 长期驻留或 `--once` 单次批量触发。
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
@@ -41,139 +41,147 @@
 
 ## 🚀 快速上手
 
-### 1. 编译安装
+### 1. 编译安装与自动补全
 
 ```bash
 git clone https://github.com/volcano6/opspulse.git
 cd opspulse
-make build
+make install
+
+# 一键将补全脚本注入当前 Shell profile（支持 Bash / Zsh / Fish / PowerShell）
+ops completion --install
+source ~/.zshrc  # 或 source ~/.bashrc
 
 # 验证安装
-./bin/opspulse version
+ops version
 ```
 
 ### 2. 添加并管理服务器 (Server Ops)
 
 ```bash
 # 注册一台 VPS（支持指定 labels 键值对，默认自动扫描 ~/.ssh/id_ed25519 或 ~/.ssh/id_rsa）
-./bin/opspulse server add oracle-sg --host 168.138.1.1 --user ubuntu --labels provider=oracle,region=sg --tags prod,web --desc "主 Web 节点"
+ops server add oracle-sg --host 168.138.1.1 --user ubuntu --labels provider=oracle,region=sg --tags prod,web --desc "主 Web 节点"
 
-# 查看当前已配置的服务器列表（支持按 label 或 tag 过滤）
-./bin/opspulse server list --filter provider=oracle
+# 查看当前已配置的服务器列表（支持极简别名 ops ls，支持按 label 或 tag 过滤）
+ops ls --filter provider=oracle
 
 # 快速探查目标服务器的系统、硬件规格与 Docker 状态
-./bin/opspulse server info oracle-sg
+ops server info oracle-sg
 
 # 使用已配置的密码自动认证并进入终端；绑定私钥时仅使用该密钥
-./bin/opspulse ssh oracle-sg
+ops ssh oracle-sg
 
 # 将本地生成的专用密钥追加到远端 authorized_keys，并写回 key_path
 # 远端密码及密码登录配置保持不变
-./bin/opspulse server setup-key oracle-sg
+ops server setup-key oracle-sg
 
-# 远程执行单条命令（实时流式输出）
-./bin/opspulse exec oracle-sg "docker ps"
+# 远程执行单条命令（实时流式输出，支持免引号参数透传）
+ops exec oracle-sg docker ps
 
-# 通过 SFTP 极速上传/下载配置文件
-./bin/opspulse upload oracle-sg ./nginx.conf /etc/nginx/nginx.conf
-./bin/opspulse download oracle-sg /var/log/nginx/error.log ./error.log
+# 通过 SFTP 统一双向快速传输文件或目录
+ops cp ./nginx.conf oracle-sg:/etc/nginx/nginx.conf
+ops cp oracle-sg:/var/log/nginx/error.log ./error.log
+ops cp -r ./configs oracle-sg:/opt/app/configs
 
 # 测试 SSH 连通性与网络延迟
-./bin/opspulse server test oracle-sg
+ops server test oracle-sg
 ```
 
 ### 3. 查看可用模板并初始化服务器 (Bootstrap)
 
 ```bash
 # 查看所有可用脚本模板
-./bin/opspulse template list
+ops template list
 
 # 模拟执行（Dry Run）：仅打印执行计划与脚本信息，不建立真实连接
-./bin/opspulse bootstrap oracle-sg -t base,security,docker --dry-run
+ops bootstrap oracle-sg -t base,security,docker --dry-run
 
 # 正式执行初始化（支持按 Tab 自动补全服务器与 -t 模板列表）
-./bin/opspulse bootstrap oracle-sg -t base,security,docker
+ops bootstrap oracle-sg -t base,security,docker
 ```
 
 ### 4. 统一备份管理 (Backup)
 
 ```bash
 # 查看已配置的备份任务
-./bin/opspulse backup list
+ops backup list
 
 # 模拟备份执行（支持按 Tab 自动补全任务名或 all）
-./bin/opspulse backup run web-data --dry-run
+ops backup run web-data --dry-run
 
 # 执行备份（支持指定单/多任务或 all 全部执行，支持并发数设置）
-./bin/opspulse backup run all --parallel 2
+ops backup run all --parallel 2
+
+# 一键备份野生容器（自动逆向转译 Compose 与数据库热导）
+ops backup run oracle-sg:my-nginx --as web-nginx
 
 # 查看所有备份任务的最新一次执行状态与指标
-./bin/opspulse backup status
+ops backup status
 
 # 查看特定任务的历史执行记录（支持按 Tab 自动补全任务名）
-./bin/opspulse backup history web-data
+ops backup history web-data
 
 # 查询远端 restic 仓库中的实际快照列表
-./bin/opspulse backup snapshots web-data
+ops backup snapshots web-data
 ```
 
 ### 5. 业务资产管理 (Asset)
 
 ```bash
 # 注册业务资产（Docker Compose 项目、数据库、Nginx 配置等）
-./bin/opspulse asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
-./bin/opspulse asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db
+ops asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
+ops asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db
 
 # 查看所有已配置的资产
-./bin/opspulse asset list
+ops asset list
 
 # 查看资产详情
-./bin/opspulse asset show blog-mysql
+ops asset show blog-mysql
 
 # 删除资产
-./bin/opspulse asset remove blog-mysql
+ops asset remove blog-mysql
 ```
 
 ### 6. 精准还原与跨机迁移 (Restore)
 
 ```bash
 # 全量还原最新快照到原始服务器
-./bin/opspulse restore run web-data
+ops restore run web-data
 
 # 精准还原单个资产
-./bin/opspulse restore run web-data --asset blog-mysql
+ops restore run web-data --asset blog-mysql
 
-# 跨机迁移（还原到新 VPS，支持路径重映射）
-./bin/opspulse restore run web-data --target-server new-vps --target-path /data/web
+# 跨机迁移（还原到新 VPS，默认自动自适应拉起容器并灌库）
+ops restore run web-data --target-server new-vps --target-path /data/web
 
 # Dry-Run 预览将还原的文件列表
-./bin/opspulse restore run web-data --dry-run
+ops restore run web-data --dry-run
 
 # 查看还原历史
-./bin/opspulse restore history web-data
+ops restore history web-data
 ```
 
 ### 7. 定时调度与自动化守护 (Scheduler)
 
 ```bash
 # 启动调度守护进程（前台运行，按 backups.yaml 中的 schedule 自动执行备份并触发告警）
-./bin/opspulse daemon
+ops daemon
 
 # 单次按序执行全部已调度任务后退出（适配外部 crontab 或 systemd timer）
-./bin/opspulse daemon --once
+ops daemon --once
 ```
 
 ### 8. 告警通知与连通性自测 (Notifications)
 
 ```bash
 # 查看所有已配置的通知渠道
-./bin/opspulse notify list
+ops notify list
 
 # 发送测试消息验证指定 Webhook 渠道的连通性
-./bin/opspulse notify test slack-ops
+ops notify test slack-ops
 
 # 验证所有配置渠道
-./bin/opspulse notify test
+ops notify test
 ```
 
 ---
@@ -198,37 +206,37 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 
 | 命令 | 说明 |
 |------|------|
-| `opspulse server add <name> --host <ip> [--labels k=v]` | 向清单中添加或更新服务器配置 |
-| `opspulse server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器（支持标签筛选） |
-| `opspulse server set <name> [--host] [--port] [--key]` | 增量修改已有服务器配置字段 |
-| `opspulse server edit <name>` | 用本地编辑器安全打开并编辑服务器配置 |
-| `opspulse server setup-key <name>` | 自动为指定服务器生成并安装专用 SSH 密钥对 |
-| `opspulse server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
-| `opspulse server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
-| `opspulse server remove <name>` | 从清单中删除指定服务器 |
-| `opspulse ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
-| `opspulse exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码 |
-| `opspulse upload <name> <src> <dst> [-r]` | 通过 SFTP 将本地文件或目录递归上传至远程服务器 |
-| `opspulse download <name> <src> <dst> [-r]` | 通过 SFTP 将远程文件或目录递归下载至本地 |
-| `opspulse template list` | 列出所有内置及自定义脚本模板 |
-| `opspulse template show <name>` | 查看指定模板的元数据与完整脚本内容 |
-| `opspulse bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
-| `opspulse backup list` | 列出所有配置的备份任务 |
-| `opspulse backup run <jobs... \| all \| srv:ctr> [--as name]` | 执行备份任务或一键智能备份容器 |
-| `opspulse backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
-| `opspulse backup history <job-name>` | 查看指定任务的详细历史执行记录 |
-| `opspulse backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
-| `opspulse asset add <id> --type <type> --source <path>` | 注册或更新有状态业务资产 |
-| `opspulse asset list` | 格式化表格列出所有已配置的资产 |
-| `opspulse asset show <id>` | 查看指定资产的详细配置信息 |
-| `opspulse asset remove <id>` | 从配置中删除指定资产 |
-| `opspulse restore run <job> [--target-server vps] [--as name] [--no-start]` | 从快照执行还原（默认自动跨机拉起容器并灌库） |
-| `opspulse restore history [job-name]` | 查看还原操作的历史执行记录 |
-| `opspulse daemon [--once]` | 运行定时调度守护进程自动执行备份（支持单次批量模式） |
-| `opspulse notify list` | 查看所有配置的 Webhook 告警渠道 |
-| `opspulse notify test [channel-name]` | 发送测试事件验证通知渠道的连通性 |
-| `opspulse completion <bash\|zsh\|fish\|powershell>` | 生成指定 Shell 的自动补全脚本 |
-| `opspulse version` | 输出当前版本号、Git Commit Hash 与构建日期 |
+| `ops ls [--filter <key=val>]` | 极速查看所有已配置服务器（`ops server list` 顶级直达，支持标签筛选） |
+| `ops cp <src> <dst> [-r]` | 统一双向 SFTP 文件/目录传输（智能识别 `[server:]path` 远程前缀） |
+| `ops server add <name> --host <ip> [--labels k=v]` | 向清单中添加或更新服务器配置 |
+| `ops server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器 |
+| `ops server set <name> [--host] [--port] [--key]` | 增量修改已有服务器配置字段 |
+| `ops server edit <name>` | 用本地编辑器安全打开并编辑服务器配置 |
+| `ops server setup-key <name>` | 自动为指定服务器生成并安装专用 SSH 密钥对 |
+| `ops server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
+| `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
+| `ops server remove <name>` | 从清单中删除指定服务器 |
+| `ops ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
+| `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传） |
+| `ops template list` | 列出所有内置及自定义脚本模板 |
+| `ops template show <name>` | 查看指定模板的元数据与完整脚本内容 |
+| `ops bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
+| `ops backup list` | 列出所有配置的备份任务 |
+| `ops backup run <jobs... \| all \| srv:ctr> [--as name]` | 执行备份任务或一键智能备份容器 |
+| `ops backup status` | 表格化展示所有任务的最新备份状态与数据指标 |
+| `ops backup history <job-name>` | 查看指定任务的详细历史执行记录 |
+| `ops backup snapshots <job-name>` | 查询并列出远端仓库实际存储的快照列表 |
+| `ops asset add <id> --type <type> --source <path>` | 注册或更新有状态业务资产 |
+| `ops asset list` | 格式化表格列出所有已配置的资产 |
+| `ops asset show <id>` | 查看指定资产的详细配置信息 |
+| `ops asset remove <id>` | 从配置中删除指定资产 |
+| `ops restore run <job> [--target-server vps] [--as name] [--no-start]` | 从快照执行还原（默认自动跨机拉起容器并灌库） |
+| `ops restore history [job-name]` | 查看还原操作的历史执行记录 |
+| `ops daemon [--once]` | 运行定时调度守护进程自动执行备份（支持单次批量模式） |
+| `ops notify list` | 查看所有配置的 Webhook 告警渠道 |
+| `ops notify test [channel-name]` | 发送测试事件验证通知渠道的连通性 |
+| `ops completion [shell] [--install]` | 生成自动补全脚本或一键自动安装至 Shell Profile |
+| `ops version` | 输出当前版本号、Git Commit Hash 与构建日期 |
 
 ---
 
