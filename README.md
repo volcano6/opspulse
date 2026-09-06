@@ -59,8 +59,8 @@ ops version
 ### 2. 添加并管理服务器 (Server Ops)
 
 ```bash
-# 注册一台 VPS（支持指定 labels 键值对，默认自动扫描 ~/.ssh/id_ed25519 或 ~/.ssh/id_rsa）
-ops server add oracle-sg --host 168.138.1.1 --user ubuntu --labels provider=oracle,region=sg --tags prod,web --desc "主 Web 节点"
+# 注册一台 VPS（极简语法：ops add <name> [user@]host[:port]，缺省密码静默交互输入，连通后可一键注入公钥免密直连）
+ops add oracle-sg ubuntu@168.138.1.1 --labels provider=oracle,region=sg --tags prod,web --desc "主 Web 节点"
 
 # 查看当前已配置的服务器列表（支持极简别名 ops ls，支持按 label 或 tag 过滤）
 ops ls --filter provider=oracle
@@ -208,7 +208,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 |------|------|
 | `ops ls [--filter <key=val>]` | 极速查看所有已配置服务器（`ops server list` 顶级直达，支持标签筛选） |
 | `ops cp <src> <dst> [-r]` | 统一双向 SFTP 文件/目录传输（智能识别 `[server:]path` 远程前缀） |
-| `ops server add <name> --host <ip> [--labels k=v]` | 向清单中添加或更新服务器配置 |
+| `ops add <name> [target] [-i key]` | 向清单中添加或更新服务器（支持 `[user@]host[:port]`，缺省静默交互输入密码并引导注入公钥） |
 | `ops server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器 |
 | `ops server set <name> [--host] [--port] [--key]` | 增量修改已有服务器配置字段 |
 | `ops server edit <name>` | 用本地编辑器安全打开并编辑服务器配置 |

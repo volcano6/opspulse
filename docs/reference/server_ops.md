@@ -6,24 +6,31 @@ Ops 不仅是一键初始化与灾备迁移平台，更是日常高效管理多�
 
 ## 1. 服务器列表与标签检索
 
-### 添加带 Labels 的服务器
+### 极简添加服务器 (`ops add`)
+
+支持极简位置参数语法：`ops add <name> [user@]host[:port] [flags]`。省略 `user` 默认为 `root`，省略 `port` 默认为 `22`。
 
 ```bash
-# 添加一台 Oracle 新加坡实例，附带 provider、region 与用途标签
-ops server add oracle-sg \
-  --host 168.138.1.1 \
-  --user ubuntu \
-  --key ~/Downloads/oracle.pem \
+# 1. 极简添加（密码安全交互输入，连通后可交互式一键注入公钥免密直连）
+ops add vps-1 168.138.1.1
+
+# 2. 指定自定义用户、端口与私钥
+ops add oracle-sg ubuntu@168.138.1.1:2222 \
+  -i ~/Downloads/oracle.pem \
   --labels provider=oracle,region=singapore,purpose=blog \
   --tags prod,web \
   --desc "生产环境博客主节点"
+
+# 3. 亦可使用传统全 flag 形式（兼容 ops server add）
+ops server add oracle-sg --host 168.138.1.1 --user ubuntu -i ~/.ssh/id_ed25519
 ```
 
-> 🛡️ **私钥安全与自动连通性验证闭环**：
-> - **位置检测与自动迁移**：当 `--key <path>` 指向 `~/.ssh/` 之外的目录（例如 `~/Downloads/` 或临时目录）时，Ops 会交互式询问是否将密钥复制到 `~/.ssh/opspulse_<server_name>.pem` 并自动设置为 `0600` 权限（可用 `--no-copy-key` 跳过复制）。
-> - **前置格式强校验**：自动校验文件内容是否为有效 SSH 私钥，拦截误选 `.pub` 公钥或非密钥文件。
-> - **即时连通性验证与失败回滚**：`server add` 默认自动测试 SSH 连通性。若认证失败（如密钥选错），**会自动删除刚刚复制到 `~/.ssh/` 的失效私钥，且不保存错误服务器**，杜绝垃圾文件残留（离线服务器可通过 `--skip-test` 跳过验证）。
-> - **生命周期自动清理**：通过 `server remove <name>` 删除服务器或 `server set <name> --key ...` 更换密钥时，自动清理 `~/.ssh/` 中对应的托管私钥文件。
+> 🛡️ **密码静默输入与公钥免密直连引导**：
+> - **静默密码交互**：未提供 `-i` 私钥时，终端会提示输入 SSH 密码，输入过程静默隐藏不回显，绝不留在 Shell 历史记录中。
+> - **公钥一键注入**：首次密码连通成功后，Ops 会检测本地通用公钥（如 `~/.ssh/id_ed25519.pub` 或 `~/.ssh/id_rsa.pub`，若无则自动生成专用密钥），并询问是否注入远端 VPS 的 `~/.ssh/authorized_keys`。注入成功并验证通过后，本地自动升级为密钥直连认证，且清空本地密码明文存储，兼顾极速与安全。
+> - **私钥安全位置迁移**：当 `-i <path>` 指向 `~/.ssh/` 之外的目录（例如 `~/Downloads/` 或临时目录）时，Ops 会交互式询问是否将密钥复制到 `~/.ssh/opspulse_<server_name>.pem` 并自动设置为 `0600` 权限（可用 `--no-copy-key` 跳过复制）。
+> - **即时连通性验证与失败回滚**：`ops add` 默认自动测试 SSH 连通性。若认证失败，会自动清理复制的临时私钥且不保存错误服务器（离线服务器可通过 `--skip-test` 跳过验证）。
+> - **生命周期自动清理**：通过 `ops server remove <name>` 删除服务器或更换密钥时，自动清理 `~/.ssh/` 中对应的托管私钥文件。
 
 ### 增量更新与交互编辑
 
