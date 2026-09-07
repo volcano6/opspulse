@@ -105,25 +105,47 @@ ops server info oracle-sg
 
 ---
 
-## 3. 交互式原生 SSH 直连 (`ssh`)
+## 3. 交互式原生 SSH 直连 (`ssh`) 与 VS Code 联动 (`export ssh-config`)
 
-无需记忆服务器地址、端口、密码或私钥，直接通过服务器名称进入终端：
+无需记忆服务器地址、端口、密码或私钥，Ops 提供极简的终端直连与开发工具链打通能力：
+
+### 终端极速交互秒连 (`ops ssh`)
 
 ```bash
-# 1. 一键交互式登录；配置 password 时自动认证，不再二次询问
+# 1. 无参数直连：弹出清晰选择菜单，回车默认连第 1 台，或输入序号/名称直连（单机时直接免选直连）
+ops ssh
+
+# 2. 指定名称直达会话；配置 password 时自动认证，无需二次输入
 ops ssh oracle-sg
 
-# 2. 将密码认证转换为专用密钥认证
+# 3. 将密码认证一键转换为专用密钥认证
 ops server setup-key oracle-sg
 
-# 3. 透传原生 SSH 客户端选项（使用 -- 分隔）
+# 4. 透传原生 SSH 客户端选项（使用 -- 分隔）
 ops ssh oracle-sg -- -o StrictHostKeyChecking=no
 
-# 4. 远程快速启动特定命令或 tmux
+# 5. 远程快速启动特定命令或 tmux
 ops ssh oracle-sg -- tmux attach
 ```
 
-`setup-key` 会生成 `~/.ssh/opspulse_<服务器名>`，使用清单中的密码将公钥幂等追加到远端 `~/.ssh/authorized_keys`，成功后将私钥路径写回 `servers.yaml`。它不会修改或删除远端密码，也不会关闭远端密码登录。
+### 一键打通 VS Code / Cursor / 系统终端 (`ops export ssh-config`)
+
+将 Ops 清单中的所有服务器一键渲染并幂等写入系统 `~/.ssh/config`，自动创建 Ops 受控区块，**绝不影响用户原有的其他 Host 配置**：
+
+```bash
+# 1. 打印生成的 OpenSSH 配置预览
+ops export ssh-config
+
+# 2. 幂等写入 ~/.ssh/config
+ops export ssh-config --write
+
+# 3. 筛选指定标签或环境的服务器导出
+ops export ssh-config --write --filter env=prod
+```
+
+执行 `--write` 后：
+- **VS Code / Cursor Remote-SSH**：左侧“远程资源管理器”自动感知所有 VPS，点击即免密秒连开发！
+- **原生系统终端**：直接输入 `ssh oracle-sg` 原生秒连，无需再手动配置 `~/.ssh/config`。
 
 绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
 

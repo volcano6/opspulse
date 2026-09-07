@@ -188,7 +188,7 @@ func TestFindDefaultPublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = os.WriteFile(filepath.Join(sshDir, "id_ed25519"), []byte("privkey"), 0o600)
-	_ = os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), []byte("pubkey"), 0o644)
+	_ = os.WriteFile(filepath.Join(sshDir, "id_ed25519.pub"), []byte("pubkey"), 0o600)
 
 	pub, priv, exists = findDefaultPublicKey()
 	if !exists || pub != "~/.ssh/id_ed25519.pub" || priv != "~/.ssh/id_ed25519" {

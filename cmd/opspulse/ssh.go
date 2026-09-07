@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,16 +18,34 @@ import (
 )
 
 var sshCmd = &cobra.Command{
-	Use:   "ssh <name> [flags] [-- <ssh_args...>]",
+	Use:   "ssh [name] [flags] [-- <ssh_args...>]",
 	Short: "Establish an interactive SSH terminal session to a server",
 	Long: `Directly opens a native interactive SSH session to the specified server.
-Reads connection parameters (host, port, user, key_path) automatically from servers.yaml.`,
-	Args: cobra.MinimumNArgs(1),
+Reads connection parameters (host, port, user, key_path) automatically from servers.yaml.
+
+If no server name is provided, an interactive menu allows selecting a server to connect.`,
+	Args: cobra.ArbitraryArgs,
 	RunE: func(_ *cobra.Command, args []string) error {
-		serverName := args[0]
-		extraArgs := args[1:]
+		var serverName string
+		var extraArgs []string
 
 		store := server.NewDefaultStore()
+
+		if len(args) == 0 {
+			servers, err := store.List()
+			if err != nil {
+				return err
+			}
+			selected, err := selectServerInteractively(os.Stdin, os.Stdout, servers)
+			if err != nil {
+				return err
+			}
+			serverName = selected.Name
+		} else {
+			serverName = args[0]
+			extraArgs = args[1:]
+		}
+
 		srv, err := store.Get(serverName)
 		if err != nil {
 			return err
@@ -44,6 +64,77 @@ Reads connection parameters (host, port, user, key_path) automatically from serv
 		}
 		return runInteractiveSSH(sshPath, sshArgs)
 	},
+}
+
+func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Server) (*server.Server, error) {
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("no servers configured. Add one using 'ops add <name> <host>'")
+	}
+
+	if len(servers) == 1 {
+		if out != nil {
+			_, _ = fmt.Fprintf(out, "--> Only 1 server configured: connecting to %q (%s)...\n", servers[0].Name, servers[0].Address())
+		}
+		return &servers[0], nil
+	}
+
+	if out != nil {
+		_, _ = fmt.Fprintln(out, "📋 Select a server to connect:")
+		for i, s := range servers {
+			var details []string
+			details = append(details, s.Address())
+			user := s.User
+			if user == "" {
+				user = "root"
+			}
+			details = append(details, user)
+			if len(s.Tags) > 0 {
+				details = append(details, fmt.Sprintf("[%s]", strings.Join(s.Tags, ",")))
+			}
+			if s.Description != "" {
+				details = append(details, fmt.Sprintf("- %s", s.Description))
+			}
+			_, _ = fmt.Fprintf(out, "  [%d] %-14s %s\n", i+1, s.Name, strings.Join(details, " "))
+		}
+		_, _ = fmt.Fprintf(out, "Enter number [1-%d] or name (or 'q' to cancel) [1]: ", len(servers))
+	}
+
+	scanner := bufio.NewScanner(in)
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no input provided; connection canceled")
+	}
+
+	choice := strings.TrimSpace(scanner.Text())
+	if strings.EqualFold(choice, "q") || strings.EqualFold(choice, "quit") {
+		return nil, fmt.Errorf("connection canceled by user")
+	}
+
+	// Default to 1 on empty Enter
+	if choice == "" {
+		return &servers[0], nil
+	}
+
+	// Try numeric choice
+	if num, err := strconv.Atoi(choice); err == nil {
+		if num >= 1 && num <= len(servers) {
+			return &servers[num-1], nil
+		}
+		return nil, fmt.Errorf("invalid server number %d (choose 1-%d)", num, len(servers))
+	}
+
+	// Try matching server name or prefix
+	for _, s := range servers {
+		if strings.EqualFold(s.Name, choice) {
+			return &s, nil
+		}
+	}
+	for _, s := range servers {
+		if strings.HasPrefix(strings.ToLower(s.Name), strings.ToLower(choice)) {
+			return &s, nil
+		}
+	}
+
+	return nil, fmt.Errorf("server %q not found in inventory", choice)
 }
 
 func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string {
