@@ -90,8 +90,11 @@ func TestSFTPCmd_CustomExecutableSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockApp := filepath.Join(tmpDir, "mock-sftp")
 	// Write a dummy script that exits 0
-	if err := os.WriteFile(mockApp, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(mockApp, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
 		t.Fatalf("failed to create mock app: %v", err)
+	}
+	if err := os.Chmod(mockApp, 0o700); err != nil { // #nosec G302
+		t.Fatalf("failed to chmod mock app: %v", err)
 	}
 
 	sftpApp = ""
