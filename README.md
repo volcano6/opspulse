@@ -83,6 +83,11 @@ ops exec oracle-sg docker ps
 
 # 通过 SFTP 统一双向快速传输文件或目录
 ops cp ./nginx.conf oracle-sg:/etc/nginx/nginx.conf
+
+# 自动唤起本地外部 GUI SFTP 客户端（自动检测 WinSCP / Xftp / FileZilla / Cyberduck）
+ops sftp oracle-sg
+# 亦可指定客户端或特定目录
+ops sftp oracle-sg --app xftp --path /var/log
 ops cp oracle-sg:/var/log/nginx/error.log ./error.log
 ops cp -r ./configs oracle-sg:/opt/app/configs
 
@@ -220,6 +225,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `ops server remove <name>` | 从清单中删除指定服务器 |
 | `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
+| `ops sftp [server] [--app <app>] [--path <path>] [--cli]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
 | `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
 | `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传） |
 | `ops template list` | 列出所有内置及自定义脚本模板 |

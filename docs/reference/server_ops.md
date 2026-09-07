@@ -198,3 +198,44 @@ ops cp oracle-sg:/var/log/nginx/error.log ./error.log
 # 2. 递归目录下载到本地
 ops cp -r oracle-sg:/var/data/ghost/ ./ghost-backup/
 ```
+
+---
+
+## 6. 外部 GUI SFTP 客户端快捷唤起 (`sftp`)
+
+`ops sftp` 自动检测并唤起本机已安装的图形化 SFTP 客户端，自动装配主机的网络地址、端口、用户与私钥/密码凭证。
+
+GUI 客户端以异步独立进程拉起，终端立即返回可用。
+
+### 支持的客户端列表
+
+| 操作系统 | 支持的 GUI 客户端 | 默认检测优先级 |
+|---------|------------------|----------------|
+| **Windows** | WinSCP、NetSarang Xftp (7/8)、FileZilla | PATH -> WinSCP -> Xftp -> FileZilla |
+| **macOS** | Cyberduck、Panic Transmit、FileZilla | Cyberduck -> FileZilla -> Transmit |
+| **Linux** | FileZilla、Nautilus (GNOME Files)、Dolphin、xdg-open | FileZilla -> Nautilus -> xdg-open |
+
+### 常见用法
+
+```bash
+# 1. 查看本机检测到的所有可用 SFTP 客户端
+ops sftp --list-apps
+
+# 2. 自动唤起默认客户端连接指定服务器
+ops sftp oracle-sg
+
+# 3. 无参执行：弹出交互式菜单秒选服务器
+ops sftp
+
+# 4. 指定特定客户端（如 xftp 或 winscp 或绝对路径）
+ops sftp oracle-sg --app xftp
+ops sftp oracle-sg --app winscp
+ops sftp oracle-sg --app "C:\custom\path\client.exe"
+
+# 5. 指定打开的远端初始路径（默认为 /）
+ops sftp oracle-sg --path /var/log/nginx
+
+# 6. 使用终端原生 OpenSSH sftp 会话（非 GUI 模式）
+ops sftp oracle-sg --cli
+```
+
