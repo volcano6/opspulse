@@ -90,7 +90,17 @@ ops server info web-01
 
 ### 免记密码/IP，一键建立原生交互式 SSH 终端连接：
 ```bash
+# 无参数执行弹出交互式菜单，回车默认连第 1 台
+ops ssh
+
+# 或指定服务器名称秒连
 ops ssh web-01
+```
+
+### 一键打通 VS Code / Cursor Remote-SSH 开发：
+```bash
+# 幂等写入 ~/.ssh/config，编辑器左侧即刻显示全部 VPS，点击免密直连
+ops export ssh-config --write
 ```
 
 ### 测试与目标服务器的 SSH 连通性：

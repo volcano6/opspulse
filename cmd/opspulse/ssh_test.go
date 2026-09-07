@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/volcano6/opspulse/internal/server"
@@ -122,5 +123,54 @@ func TestReadSSHAskpassPasswordPreservesBytes(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("readSSHAskpassPassword() = %q, want %q", got, want)
+	}
+}
+
+func TestSelectServerInteractively(t *testing.T) {
+	servers := []server.Server{
+		{Name: "web-prod", Host: "10.0.0.1", User: "root", Tags: []string{"prod"}, Description: "Web server"},
+		{Name: "db-prod", Host: "10.0.0.2", User: "postgres", Description: "Database server"},
+	}
+
+	// 1. Single server connects directly
+	single := []server.Server{servers[0]}
+	got, err := selectServerInteractively(nil, nil, single)
+	if err != nil || got.Name != "web-prod" {
+		t.Fatalf("single server auto-select failed: %v", err)
+	}
+
+	// 2. Empty Enter selects default [1]
+	inEnter := strings.NewReader("\n")
+	got, err = selectServerInteractively(inEnter, nil, servers)
+	if err != nil || got.Name != "web-prod" {
+		t.Fatalf("empty enter select failed: %v", err)
+	}
+
+	// 3. Numeric choice "2"
+	inTwo := strings.NewReader("2\n")
+	got, err = selectServerInteractively(inTwo, nil, servers)
+	if err != nil || got.Name != "db-prod" {
+		t.Fatalf("numeric choice 2 select failed: %v", err)
+	}
+
+	// 4. Name prefix choice "db"
+	inPrefix := strings.NewReader("db\n")
+	got, err = selectServerInteractively(inPrefix, nil, servers)
+	if err != nil || got.Name != "db-prod" {
+		t.Fatalf("name prefix choice select failed: %v", err)
+	}
+
+	// 5. Cancel "q"
+	inCancel := strings.NewReader("q\n")
+	_, err = selectServerInteractively(inCancel, nil, servers)
+	if err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("expected cancel error, got: %v", err)
+	}
+
+	// 6. Invalid choice
+	inInvalid := strings.NewReader("99\n")
+	_, err = selectServerInteractively(inInvalid, nil, servers)
+	if err == nil || !strings.Contains(err.Error(), "invalid server number") {
+		t.Fatalf("expected invalid error, got: %v", err)
 	}
 }

@@ -201,7 +201,12 @@ func ensureBinaryInPath(home string) {
 	if err != nil {
 		return
 	}
-	if err := os.WriteFile(targetExe, data, 0o755); err == nil { // #nosec G703,G304,G306 -- install executable binary to user PATH
+	// #nosec G703
+	if err := os.WriteFile(targetExe, data, 0o600); err != nil {
+		return
+	}
+	// #nosec G302
+	if err := os.Chmod(targetExe, 0o755); err == nil {
 		fmt.Printf("✅ Automatically installed 'ops' binary to %s (user PATH)\n", targetExe)
 	}
 }

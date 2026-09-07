@@ -68,8 +68,11 @@ ops ls --filter provider=oracle
 # 快速探查目标服务器的系统、硬件规格与 Docker 状态
 ops server info oracle-sg
 
-# 使用已配置的密码自动认证并进入终端；绑定私钥时仅使用该密钥
+# 终端极速直连（无参执行 ops ssh 弹出交互菜单直选；亦可指定服务器名直接进入）
 ops ssh oracle-sg
+
+# 一键导出并幂等写入 ~/.ssh/config（打通 VS Code Remote-SSH / Cursor / 系统原生 ssh）
+ops export ssh-config --write
 
 # 将本地生成的专用密钥追加到远端 authorized_keys，并写回 key_path
 # 远端密码及密码登录配置保持不变
@@ -216,7 +219,8 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
 | `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `ops server remove <name>` | 从清单中删除指定服务器 |
-| `ops ssh <name> [-- <args...>]` | 建立原生交互式 SSH 终端直连会话（支持参数透传） |
+| `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
+| `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
 | `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传） |
 | `ops template list` | 列出所有内置及自定义脚本模板 |
 | `ops template show <name>` | 查看指定模板的元数据与完整脚本内容 |
