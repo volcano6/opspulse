@@ -45,6 +45,7 @@ echo ""
 echo "[4/4] Building binary (CGO_ENABLED=0)..."
 CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/ops ./cmd/opspulse
 cp bin/ops bin/opspulse 2>/dev/null || true
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/ops.exe ./cmd/opspulse
 ./bin/ops version
 echo "  -> Build: PASSED"
 

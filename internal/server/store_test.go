@@ -132,6 +132,9 @@ func TestServer_LabelsAndFilter(t *testing.T) {
 	if !srv.MatchFilter("") {
 		t.Error("expected empty filter to match")
 	}
+	if !srv.MatchFilter("all") || !srv.MatchFilter("ALL") {
+		t.Error("expected 'all' filter to match")
+	}
 	if !srv.MatchFilter("provider=oracle") {
 		t.Error("expected provider=oracle to match")
 	}

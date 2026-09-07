@@ -85,7 +85,7 @@ func (s *Server) FormatLabels() string {
 // MatchFilter checks whether the server matches a key=value, key, value, tag, or name filter string.
 func (s *Server) MatchFilter(filter string) bool {
 	trimmed := strings.TrimSpace(filter)
-	if trimmed == "" {
+	if trimmed == "" || strings.EqualFold(trimmed, "all") {
 		return true
 	}
 

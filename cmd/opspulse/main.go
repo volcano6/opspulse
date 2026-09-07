@@ -15,10 +15,11 @@ import (
 var debugFlag bool
 
 var rootCmd = &cobra.Command{
-	Use:     "ops",
-	Aliases: []string{"opspulse"},
-	Short:   "Personal infrastructure lifecycle management",
-	Long:    "Ops — Self-hosted server automation, backup orchestration, and secure operations.",
+	Use:          "ops",
+	Aliases:      []string{"opspulse"},
+	Short:        "Personal infrastructure lifecycle management",
+	Long:         "Ops — Self-hosted server automation, backup orchestration, and secure operations.",
+	SilenceUsage: true,
 	PersistentPreRun: func(_ *cobra.Command, _ []string) {
 		logger.Setup(debugFlag)
 	},
