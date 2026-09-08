@@ -105,7 +105,7 @@ var backupRunCmd = &cobra.Command{
 				backupRepo := storage.NewBackupRepo(db)
 				serverStore := server.NewDefaultStore()
 				assetStore := asset.NewDefaultStore()
-				exec := executor.NewSSHExecutor()
+				exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
 				runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
 
 				ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -192,9 +192,10 @@ var backupRunCmd = &cobra.Command{
 
 		backupRepo := storage.NewBackupRepo(db)
 		serverStore := server.NewDefaultStore()
-		exec := executor.NewSSHExecutor() // SSH executor handles remote servers
+		assetStore := asset.NewDefaultStore()
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get) // SSH executor handles remote servers
 		// Wrap with multi-target capability: if target is local, runner uses LocalExecutor
-		runner := backup.NewRunner(exec, serverStore, backupRepo)
+		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
 
 		pool := backup.NewPool(runner, backupRunParallel)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -341,8 +342,8 @@ var backupSnapshotsCmd = &cobra.Command{
 			return err
 		}
 
-		exec := executor.NewSSHExecutor()
 		serverStore := server.NewDefaultStore()
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
 		runner := backup.NewRunner(exec, serverStore, nil)
 
 		fmt.Printf("Querying snapshots for job %q from %s (%s)...\n",

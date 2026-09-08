@@ -21,16 +21,20 @@ ops add oracle-sg ubuntu@168.138.1.1:2222 \
   --tags prod,web \
   --desc "生产环境博客主节点"
 
-# 3. 亦可使用传统全 flag 形式（兼容 ops server add）
+# 3. 通过跳板机（Bastion / Jump Host）添加内网机器（免查内网 IP，名字由跳板机解析）
+ops add vps2 ubuntu@vps2 -J vps1 -p 123456
+
+# 4. 亦可使用传统全 flag 形式（兼容 ops server add）
 ops server add oracle-sg --host 168.138.1.1 --user ubuntu -i ~/.ssh/id_ed25519
 ```
 
 > 🛡️ **密码静默输入与公钥免密直连引导**：
+> - **跳板机穿透（Jump Host）**：通过 `-J / --jump-host <server_name>` 关联跳板机，支持连续按 `<Tab>` 补全现有服务器。内网机器的主机名（如 `vps2`）将直接由跳板机在远程内网中解析，无需事先查探内网 IP。所有 SSH、SFTP、命令执行、自动化备份与 VS Code Remote-SSH（自动导出 `ProxyJump`）均走端到端加密通道，私钥无需在跳板机上落地。
 > - **静默密码交互**：未提供 `-i` 私钥时，终端会提示输入 SSH 密码，输入过程静默隐藏不回显，绝不留在 Shell 历史记录中。
 > - **公钥一键注入**：首次密码连通成功后，Ops 会检测本地通用公钥（如 `~/.ssh/id_ed25519.pub` 或 `~/.ssh/id_rsa.pub`，若无则自动生成专用密钥），并询问是否注入远端 VPS 的 `~/.ssh/authorized_keys`。注入成功并验证通过后，本地自动升级为密钥直连认证，且清空本地密码明文存储，兼顾极速与安全。
 > - **私钥安全位置迁移**：当 `-i <path>` 指向 `~/.ssh/` 之外的目录（例如 `~/Downloads/` 或临时目录）时，Ops 会交互式询问是否将密钥复制到 `~/.ssh/opspulse_<server_name>.pem` 并自动设置为 `0600` 权限（可用 `--no-copy-key` 跳过复制）。
 > - **即时连通性验证与失败回滚**：`ops add` 默认自动测试 SSH 连通性。若认证失败，会自动清理复制的临时私钥且不保存错误服务器（离线服务器可通过 `--skip-test` 跳过验证）。
-> - **生命周期自动清理**：通过 `ops server remove <name>` 删除服务器或更换密钥时，自动清理 `~/.ssh/` 中对应的托管私钥文件。
+> - **生命周期与依赖保护**：通过 `ops server remove <name>` 删除服务器时，若存在下游内网机器正以此机器作为跳板机，OpsPulse 会自动拦截并提示依赖关系，防止误删导致内网机失联。
 
 ### 增量更新与交互编辑
 

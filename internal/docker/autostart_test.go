@@ -40,7 +40,7 @@ func TestBuildAutoStartScript_WithDatabase(t *testing.T) {
 	if !strings.Contains(script, "mysqladmin ping") {
 		t.Error("script missing MySQL readiness probe")
 	}
-	if !strings.Contains(script, "gunzip -c \"/tmp/opspulse-dumps/blog-db.sql.gz\"") {
+	if !strings.Contains(script, "gunzip -c '/tmp/opspulse-dumps/blog-db.sql.gz'") {
 		t.Error("script missing database dump import pipeline")
 	}
 }

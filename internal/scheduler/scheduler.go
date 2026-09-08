@@ -108,7 +108,7 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 
 		jobCopy := j
 		entryID, err := s.cron.AddFunc(scheduleSpec, func() {
-			s.executeJob(jobCopy)
+			_ = s.executeJob(jobCopy)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to schedule job %q with spec %q: %w", j.Name, scheduleSpec, err)
@@ -134,7 +134,7 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 	return registered, nil
 }
 
-func (s *Scheduler) executeJob(job backup.Job) {
+func (s *Scheduler) executeJob(job backup.Job) error {
 	startTime := time.Now()
 	_, _ = fmt.Fprintf(s.out, "[scheduler] >>> Triggering scheduled backup job %q (%s) at %s\n",
 		job.Name, job.Server, startTime.Format("2006-01-02 15:04:05"))
@@ -159,6 +159,8 @@ func (s *Scheduler) executeJob(job backup.Job) {
 			if errMsg == "" {
 				errMsg = err.Error()
 			}
+		} else if rec != nil && (rec.Status == "failed" || rec.Status == "partial") {
+			runRecordErr = fmt.Errorf("job %q completed with status %q: %s", job.Name, rec.Status, errMsg)
 		}
 	} else {
 		runRecordErr = fmt.Errorf("runner is nil")
@@ -185,10 +187,12 @@ func (s *Scheduler) executeJob(job backup.Job) {
 
 	if runRecordErr != nil {
 		_, _ = fmt.Fprintf(s.out, "[scheduler] <<< Scheduled job %q finished with error: %v\n", job.Name, runRecordErr)
-	} else {
-		_, _ = fmt.Fprintf(s.out, "[scheduler] <<< Scheduled job %q finished successfully (status: %s, duration: %.2fs)\n",
-			job.Name, runRecordStatus, durationSec)
+		return runRecordErr
 	}
+
+	_, _ = fmt.Fprintf(s.out, "[scheduler] <<< Scheduled job %q finished successfully (status: %s, duration: %.2fs)\n",
+		job.Name, runRecordStatus, durationSec)
+	return nil
 }
 
 // ListRegistered returns all currently registered scheduled jobs with updated execution times.
@@ -291,7 +295,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			s.executeJob(job)
+			if err := s.executeJob(job); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
 

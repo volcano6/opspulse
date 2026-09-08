@@ -91,6 +91,10 @@ func (s *Store) Save(srv Server) error {
 		cf.Servers = append(cf.Servers, srv)
 	}
 
+	if err := validateJumpHosts(cf.Servers); err != nil {
+		return err
+	}
+
 	return s.write(cf)
 }
 
@@ -122,6 +126,24 @@ func (s *Store) Delete(name string) error {
 	return s.write(cf)
 }
 
+// GetDependents returns all servers that use the given server as their JumpHost.
+func (s *Store) GetDependents(name string) ([]Server, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cf, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	var dependents []Server
+	for _, srv := range cf.Servers {
+		if srv.JumpHost == name {
+			dependents = append(dependents, srv)
+		}
+	}
+	return dependents, nil
+}
+
 // Validate checks a complete inventory document without writing it.
 func (s *Store) Validate(data []byte) error {
 	_, err := parseAndValidateConfig(data)
@@ -142,13 +164,27 @@ func (s *Store) Replace(data []byte) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary servers file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
 		return fmt.Errorf("failed to write temporary servers file: %w", err)
 	}
+	if err := tmpFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary servers file: %w", err)
+	}
 
-	if err := os.Rename(tmpFile, s.filePath); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := os.Rename(tmpPath, s.filePath); err != nil {
 		return fmt.Errorf("failed to replace servers file: %w", err)
 	}
 	return nil
@@ -178,7 +214,38 @@ func parseAndValidateConfig(data []byte) (*ConfigFile, error) {
 		}
 		seen[cf.Servers[i].Name] = struct{}{}
 	}
+	if err := validateJumpHosts(cf.Servers); err != nil {
+		return nil, err
+	}
 	return &cf, nil
+}
+
+func validateJumpHosts(servers []Server) error {
+	serverMap := make(map[string]Server, len(servers))
+	for _, s := range servers {
+		serverMap[s.Name] = s
+	}
+
+	for _, s := range servers {
+		if s.JumpHost == "" {
+			continue
+		}
+		visited := make(map[string]bool)
+		curr := s.Name
+		for curr != "" {
+			if visited[curr] {
+				return fmt.Errorf("%w: loop involving %q", ErrJumpHostCycle, curr)
+			}
+			visited[curr] = true
+			target, exists := serverMap[curr]
+			if !exists {
+				// JumpHost refers to external target or not in inventory, end of inventory chain
+				break
+			}
+			curr = target.JumpHost
+		}
+	}
+	return nil
 }
 
 func (s *Store) read() (*ConfigFile, error) {
@@ -209,13 +276,27 @@ func (s *Store) write(cf *ConfigFile) error {
 		return fmt.Errorf("failed to marshal servers YAML: %w", err)
 	}
 
-	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary servers file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
 		return fmt.Errorf("failed to write temporary servers file: %w", err)
 	}
+	if err := tmpFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary servers file: %w", err)
+	}
 
-	if err := os.Rename(tmpFile, s.filePath); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := os.Rename(tmpPath, s.filePath); err != nil {
 		return fmt.Errorf("failed to replace servers file: %w", err)
 	}
 

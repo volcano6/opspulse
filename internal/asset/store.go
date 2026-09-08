@@ -206,13 +206,27 @@ func (s *Store) writeConfig(cfg *assetConfig) error {
 		return fmt.Errorf("failed to marshal asset config to YAML: %w", err)
 	}
 
-	tmpFile := fmt.Sprintf("%s.tmp.%d", s.filePath, os.Getpid())
-	if err := os.WriteFile(tmpFile, data, 0o600); err != nil {
-		return fmt.Errorf("failed to write temporary asset config file %q: %w", tmpFile, err)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary asset config file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}()
+
+	if _, err := tmpFile.Write(data); err != nil {
+		return fmt.Errorf("failed to write temporary asset config file %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Chmod(0o600); err != nil {
+		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temporary asset config file %q: %w", tmpPath, err)
 	}
 
-	if err := os.Rename(tmpFile, s.filePath); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := os.Rename(tmpPath, s.filePath); err != nil {
 		return fmt.Errorf("failed to replace asset config file %q: %w", s.filePath, err)
 	}
 

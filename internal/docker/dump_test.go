@@ -56,13 +56,13 @@ func TestBuildDumpScript_MySQL(t *testing.T) {
 	if !strings.Contains(script, "mysqldump --single-transaction --quick") {
 		t.Error("script missing mysqldump command")
 	}
-	if !strings.Contains(script, "docker exec \"db-container\"") {
+	if !strings.Contains(script, "docker exec 'db-container'") {
 		t.Error("script missing docker exec call")
 	}
-	if !strings.Contains(script, "gzip > \"/tmp/dumps/db.sql.gz\"") {
+	if !strings.Contains(script, "gzip > '/tmp/dumps/db.sql.gz'") {
 		t.Error("script missing gzip output redirection to destination")
 	}
-	if !strings.Contains(script, "mkdir -p \"/tmp/dumps\"") {
+	if !strings.Contains(script, "mkdir -p '/tmp/dumps'") {
 		t.Error("script missing destination dir creation")
 	}
 }
@@ -76,10 +76,10 @@ func TestBuildDumpScript_Postgres(t *testing.T) {
 	if !strings.Contains(script, "pg_dumpall") {
 		t.Error("script missing pg_dumpall command")
 	}
-	if !strings.Contains(script, "docker exec \"pg-container\"") {
+	if !strings.Contains(script, "docker exec 'pg-container'") {
 		t.Error("script missing docker exec call")
 	}
-	if !strings.Contains(script, "gzip > \"/tmp/dumps/pg.sql.gz\"") {
+	if !strings.Contains(script, "gzip > '/tmp/dumps/pg.sql.gz'") {
 		t.Error("script missing gzip redirection")
 	}
 }
@@ -105,14 +105,17 @@ func TestBuildImportScript_MySQL(t *testing.T) {
 	if !strings.Contains(script, "mysqladmin ping") {
 		t.Error("script missing mysqladmin ping readiness check")
 	}
-	if !strings.Contains(script, "gunzip -c \"/tmp/dumps/blog.sql.gz\"") {
+	if !strings.Contains(script, "gunzip -c '/tmp/dumps/blog.sql.gz'") {
 		t.Error("script missing gunzip invocation")
 	}
-	if !strings.Contains(script, "docker exec -i \"mysql-srv\"") {
+	if !strings.Contains(script, "docker exec -i 'mysql-srv'") {
 		t.Error("script missing docker exec -i import invocation")
 	}
 	if !strings.Contains(script, "mysql -u root") {
 		t.Error("script missing mysql command")
+	}
+	if !strings.Contains(script, "exit 1") {
+		t.Error("script missing exit 1 on missing dump file")
 	}
 }
 
@@ -125,14 +128,17 @@ func TestBuildImportScript_Postgres(t *testing.T) {
 	if !strings.Contains(script, "pg_isready") {
 		t.Error("script missing pg_isready readiness check")
 	}
-	if !strings.Contains(script, "gunzip -c \"/tmp/dumps/pg.sql.gz\"") {
+	if !strings.Contains(script, "gunzip -c '/tmp/dumps/pg.sql.gz'") {
 		t.Error("script missing gunzip invocation")
 	}
-	if !strings.Contains(script, "docker exec -i \"pg-srv\"") {
+	if !strings.Contains(script, "docker exec -i 'pg-srv'") {
 		t.Error("script missing docker exec -i import invocation")
 	}
 	if !strings.Contains(script, "psql -U") {
 		t.Error("script missing psql command")
+	}
+	if !strings.Contains(script, "exit 1") {
+		t.Error("script missing exit 1 on missing dump file")
 	}
 }
 

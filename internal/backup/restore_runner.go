@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/storage"
 )
 
@@ -72,6 +76,10 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 			return nil, err
 		}
 		snapshotID = resolvedID
+	} else {
+		if err := r.verifySnapshotBelongsToJob(ctx, job, snapshotID); err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. Determine target server (defaults to the job's source server)
@@ -205,7 +213,12 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 
 		// Auto-start containers by default unless explicitly suppressed via --no-start
 		if !opts.NoStart && !opts.DryRun {
-			r.autoStartContainers(ctx, target, job, opts, consoleOut)
+			if startErr := r.autoStartContainers(ctx, target, job, opts, consoleOut); startErr != nil {
+				runRecord.Status = "partial"
+				runRecord.ErrorMessage = fmt.Sprintf("restore completed but container auto-start failed: %v", startErr)
+				_, _ = fmt.Fprintf(consoleOut, "⚠️ Restore completed with partial status: %s\n", runRecord.ErrorMessage)
+				execErr = startErr
+			}
 		}
 	} else {
 		runRecord.Status = "failed"
@@ -245,10 +258,32 @@ func (r *RestoreRunner) resolveLatestSnapshot(ctx context.Context, job Job, cons
 		return "", fmt.Errorf("no snapshots found for job %q — run a backup first", job.Name)
 	}
 
-	// Snapshots are typically returned in chronological order; take the last one
+	// Sort snapshots strictly ascending by Time
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Time.Before(snapshots[j].Time)
+	})
+
 	latest := snapshots[len(snapshots)-1]
 	_, _ = fmt.Fprintf(consoleOut, "   Using snapshot: %s (%s)\n", latest.ShortID, latest.Time.Local().Format("2006-01-02 15:04:05"))
 	return latest.ID, nil
+}
+
+func (r *RestoreRunner) verifySnapshotBelongsToJob(ctx context.Context, job Job, snapshotID string) error {
+	tmpRunner := &Runner{
+		executor:      r.executor,
+		localExecutor: r.localExecutor,
+		serverStore:   r.serverStore,
+	}
+	snapshots, err := tmpRunner.ListSnapshots(ctx, job)
+	if err != nil {
+		return fmt.Errorf("failed to query snapshots to verify snapshot %q: %w", snapshotID, err)
+	}
+	for _, s := range snapshots {
+		if s.ID == snapshotID || s.ShortID == snapshotID || strings.HasPrefix(s.ID, snapshotID) {
+			return nil
+		}
+	}
+	return fmt.Errorf("snapshot %q does not belong to job %q", snapshotID, job.Name)
 }
 
 func (r *RestoreRunner) resolveTarget(serverName string) (executor.Target, error) {
@@ -276,28 +311,135 @@ func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.
 	}
 }
 
+// RestoredPath maps an original absolute path to its location under targetRoot when restic restores with --target.
+func RestoredPath(targetRoot, originalAbsolutePath string) string {
+	if targetRoot == "" || targetRoot == "/" {
+		return path.Clean(originalAbsolutePath)
+	}
+	targetClean := path.Clean(targetRoot)
+	origClean := path.Clean(originalAbsolutePath)
+	trimmed := strings.TrimPrefix(origClean, "/")
+	return path.Join(targetClean, trimmed)
+}
+
 func (r *RestoreRunner) autoStartContainers(
 	ctx context.Context,
 	target executor.Target,
 	job Job,
 	opts RestoreOptions,
 	consoleOut io.Writer,
-) {
+) error {
 	_, _ = fmt.Fprintf(consoleOut, "--> Inspecting restored files for container services (auto-start enabled)...\n")
 
+	execToUse := r.executor
+	if target.IsLocal {
+		execToUse = r.localExecutor
+	}
+
+	origProjectDir := fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)
+	restoredProjectDir := RestoredPath(opts.TargetPath, origProjectDir)
+
+	// Check if manifest.yaml is present in the restored project
+	manifestPath := path.Join(restoredProjectDir, docker.ManifestFileName)
+	readManifestScript := fmt.Sprintf("cat %s 2>/dev/null || true", shellquote.Quote(manifestPath))
+	var manifestBuf bytes.Buffer
+	res, err := execToUse.Execute(ctx, target, "read-manifest-"+job.Name, readManifestScript, &manifestBuf)
+	if err == nil && res != nil && res.Success && len(bytes.TrimSpace(manifestBuf.Bytes())) > 0 {
+		manifest, parseErr := docker.UnmarshalManifest(manifestBuf.Bytes())
+		if parseErr == nil && manifest != nil {
+			_, _ = fmt.Fprintf(consoleOut, "  -> Detected package manifest for app %q. Running manifest-driven restore...\n", manifest.App)
+
+			// A. Check external mounts
+			for _, em := range manifest.ExternalMounts {
+				if em.Reason == "system_mount" || strings.HasPrefix(em.Source, "/var/run") || strings.HasPrefix(em.Source, "/dev") {
+					checkScript := fmt.Sprintf("test -e %s || echo 'MISSING'", shellquote.Quote(em.Source))
+					var checkBuf bytes.Buffer
+					_, _ = execToUse.Execute(ctx, target, "check-mount", checkScript, &checkBuf)
+					if strings.Contains(checkBuf.String(), "MISSING") {
+						_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: external host mount %s is missing on target %s\n", em.Source, target.Name)
+					}
+				}
+			}
+
+			// B. Restore named volumes
+			for _, v := range manifest.Volumes {
+				if v.Archive != "" {
+					archivePath := path.Join(restoredProjectDir, v.Archive)
+					_, _ = fmt.Fprintf(consoleOut, "  -> Restoring volume %q from %s...\n", v.OriginalName, v.Archive)
+					volScript := docker.BuildVolumeImportScript(v.OriginalName, archivePath)
+					vRes, vErr := execToUse.Execute(ctx, target, "restore-vol-"+v.OriginalName, volScript, consoleOut)
+					if vErr != nil || (vRes != nil && !vRes.Success) {
+						return fmt.Errorf("failed to restore volume %q: %v", v.OriginalName, vErr)
+					}
+				}
+			}
+
+			// C. Start Compose
+			projectName := manifest.App
+			if opts.AliasName != "" {
+				projectName = opts.AliasName
+			}
+			composeFile := manifest.ComposeFile
+			if composeFile == "" {
+				composeFile = "compose.yaml"
+			}
+			startComposeScript := fmt.Sprintf(`if docker compose version >/dev/null 2>&1; then
+  COMPOSE="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE="docker-compose"
+else
+  echo "Error: docker compose not found" >&2
+  exit 127
+fi
+cd %s
+export COMPOSE_PROJECT_NAME=%s
+$COMPOSE -f %s up -d
+`, shellquote.Quote(restoredProjectDir), shellquote.Quote(projectName), shellquote.Quote(composeFile))
+
+			cRes, cErr := execToUse.Execute(ctx, target, "compose-up-"+job.Name, startComposeScript, consoleOut)
+			if cErr != nil || (cRes != nil && !cRes.Success) {
+				return fmt.Errorf("compose up failed for %q: %v", projectName, cErr)
+			}
+
+			// D. Import Database
+			if manifest.Database != nil && manifest.Database.Dump != "" {
+				dumpPath := path.Join(restoredProjectDir, manifest.Database.Dump)
+				targetContainer := manifest.Database.Container
+				if opts.AliasName != "" && targetContainer == manifest.App {
+					targetContainer = opts.AliasName
+				}
+				_, _ = fmt.Fprintf(consoleOut, "  -> Importing database dump from %s into %s (%s)...\n",
+					dumpPath, targetContainer, manifest.Database.Engine)
+				importScript, impErr := docker.BuildImportScript(manifest.Database.Engine, targetContainer, dumpPath)
+				if impErr != nil {
+					return fmt.Errorf("failed to build import script: %w", impErr)
+				}
+				impRes, impExecErr := execToUse.Execute(ctx, target, "import-db-"+job.Name, importScript, consoleOut)
+				if impExecErr != nil || (impRes != nil && !impRes.Success) {
+					return fmt.Errorf("database import failed for container %q: %v", targetContainer, impExecErr)
+				}
+			}
+
+			_, _ = fmt.Fprintf(consoleOut, "🚀 Container app %q successfully restored and running on %s!\n", projectName, target.Name)
+			return nil
+		}
+	}
+
+	// Fallback to auto-start script for non-manifest backups
 	var candidateDirs []string
 	if opts.TargetPath != "" && opts.TargetPath != "/" {
 		candidateDirs = append(candidateDirs, opts.TargetPath)
 	}
-	candidateDirs = append(candidateDirs, fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name))
-	candidateDirs = append(candidateDirs, job.Paths...)
+	candidateDirs = append(candidateDirs, restoredProjectDir)
+	for _, p := range job.Paths {
+		candidateDirs = append(candidateDirs, RestoredPath(opts.TargetPath, p))
+	}
 
 	autoOpts := docker.AutoStartOptions{
 		ComposeDirs: dedupPaths(candidateDirs),
 		AliasName:   opts.AliasName,
 	}
 
-	// Check if asset is a database container
 	if r.assetStore != nil {
 		targetAssetID := opts.AssetID
 		if targetAssetID == "" {
@@ -309,22 +451,15 @@ func (r *RestoreRunner) autoStartContainers(
 			if autoOpts.DatabaseContainer == "" {
 				autoOpts.DatabaseContainer = job.Name
 			}
-			autoOpts.DatabaseDump = fmt.Sprintf("/tmp/opspulse-dumps/%s", docker.DumpFileName(job.Name))
+			autoOpts.DatabaseDump = RestoredPath(opts.TargetPath, fmt.Sprintf("/tmp/opspulse-dumps/%s", docker.DumpFileName(job.Name)))
 		}
 	}
 
 	script := docker.BuildAutoStartScript(autoOpts)
-
-	execToUse := r.executor
-	if target.IsLocal {
-		execToUse = r.localExecutor
+	startRes, startErr := execToUse.Execute(ctx, target, "autostart-"+job.Name, script, consoleOut)
+	if startErr != nil || (startRes != nil && !startRes.Success) {
+		return fmt.Errorf("container auto-start failed: %v", startErr)
 	}
-
-	res, err := execToUse.Execute(ctx, target, "autostart-"+job.Name, script, consoleOut)
-	if err != nil || (res != nil && !res.Success) {
-		_, _ = fmt.Fprintf(consoleOut, "Warning: container auto-start encountered an issue: %v\n", err)
-	} else {
-		_, _ = fmt.Fprintf(consoleOut, "🚀 Container services are up and running on %s!\n", target.Name)
-	}
+	_, _ = fmt.Fprintf(consoleOut, "🚀 Container services are up and running on %s!\n", target.Name)
+	return nil
 }
-

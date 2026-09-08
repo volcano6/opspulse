@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -58,9 +59,20 @@ If no server name is provided, an interactive menu allows selecting a server to 
 
 		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs)
 
-		fmt.Printf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())
-		if srv.Password != "" && srv.KeyPath == "" {
-			return runPasswordSSH(sshPath, sshArgs, srv.Password)
+		if srv.JumpHost != "" {
+			fmt.Printf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
+		} else {
+			fmt.Printf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())
+		}
+
+		needsPassword := (srv.Password != "" && srv.KeyPath == "")
+		if srv.JumpHost != "" {
+			if jumpSrv, err := store.Get(srv.JumpHost); err == nil && jumpSrv.Password != "" && jumpSrv.KeyPath == "" {
+				needsPassword = true
+			}
+		}
+		if needsPassword {
+			return runPasswordSSH(sshPath, sshArgs, *srv, store)
 		}
 		return runInteractiveSSH(sshPath, sshArgs)
 	},
@@ -82,12 +94,18 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 		_, _ = fmt.Fprintln(out, "📋 Select a server to connect:")
 		for i, s := range servers {
 			var details []string
-			details = append(details, s.Address())
 			user := s.User
 			if user == "" {
 				user = "root"
 			}
-			details = append(details, user)
+			target := fmt.Sprintf("%s@%s", user, s.Host)
+			if s.Port > 0 && s.Port != 22 {
+				target = fmt.Sprintf("%s:%d", target, s.Port)
+			}
+			details = append(details, target)
+			if s.JumpHost != "" {
+				details = append(details, fmt.Sprintf("(via %s)", s.JumpHost))
+			}
 			if len(s.Tags) > 0 {
 				details = append(details, fmt.Sprintf("[%s]", strings.Join(s.Tags, ",")))
 			}
@@ -139,6 +157,48 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 
 func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string {
 	args := []string{binary}
+
+	// Compatibility with legacy RSA/DSA host keys and public keys
+	args = append(args,
+		"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+		"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+	)
+
+	// Jump Host handling
+	if srv.JumpHost != "" {
+		store := server.NewDefaultStore()
+		jumpSrv, err := store.Get(srv.JumpHost)
+
+		var proxyParts []string
+		proxyParts = append(proxyParts,
+			"ssh",
+			"-W", "%h:%p",
+			"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+			"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+		)
+
+		if err == nil {
+			if jumpSrv.KeyPath != "" {
+				expandedJumpKey := filepath.ToSlash(expandHome(jumpSrv.KeyPath))
+				if strings.Contains(expandedJumpKey, " ") {
+					expandedJumpKey = fmt.Sprintf(`"%s"`, expandedJumpKey)
+				}
+				proxyParts = append(proxyParts, "-o", "IdentitiesOnly=yes", "-i", expandedJumpKey)
+			}
+			if jumpSrv.Port > 0 && jumpSrv.Port != 22 {
+				proxyParts = append(proxyParts, "-p", strconv.Itoa(jumpSrv.Port))
+			}
+			user := jumpSrv.User
+			if user == "" {
+				user = "root"
+			}
+			proxyParts = append(proxyParts, fmt.Sprintf("%s@%s", user, jumpSrv.Host))
+		} else {
+			proxyParts = append(proxyParts, srv.JumpHost)
+		}
+
+		args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", strings.Join(proxyParts, " ")))
+	}
 
 	// Port
 	if srv.Port > 0 && srv.Port != 22 {
@@ -192,7 +252,12 @@ const (
 	askpassDataFile   = "OPSPULSE_ASKPASS_DATA_FILE"
 )
 
-func runPasswordSSH(binary string, args []string, password string) error {
+type askpassConfig struct {
+	DefaultPass string            `json:"default_pass"`
+	HostPass    map[string]string `json:"host_pass"`
+}
+
+func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store) error {
 	askpassPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve SSH password helper: %w", err)
@@ -203,7 +268,28 @@ func runPasswordSSH(binary string, args []string, password string) error {
 	}
 	defer func() { _ = os.RemoveAll(passwordDir) }()
 	passwordPath := filepath.Join(passwordDir, "password")
-	if err := os.WriteFile(passwordPath, []byte(password), 0o600); err != nil {
+
+	cfg := askpassConfig{
+		DefaultPass: srv.Password,
+		HostPass:    make(map[string]string),
+	}
+	if srv.Password != "" {
+		cfg.HostPass[srv.Host] = srv.Password
+		cfg.HostPass[srv.Name] = srv.Password
+	}
+	if srv.JumpHost != "" {
+		if jumpSrv, err := store.Get(srv.JumpHost); err == nil && jumpSrv.Password != "" {
+			cfg.HostPass[jumpSrv.Host] = jumpSrv.Password
+			cfg.HostPass[jumpSrv.Name] = jumpSrv.Password
+		}
+	}
+
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("serialize SSH password helper file: %w", err)
+	}
+
+	if err := os.WriteFile(passwordPath, payload, 0o600); err != nil {
 		return fmt.Errorf("write SSH password helper file: %w", err)
 	}
 
@@ -220,12 +306,29 @@ func runPasswordSSH(binary string, args []string, password string) error {
 	return cmd.Run()
 }
 
-func readSSHAskpassPassword() (string, error) {
-	password, err := os.ReadFile(os.Getenv(askpassDataFile)) // #nosec G703 -- parent creates and owns the 0600 file in a 0700 temporary directory
+func readSSHAskpassPassword(prompt string) (string, error) {
+	data, err := os.ReadFile(os.Getenv(askpassDataFile)) // #nosec G703 -- parent creates and owns the 0600 file in a 0700 temporary directory
 	if err != nil {
 		return "", fmt.Errorf("read SSH password helper file: %w", err)
 	}
-	return string(password), nil
+
+	var cfg askpassConfig
+	if err := json.Unmarshal(data, &cfg); err == nil {
+		if prompt != "" && len(cfg.HostPass) > 0 {
+			lowerPrompt := strings.ToLower(prompt)
+			for hostOrName, pass := range cfg.HostPass {
+				if strings.Contains(lowerPrompt, strings.ToLower(hostOrName)) {
+					return pass, nil
+				}
+			}
+		}
+		if cfg.DefaultPass != "" {
+			return cfg.DefaultPass, nil
+		}
+		return "", fmt.Errorf("no matching password for SSH prompt %q", prompt)
+	}
+
+	return string(data), nil
 }
 
 func overrideEnv(environ []string, values map[string]string) []string {

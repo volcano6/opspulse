@@ -71,7 +71,7 @@ Examples:
 			defer cancelTimeout()
 		}
 
-		exec := executor.NewSSHExecutor()
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 		target := executor.NewServerTarget(*srv)
 
 		res, err := exec.Execute(ctx, target, "exec", commandStr, os.Stdout)
@@ -218,7 +218,7 @@ func executeFiltered(store *server.Store, filter, commandStr string, parallel in
 			writer := NewLinePrefixWriter(s.Name, clr, os.Stdout, &sharedMu)
 			defer writer.Flush()
 
-			exec := executor.NewSSHExecutor()
+			exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 			target := executor.NewServerTarget(s)
 
 			res, runErr := exec.Execute(ctx, target, "exec-batch", commandStr, writer)

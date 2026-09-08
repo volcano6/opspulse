@@ -69,14 +69,14 @@ func TestRenderDockerPsTable(t *testing.T) {
 			State:      "running",
 		},
 		{
-			ID:         "9z8y7x",
-			Names:      "redis",
-			Image:      "redis:latest",
-			Command:    "redis-server --very-long-argument-here-exceeding-standard-width",
-			CreatedAt:  "yesterday",
-			Status:     "Exited (0)",
-			Ports:      "",
-			State:      "exited",
+			ID:        "9z8y7x",
+			Names:     "redis",
+			Image:     "redis:latest",
+			Command:   "redis-server --very-long-argument-here-exceeding-standard-width",
+			CreatedAt: "yesterday",
+			Status:    "Exited (0)",
+			Ports:     "",
+			State:     "exited",
 		},
 	}
 
@@ -99,18 +99,65 @@ func TestRenderDockerPsTable(t *testing.T) {
 }
 
 func TestBuildDockerLogsScript(t *testing.T) {
-	s1 := buildDockerLogsScript("my-app", "50", false, false)
-	if s1 != "docker logs --tail 50 my-app\n" {
+	s1, err := buildDockerLogsScript("my-app", "50", false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s1 != "docker logs --tail '50' 'my-app'\n" {
 		t.Errorf("unexpected script: %q", s1)
 	}
 
-	s2 := buildDockerLogsScript("my-app", "200", true, true)
-	if !strings.Contains(s2, "--tail 200") || !strings.Contains(s2, "-t") || !strings.Contains(s2, "-f") || !strings.Contains(s2, "my-app") {
+	s2, err := buildDockerLogsScript("my-app", "200", true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(s2, "--tail '200'") || !strings.Contains(s2, "-t") || !strings.Contains(s2, "-f") || !strings.Contains(s2, "'my-app'") {
 		t.Errorf("unexpected script with all flags: %q", s2)
 	}
 
-	s3 := buildDockerLogsScript("my-app", "", false, false)
-	if s3 != "docker logs my-app\n" {
+	s3, err := buildDockerLogsScript("my-app", "", false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if s3 != "docker logs 'my-app'\n" {
 		t.Errorf("unexpected script with empty tail: %q", s3)
+	}
+
+	// Tail "all" is allowed
+	s4, err := buildDockerLogsScript("my-app", "all", false, false)
+	if err != nil {
+		t.Fatalf("unexpected error for tail=all: %v", err)
+	}
+	if !strings.Contains(s4, "--tail 'all'") {
+		t.Errorf("expected tail=all to be accepted: %s", s4)
+	}
+
+	// Injection attempts in container name should be rejected
+	injectionContainers := []string{
+		"app; rm -rf /",
+		"app && whoami",
+		"app | cat",
+		"`id`",
+		"$(reboot)",
+		"app name with spaces",
+		"-bad-leading-hyphen",
+	}
+	for _, bad := range injectionContainers {
+		if _, err := buildDockerLogsScript(bad, "10", false, false); err == nil {
+			t.Errorf("expected error for malicious/invalid container name %q, got nil", bad)
+		}
+	}
+
+	// Injection attempts in --tail should be rejected
+	injectionTails := []string{
+		"10; rm -rf /",
+		"-10",
+		"abc",
+		"100 || reboot",
+	}
+	for _, bad := range injectionTails {
+		if _, err := buildDockerLogsScript("my-app", bad, false, false); err == nil {
+			t.Errorf("expected error for malicious/invalid tail %q, got nil", bad)
+		}
 	}
 }

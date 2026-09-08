@@ -167,8 +167,8 @@ func TestScheduler_RunOnce_WithNotification(t *testing.T) {
 	sched := New(backupStore, nil, dispatcher, &buf)
 
 	err := sched.RunOnce(context.Background())
-	if err != nil {
-		t.Fatalf("RunOnce() failed: %v", err)
+	if err == nil {
+		t.Fatalf("expected RunOnce() to fail when runner is nil, got nil")
 	}
 
 	if atomic.LoadInt32(&notifyCount) != 1 {

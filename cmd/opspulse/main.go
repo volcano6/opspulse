@@ -41,7 +41,11 @@ func init() {
 
 func main() {
 	if os.Getenv(askpassHelperFlag) == "1" {
-		password, err := readSSHAskpassPassword()
+		prompt := ""
+		if len(os.Args) > 1 {
+			prompt = os.Args[1]
+		}
+		password, err := readSSHAskpassPassword(prompt)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)

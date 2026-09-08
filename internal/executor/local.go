@@ -18,7 +18,7 @@ type LocalExecutor struct {
 // NewLocalExecutor creates a new LocalExecutor with sensible default timeout.
 func NewLocalExecutor() *LocalExecutor {
 	return &LocalExecutor{
-		ExecuteTimeout: 15 * time.Minute,
+		ExecuteTimeout: 0,
 	}
 }
 
@@ -36,6 +36,12 @@ func (e *LocalExecutor) Test(ctx context.Context, _ Target) (time.Duration, stri
 
 // Execute runs a script on the local machine, streaming stdout/stderr to outputWriter.
 func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName string, scriptContent string, outputWriter io.Writer) (*Result, error) {
+	if e.ExecuteTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.ExecuteTimeout)
+		defer cancel()
+	}
+
 	startTime := time.Now()
 	name := target.Name
 	if name == "" {

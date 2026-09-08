@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -17,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 var (
@@ -59,7 +62,7 @@ Examples:
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		exec := executor.NewSSHExecutor()
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 		target := executor.NewServerTarget(*srv)
 
 		var buf bytes.Buffer
@@ -184,9 +187,12 @@ Examples:
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
-		script := buildDockerLogsScript(containerName, logsTail, logsFollow, logsTimestamps)
+		script, err := buildDockerLogsScript(containerName, logsTail, logsFollow, logsTimestamps)
+		if err != nil {
+			return err
+		}
 
-		exec := executor.NewSSHExecutor()
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 		target := executor.NewServerTarget(*srv)
 
 		res, err := exec.Execute(ctx, target, "docker-logs", script, os.Stdout)
@@ -204,10 +210,41 @@ Examples:
 	},
 }
 
-func buildDockerLogsScript(container, tail string, follow, timestamps bool) string {
+var validContainerNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+func validateContainerName(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return fmt.Errorf("container name cannot be empty")
+	}
+	if !validContainerNamePattern.MatchString(trimmed) {
+		return fmt.Errorf("invalid container name %q: must match [a-zA-Z0-9][a-zA-Z0-9_.-]*", name)
+	}
+	return nil
+}
+
+func validateTail(tail string) error {
+	trimmed := strings.TrimSpace(tail)
+	if trimmed == "" || trimmed == "all" {
+		return nil
+	}
+	if _, err := strconv.ParseUint(trimmed, 10, 64); err != nil {
+		return fmt.Errorf("invalid --tail value %q: must be a positive integer or 'all'", tail)
+	}
+	return nil
+}
+
+func buildDockerLogsScript(container, tail string, follow, timestamps bool) (string, error) {
+	if err := validateContainerName(container); err != nil {
+		return "", err
+	}
+	if err := validateTail(tail); err != nil {
+		return "", err
+	}
+
 	var flags []string
-	if tail != "" {
-		flags = append(flags, fmt.Sprintf("--tail %s", tail))
+	if strings.TrimSpace(tail) != "" {
+		flags = append(flags, "--tail", shellquote.Quote(strings.TrimSpace(tail)))
 	}
 	if timestamps {
 		flags = append(flags, "-t")
@@ -221,7 +258,7 @@ func buildDockerLogsScript(container, tail string, follow, timestamps bool) stri
 		flagStr = strings.Join(flags, " ") + " "
 	}
 
-	return fmt.Sprintf("docker logs %s%s\n", flagStr, container)
+	return fmt.Sprintf("docker logs %s%s\n", flagStr, shellquote.Quote(strings.TrimSpace(container))), nil
 }
 
 func completeLogsArgs(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {

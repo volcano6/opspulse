@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,9 +13,15 @@ import (
 )
 
 func TestBuildSSHArgs(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "/home/user"
+	home := t.TempDir()
+	setTestHome(t, home)
+	testStore := server.NewDefaultStore()
+	_ = testStore.Save(server.Server{Name: "bastion", Host: "1.1.1.1", User: "root", Port: 22})
+	_ = testStore.Save(server.Server{Name: "bastion-key", Host: "1.1.1.2", User: "root", Port: 2222, KeyPath: "~/.ssh/jump.pem"})
+
+	compatFlags := []string{
+		"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+		"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
 	}
 
 	tests := []struct {
@@ -31,7 +39,7 @@ func TestBuildSSHArgs(t *testing.T) {
 				User: "root",
 			},
 			extraArgs: nil,
-			want:      []string{"ssh", "root@192.168.1.10"},
+			want:      append(append([]string{"ssh"}, compatFlags...), "root@192.168.1.10"),
 		},
 		{
 			name: "custom port and key path",
@@ -43,13 +51,12 @@ func TestBuildSSHArgs(t *testing.T) {
 				KeyPath: "~/.ssh/id_ed25519",
 			},
 			extraArgs: nil,
-			want: []string{
-				"ssh",
+			want: append(append([]string{"ssh"}, compatFlags...),
 				"-p", "2222",
 				"-o", "IdentitiesOnly=yes",
 				"-i", filepath.Join(home, ".ssh/id_ed25519"),
 				"ubuntu@10.0.0.1",
-			},
+			),
 		},
 		{
 			name: "with extra passthrough args",
@@ -60,7 +67,9 @@ func TestBuildSSHArgs(t *testing.T) {
 				User: "admin",
 			},
 			extraArgs: []string{"-o", "StrictHostKeyChecking=no", "tmux"},
-			want:      []string{"ssh", "-o", "StrictHostKeyChecking=no", "tmux", "admin@1.2.3.4"},
+			want: append(append([]string{"ssh"}, compatFlags...),
+				"-o", "StrictHostKeyChecking=no", "tmux", "admin@1.2.3.4",
+			),
 		},
 		{
 			name: "configured password disables public key attempts",
@@ -71,12 +80,39 @@ func TestBuildSSHArgs(t *testing.T) {
 				User:     "root",
 				Password: "secret",
 			},
-			want: []string{
-				"ssh",
+			want: append(append([]string{"ssh"}, compatFlags...),
 				"-o", "PubkeyAuthentication=no",
 				"-o", "PreferredAuthentications=password,keyboard-interactive",
 				"root@1.2.3.5",
+			),
+		},
+		{
+			name: "server with jump host",
+			srv: server.Server{
+				Name:     "vps-internal",
+				Host:     "vps2",
+				Port:     22,
+				User:     "ubuntu",
+				JumpHost: "bastion",
 			},
+			want: append(append([]string{"ssh"}, compatFlags...),
+				"-o", "ProxyCommand=ssh -W %h:%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa root@1.1.1.1",
+				"ubuntu@vps2",
+			),
+		},
+		{
+			name: "server with jump host using private key",
+			srv: server.Server{
+				Name:     "vps-internal-key",
+				Host:     "vps2",
+				Port:     22,
+				User:     "ubuntu",
+				JumpHost: "bastion-key",
+			},
+			want: append(append([]string{"ssh"}, compatFlags...),
+				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa -o IdentitiesOnly=yes -i %s -p 2222 root@1.1.1.2", filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
+				"ubuntu@vps2",
+			),
 		},
 	}
 
@@ -117,12 +153,51 @@ func TestReadSSHAskpassPasswordPreservesBytes(t *testing.T) {
 	}
 	t.Setenv(askpassDataFile, passwordPath)
 
-	got, err := readSSHAskpassPassword()
+	got, err := readSSHAskpassPassword("")
 	if err != nil {
 		t.Fatalf("readSSHAskpassPassword() error: %v", err)
 	}
 	if got != want {
 		t.Fatalf("readSSHAskpassPassword() = %q, want %q", got, want)
+	}
+}
+
+func TestReadSSHAskpassPasswordMultiHost(t *testing.T) {
+	cfg := askpassConfig{
+		DefaultPass: "fallback-pass",
+		HostPass: map[string]string{
+			"116.62.16.170": "jump-pass",
+			"hb170":         "jump-pass",
+			"huobaworker":   "worker-pass",
+			"hb-worker":     "worker-pass",
+		},
+	}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordPath := filepath.Join(t.TempDir(), "password.json")
+	if err := os.WriteFile(passwordPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(askpassDataFile, passwordPath)
+
+	// 1. Jump host prompt matches jump-pass
+	jumpPass, err := readSSHAskpassPassword("www@116.62.16.170's password: ")
+	if err != nil || jumpPass != "jump-pass" {
+		t.Fatalf("expected 'jump-pass', got %q, err: %v", jumpPass, err)
+	}
+
+	// 2. Target host prompt matches worker-pass
+	targetPass, err := readSSHAskpassPassword("www@huobaworker's password: ")
+	if err != nil || targetPass != "worker-pass" {
+		t.Fatalf("expected 'worker-pass', got %q, err: %v", targetPass, err)
+	}
+
+	// 3. Unknown prompt returns fallback default
+	defaultPass, err := readSSHAskpassPassword("root@unknown's password: ")
+	if err != nil || defaultPass != "fallback-pass" {
+		t.Fatalf("expected 'fallback-pass', got %q, err: %v", defaultPass, err)
 	}
 }
 
