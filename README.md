@@ -48,8 +48,9 @@ git clone https://github.com/volcano6/opspulse.git
 cd opspulse
 make install
 
-# 一键将补全脚本注入当前 Shell profile（支持 Bash / Zsh / Fish / PowerShell）
-ops completion --install
+# 一键将补全脚本与 PATH 配置注入当前 Shell profile（支持 Bash / Zsh / Fish / PowerShell）
+# 若当前终端尚未生效 PATH，可直接执行本地构建产物完成初始化：
+./bin/ops completion --install
 source ~/.zshrc  # 或 source ~/.bashrc
 
 # 验证安装

@@ -90,3 +90,54 @@ func TestDetectCurrentShell(t *testing.T) {
 		t.Errorf("got %q, want bash", got)
 	}
 }
+
+func TestInstallCompletion_BashAndZsh(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	// 1. Bash
+	if err := installCompletion(rootCmd, "bash"); err != nil {
+		t.Fatalf("installCompletion bash failed: %v", err)
+	}
+	bashrcData, err := os.ReadFile(filepath.Join(tempHome, ".bashrc"))
+	if err != nil {
+		t.Fatalf("failed to read .bashrc: %v", err)
+	}
+	bashrcContent := string(bashrcData)
+	if !strings.Contains(bashrcContent, ".local/bin") || !strings.Contains(bashrcContent, "ops completion bash") {
+		t.Errorf("expected PATH and completion in .bashrc, got: %s", bashrcContent)
+	}
+
+	// 2. Zsh
+	if err := installCompletion(rootCmd, "zsh"); err != nil {
+		t.Fatalf("installCompletion zsh failed: %v", err)
+	}
+	zshrcData, err := os.ReadFile(filepath.Join(tempHome, ".zshrc"))
+	if err != nil {
+		t.Fatalf("failed to read .zshrc: %v", err)
+	}
+	zshrcContent := string(zshrcData)
+	if !strings.Contains(zshrcContent, ".local/bin") || !strings.Contains(zshrcContent, "ops completion zsh") {
+		t.Errorf("expected PATH and completion in .zshrc, got: %s", zshrcContent)
+	}
+}
+
+func TestInstallCompletion_Fish(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	if err := installCompletion(rootCmd, "fish"); err != nil {
+		t.Fatalf("installCompletion fish failed: %v", err)
+	}
+	fishFile := filepath.Join(tempHome, ".config", "fish", "completions", "ops.fish")
+	if _, err := os.Stat(fishFile); err != nil {
+		t.Errorf("expected ops.fish to exist: %v", err)
+	}
+	opspulseFish := filepath.Join(tempHome, ".config", "fish", "completions", "opspulse.fish")
+	if _, err := os.Stat(opspulseFish); err != nil {
+		t.Errorf("expected opspulse.fish to exist: %v", err)
+	}
+}
+

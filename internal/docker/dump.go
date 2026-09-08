@@ -3,7 +3,7 @@ package docker
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -60,7 +60,7 @@ func BuildDumpScript(engine, containerName, destPath string) (string, error) {
 		return "", ErrEmptyDumpPath
 	}
 
-	dir := filepath.Dir(dst)
+	dir := path.Dir(strings.ReplaceAll(dst, "\\", "/"))
 
 	var sb strings.Builder
 	sb.WriteString("#!/usr/bin/env bash\n")

@@ -106,12 +106,12 @@ func installCompletion(root *cobra.Command, shell string) error {
 	switch shell {
 	case "bash":
 		targetFile := filepath.Join(home, ".bashrc")
-		content := fmt.Sprintf("%s\nif command -v ops >/dev/null 2>&1; then\n  eval \"$(ops completion bash)\"\nfi\n%s\n", beginMarker, endMarker)
+		content := fmt.Sprintf("%s\nif [ -d \"$HOME/.local/bin\" ]; then\n  case \":$PATH:\" in\n    *\":$HOME/.local/bin:\"*) ;;\n    *) export PATH=\"$HOME/.local/bin:$PATH\" ;;\n  esac\nfi\nif [ -d \"$HOME/go/bin\" ]; then\n  case \":$PATH:\" in\n    *\":$HOME/go/bin:\"*) ;;\n    *) export PATH=\"$HOME/go/bin:$PATH\" ;;\n  esac\nfi\nif command -v ops >/dev/null 2>&1; then\n  eval \"$(ops completion bash)\"\nfi\n%s\n", beginMarker, endMarker)
 		return updateProfileFile(targetFile, beginMarker, endMarker, content)
 
 	case "zsh":
 		targetFile := filepath.Join(home, ".zshrc")
-		content := fmt.Sprintf("%s\nif command -v ops >/dev/null 2>&1; then\n  eval \"$(ops completion zsh)\"\nfi\n%s\n", beginMarker, endMarker)
+		content := fmt.Sprintf("%s\nif [ -d \"$HOME/.local/bin\" ]; then\n  case \":$PATH:\" in\n    *\":$HOME/.local/bin:\"*) ;;\n    *) export PATH=\"$HOME/.local/bin:$PATH\" ;;\n  esac\nfi\nif [ -d \"$HOME/go/bin\" ]; then\n  case \":$PATH:\" in\n    *\":$HOME/go/bin:\"*) ;;\n    *) export PATH=\"$HOME/go/bin:$PATH\" ;;\n  esac\nfi\nif command -v ops >/dev/null 2>&1; then\n  eval \"$(ops completion zsh)\"\nfi\n%s\n", beginMarker, endMarker)
 		return updateProfileFile(targetFile, beginMarker, endMarker, content)
 
 	case "fish":
@@ -127,6 +127,8 @@ func installCompletion(root *cobra.Command, shell string) error {
 		if err := os.WriteFile(targetFile, buf.Bytes(), 0o600); err != nil { // #nosec G703,G304 -- fish completion file in user home directory
 			return fmt.Errorf("write fish completion: %w", err)
 		}
+		targetOpspulseFile := filepath.Clean(filepath.Join(targetDir, "opspulse.fish"))
+		_ = os.WriteFile(targetOpspulseFile, buf.Bytes(), 0o600) // #nosec G703,G304
 		fmt.Printf("✅ Fish completions written to %s\n", targetFile)
 		return nil
 
@@ -137,7 +139,7 @@ func installCompletion(root *cobra.Command, shell string) error {
 		}
 		_ = os.MkdirAll(targetDir, 0o750)
 		targetFile := filepath.Join(targetDir, "Microsoft.PowerShell_profile.ps1")
-		content := fmt.Sprintf("%s\nif (Get-Command ops -ErrorAction SilentlyContinue) {\n    Invoke-Expression (&ops completion powershell | Out-String)\n}\n%s\n", beginMarker, endMarker)
+		content := fmt.Sprintf("%s\n$gopathBin = Join-Path $HOME \"go\\bin\"\nif (Test-Path $gopathBin) {\n    if ($env:PATH -notlike \"*$gopathBin*\") { $env:PATH = \"$gopathBin;$env:PATH\" }\n}\n$localBin = Join-Path $HOME \".local\\bin\"\nif (Test-Path $localBin) {\n    if ($env:PATH -notlike \"*$localBin*\") { $env:PATH = \"$localBin;$env:PATH\" }\n}\nif (Get-Command ops -ErrorAction SilentlyContinue) {\n    Invoke-Expression (&ops completion powershell | Out-String)\n}\n%s\n", beginMarker, endMarker)
 		return updateProfileFile(targetFile, beginMarker, endMarker, content)
 
 	default:
@@ -208,5 +210,11 @@ func ensureBinaryInPath(home string) {
 	// #nosec G302
 	if err := os.Chmod(targetExe, 0o755); err == nil {
 		fmt.Printf("✅ Automatically installed 'ops' binary to %s (user PATH)\n", targetExe)
+	}
+	targetOpspulse := filepath.Clean(filepath.Join(localBin, "opspulse"))
+	// #nosec G703
+	if err := os.WriteFile(targetOpspulse, data, 0o600); err == nil {
+		// #nosec G302
+		_ = os.Chmod(targetOpspulse, 0o755)
 	}
 }
