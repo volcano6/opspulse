@@ -58,6 +58,7 @@ func setupAddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("user", "u", "root", "SSH username")
 	cmd.Flags().StringP("identity", "i", "", "Path to private key file")
 	cmd.Flags().StringP("key", "k", "", "Path to private key file (alias for -i)")
+	cmd.Flags().StringP("jump-host", "J", "", "Jump host server name from inventory (bastion host)")
 	cmd.Flags().Bool("no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
 	cmd.Flags().Bool("skip-test", false, "Skip SSH connectivity test when adding server")
 	cmd.Flags().String("password", "", "SSH password (optional; prompted interactively if omitted and no key provided)")
@@ -66,6 +67,7 @@ func setupAddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("desc", "d", "", "Server description")
 	_ = cmd.RegisterFlagCompletionFunc("identity", completePrivateKeyPath)
 	_ = cmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
+	_ = cmd.RegisterFlagCompletionFunc("jump-host", completeServerNames)
 }
 
 func parseTarget(target string) (user, host string, port int, err error) {
@@ -254,7 +256,8 @@ func handlePublicKeyInjection(in io.Reader, out io.Writer, srv *server.Server, p
 	passwordServer.KeyPath = ""
 	passwordServer.Password = password
 
-	exec := executor.NewSSHExecutor()
+	store := server.NewDefaultStore()
+	exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 	injectCtx, injectCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer injectCancel()
 
@@ -357,6 +360,18 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 	tagsStr, _ := cmd.Flags().GetString("tags")
 	labelsStr, _ := cmd.Flags().GetString("labels")
 	desc, _ := cmd.Flags().GetString("desc")
+	jumpHost, _ := cmd.Flags().GetString("jump-host")
+	jumpHost = strings.TrimSpace(jumpHost)
+
+	store := server.NewDefaultStore()
+	if jumpHost != "" {
+		if strings.EqualFold(jumpHost, name) {
+			return server.ErrSelfReferencingJumpHost
+		}
+		if _, err := store.Get(jumpHost); err != nil {
+			return fmt.Errorf("jump host %q not found in inventory: %w", jumpHost, err)
+		}
+	}
 
 	var tags []string
 	if tagsStr != "" {
@@ -415,14 +430,19 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 		User:        user,
 		KeyPath:     finalKeyPath,
 		Password:    password,
+		JumpHost:    jumpHost,
 		Tags:        tags,
 		Labels:      labels,
 		Description: desc,
 	}
 
 	if !skipTest {
-		_, _ = fmt.Fprintf(os.Stdout, "--> Verifying SSH connection to %s (%s)...\n", srv.Name, srv.Address())
-		exec := executor.NewSSHExecutor()
+		if srv.JumpHost != "" {
+			_, _ = fmt.Fprintf(os.Stdout, "--> Verifying SSH connection to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
+		} else {
+			_, _ = fmt.Fprintf(os.Stdout, "--> Verifying SSH connection to %s (%s)...\n", srv.Name, srv.Address())
+		}
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
@@ -444,7 +464,6 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	store := server.NewDefaultStore()
 	if err := store.Save(srv); err != nil {
 		if keyWasCopied {
 			cleanupManagedKey(finalKeyPath)

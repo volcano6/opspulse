@@ -86,6 +86,13 @@ func RenderSSHConfig(servers []Server) string {
 			buf.WriteString("    PubkeyAuthentication no\n")
 			buf.WriteString("    PreferredAuthentications password,keyboard-interactive\n")
 		}
+
+		buf.WriteString("    HostKeyAlgorithms +ssh-rsa,ssh-dss\n")
+		buf.WriteString("    PubkeyAcceptedKeyTypes +ssh-rsa\n")
+
+		if s.JumpHost != "" {
+			buf.WriteString(fmt.Sprintf("    ProxyJump %s\n", s.JumpHost))
+		}
 	}
 
 	buf.WriteString(MarkerEnd + "\n")

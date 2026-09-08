@@ -2,6 +2,7 @@
 package sftp
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -20,33 +21,39 @@ import (
 type Client struct {
 	sshClient  *ssh.Client
 	sftpClient *sftp.Client
+	cleanup    func()
 }
 
 // NewClient establishes an SSH connection and initializes an SFTP subsystem client.
 func NewClient(srv server.Server, timeout time.Duration) (*Client, error) {
+	return NewClientWithJump(srv, nil, timeout)
+}
+
+// NewClientWithJump establishes an SSH connection (optionally through a jump host) and initializes an SFTP subsystem client.
+func NewClientWithJump(srv server.Server, jump *server.Server, timeout time.Duration) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
-	config, err := executor.BuildClientConfig(srv, timeout)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build ssh config for %s: %w", srv.Name, err)
-	}
+	exec := executor.NewSSHExecutor()
+	exec.ConnectTimeout = timeout
+	target := executor.NewServerTargetWithJump(srv, jump)
 
-	sshConn, err := ssh.Dial("tcp", srv.Address(), config)
+	sshConn, cleanup, err := exec.DialTarget(context.Background(), target)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s (%s): %w", srv.Name, srv.Address(), err)
 	}
 
 	sftpConn, err := sftp.NewClient(sshConn)
 	if err != nil {
-		_ = sshConn.Close()
+		cleanup()
 		return nil, fmt.Errorf("failed to initialize sftp subsystem on %s: %w", srv.Name, err)
 	}
 
 	return &Client{
 		sshClient:  sshConn,
 		sftpClient: sftpConn,
+		cleanup:    cleanup,
 	}, nil
 }
 
@@ -58,7 +65,9 @@ func (c *Client) Close() error {
 			errs = append(errs, err.Error())
 		}
 	}
-	if c.sshClient != nil {
+	if c.cleanup != nil {
+		c.cleanup()
+	} else if c.sshClient != nil {
 		if err := c.sshClient.Close(); err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -98,19 +107,35 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return 0, fmt.Errorf("failed to create remote directory %q: %w", remoteDir, err)
 	}
 
-	dstFile, err := c.sftpClient.Create(remotePath)
+	tmpRemote := fmt.Sprintf("%s.tmp.%d", remotePath, time.Now().UnixNano())
+	dstFile, err := c.sftpClient.Create(tmpRemote)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create remote file %q: %w", remotePath, err)
-	}
-	defer func() { _ = dstFile.Close() }()
-
-	n, err := io.Copy(dstFile, srcFile)
-	if err != nil {
-		return 0, fmt.Errorf("failed to upload data to %q: %w", remotePath, err)
+		return 0, fmt.Errorf("failed to create remote temporary file %q: %w", tmpRemote, err)
 	}
 
-	if err := c.sftpClient.Chmod(remotePath, srcStat.Mode().Perm()); err != nil {
-		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", remotePath, err)
+	n, copyErr := io.Copy(dstFile, srcFile)
+	closeErr := dstFile.Close()
+	if copyErr != nil {
+		_ = c.sftpClient.Remove(tmpRemote)
+		return 0, fmt.Errorf("failed to upload data to %q: %w", remotePath, copyErr)
+	}
+	if closeErr != nil {
+		_ = c.sftpClient.Remove(tmpRemote)
+		return 0, fmt.Errorf("failed to close remote temporary file %q: %w", tmpRemote, closeErr)
+	}
+
+	if err := c.sftpClient.Chmod(tmpRemote, srcStat.Mode().Perm()); err != nil {
+		_ = c.sftpClient.Remove(tmpRemote)
+		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", tmpRemote, err)
+	}
+
+	// Atomically rename temporary file to destination
+	_ = c.sftpClient.Remove(remotePath)
+	if err := c.sftpClient.PosixRename(tmpRemote, remotePath); err != nil {
+		if rErr := c.sftpClient.Rename(tmpRemote, remotePath); rErr != nil {
+			_ = c.sftpClient.Remove(tmpRemote)
+			return n, fmt.Errorf("failed to rename %q to %q: %w", tmpRemote, remotePath, rErr)
+		}
 	}
 	return n, nil
 }
@@ -144,19 +169,30 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		return 0, fmt.Errorf("failed to create local directory %q: %w", localDir, err)
 	}
 
-	dstFile, err := os.Create(localPath)
+	tmpFile, err := os.CreateTemp(localDir, filepath.Base(localPath)+".tmp.*")
 	if err != nil {
-		return 0, fmt.Errorf("failed to create local file %q: %w", localPath, err)
+		return 0, fmt.Errorf("failed to create local temporary file: %w", err)
 	}
-	defer func() { _ = dstFile.Close() }()
+	tmpName := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpName)
+	}()
 
-	n, err := io.Copy(dstFile, srcFile)
-	if err != nil {
-		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, err)
+	n, copyErr := io.Copy(tmpFile, srcFile)
+	if copyErr != nil {
+		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, copyErr)
 	}
 
-	if err := os.Chmod(localPath, srcStat.Mode().Perm()); err != nil {
-		return n, fmt.Errorf("failed to set local file permissions on %q: %w", localPath, err)
+	if err := tmpFile.Chmod(srcStat.Mode().Perm()); err != nil {
+		return n, fmt.Errorf("failed to set local file permissions on %q: %w", tmpName, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return n, fmt.Errorf("failed to close local temporary file %q: %w", tmpName, err)
+	}
+
+	if err := os.Rename(tmpName, localPath); err != nil {
+		return n, fmt.Errorf("failed to rename %q to %q: %w", tmpName, localPath, err)
 	}
 	return n, nil
 }

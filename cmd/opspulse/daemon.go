@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/notify"
@@ -40,8 +41,9 @@ Signals SIGINT and SIGTERM trigger a graceful shutdown, waiting for in-flight jo
 		defer func() { _ = db.Close() }()
 
 		backupRepo := storage.NewBackupRepo(db)
-		exec := executor.NewSSHExecutor()
-		runner := backup.NewRunner(exec, serverStore, backupRepo)
+		assetStore := asset.NewDefaultStore()
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
+		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
 		dispatcher := notify.NewDispatcher(notifyStore)
 
 		sched := scheduler.New(backupStore, runner, dispatcher, os.Stdout)

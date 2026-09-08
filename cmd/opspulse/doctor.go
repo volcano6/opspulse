@@ -73,7 +73,7 @@ Examples:
 		sem := make(chan struct{}, doctorParallel)
 		var wg sync.WaitGroup
 
-		exec := executor.NewSSHExecutor()
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 
 		for i, srv := range targets {
 			wg.Add(1)

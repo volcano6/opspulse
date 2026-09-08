@@ -270,4 +270,45 @@ func TestServerAddCommand_Integration(t *testing.T) {
 	if err := rootCmd.Execute(); err == nil {
 		t.Fatalf("expected error when host is missing, got nil")
 	}
+
+	// Test 5: Add with Jump Host (-J)
+	rootCmd.SetArgs([]string{"add", "node-internal", "ubuntu@vps2", "-J", "node-1", "--skip-test"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(add with -J) error: %v", err)
+	}
+	sJump, err := store.Get("node-internal")
+	if err != nil {
+		t.Fatalf("failed to retrieve node-internal: %v", err)
+	}
+	if sJump.JumpHost != "node-1" || sJump.Host != "vps2" || sJump.User != "ubuntu" {
+		t.Errorf("node-internal attributes mismatch: JumpHost=%s, Host=%s, User=%s", sJump.JumpHost, sJump.Host, sJump.User)
+	}
+
+	// Test 6: Add with non-existent jump host error
+	rootCmd.SetArgs([]string{"add", "node-bad-jump", "10.0.0.5", "-J", "ghost-server", "--skip-test"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected error when jump host doesn't exist, got nil")
+	}
+
+	// Test 7: Add with self-referencing jump host error
+	rootCmd.SetArgs([]string{"add", "self-jump", "10.0.0.6", "-J", "self-jump", "--skip-test"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected error when jump host is self-referencing, got nil")
+	}
+
+	// Test 8: Remove jump host that has dependent servers is blocked
+	rootCmd.SetArgs([]string{"server", "remove", "node-1"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected error when removing server with dependents, got nil")
+	}
+
+	// Remove dependent first, then removing jump host succeeds
+	rootCmd.SetArgs([]string{"server", "remove", "node-internal"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("unexpected error removing dependent server: %v", err)
+	}
+	rootCmd.SetArgs([]string{"server", "remove", "node-1"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("unexpected error removing jump host after dependent was removed: %v", err)
+	}
 }

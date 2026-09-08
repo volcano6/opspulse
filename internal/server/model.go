@@ -17,6 +17,10 @@ var (
 	ErrInvalidServerName = errors.New("server name cannot be empty")
 	// ErrInvalidHost is returned when the server host is empty.
 	ErrInvalidHost = errors.New("server host cannot be empty")
+	// ErrSelfReferencingJumpHost is returned when a server specifies itself as its jump host.
+	ErrSelfReferencingJumpHost = errors.New("server cannot specify itself as jump host")
+	// ErrJumpHostCycle is returned when a cycle is detected in jump host dependencies.
+	ErrJumpHostCycle = errors.New("cyclic jump host dependency detected")
 )
 
 // Server represents a managed server instance.
@@ -27,6 +31,7 @@ type Server struct {
 	User        string            `yaml:"user" json:"user"`
 	KeyPath     string            `yaml:"key_path,omitempty" json:"key_path,omitempty"`
 	Password    string            `yaml:"password,omitempty" json:"password,omitempty"`
+	JumpHost    string            `yaml:"jump_host,omitempty" json:"jump_host,omitempty"`
 	Tags        []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
@@ -50,6 +55,9 @@ func (s *Server) Validate() error {
 	}
 	if strings.TrimSpace(s.User) == "" {
 		s.User = "root"
+	}
+	if s.JumpHost != "" && strings.EqualFold(strings.TrimSpace(s.JumpHost), strings.TrimSpace(s.Name)) {
+		return ErrSelfReferencingJumpHost
 	}
 	return nil
 }

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
+	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/storage"
 )
 
@@ -73,7 +75,7 @@ func (r *Runner) RunContainerBackup(
 
 	// 1. Inspect container via docker inspect
 	var inspectBuf bytes.Buffer
-	inspectScript := fmt.Sprintf("docker inspect %q", containerName)
+	inspectScript := fmt.Sprintf("docker inspect %s", shellquote.Quote(containerName))
 	inspectRes, inspectErr := execToUse.Execute(ctx, target, "inspect-"+containerName, inspectScript, &inspectBuf)
 	if inspectErr != nil {
 		return nil, fmt.Errorf("failed to inspect container %q on %s: %w", containerName, serverName, inspectErr)
@@ -88,12 +90,13 @@ func (r *Runner) RunContainerBackup(
 	}
 
 	var (
-		backupPaths         []string
-		composePath         string
-		isCompose           = info.IsCompose()
-		isDatabase          = info.IsDatabase()
-		tempDumpPath        string
-		tempFilesToClean    []string
+		backupPaths      []string
+		composePath      string
+		isCompose        = info.IsCompose()
+		isDatabase       = info.IsDatabase()
+		tempDumpPath     string
+		tempFilesToClean []string
+		projectDir       string
 	)
 
 	// Clean up any temporary files created on target host upon exit
@@ -101,67 +104,97 @@ func (r *Runner) RunContainerBackup(
 		if len(tempFilesToClean) > 0 {
 			var rmParts []string
 			for _, f := range tempFilesToClean {
-				rmParts = append(rmParts, fmt.Sprintf("%q", f))
+				rmParts = append(rmParts, shellquote.Quote(f))
 			}
-			cleanScript := fmt.Sprintf("rm -f %s >/dev/null 2>&1 || true", strings.Join(rmParts, " "))
+			cleanScript := fmt.Sprintf("rm -rf %s >/dev/null 2>&1 || true", strings.Join(rmParts, " "))
 			_, _ = execToUse.Execute(context.Background(), target, "cleanup-temp", cleanScript, io.Discard)
 		}
 	}()
 
-	// 2. Resolve Service Configuration
+	// 2. Resolve Service Configuration and Project Layout
 	if isCompose {
-		composeDir := info.ComposeWorkingDir()
-		if composeDir != "" {
-			_, _ = fmt.Fprintf(consoleOut, "  -> Detected Docker Compose project at %q\n", composeDir)
-			backupPaths = append(backupPaths, composeDir)
-			composePath = filepath.Join(composeDir, "compose.yaml")
+		projectDir = info.ComposeWorkingDir()
+		if projectDir == "" {
+			projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
 		}
-		// Also include external bind mounts if any
-		for _, m := range info.Mounts {
-			if m.Type == "bind" && m.Source != "" {
-				if composeDir == "" || !strings.HasPrefix(m.Source, composeDir) {
+		_, _ = fmt.Fprintf(consoleOut, "  -> Detected Docker Compose project at %q\n", projectDir)
+		composePath = path.Join(projectDir, "compose.yaml")
+	} else {
+		projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
+		composePath = path.Join(projectDir, "compose.yaml")
+	}
+
+	manifest := &docker.ContainerManifest{
+		FormatVersion: 1,
+		App:           finalName,
+		ComposeFile:   "compose.yaml",
+	}
+
+	// 3. Process Mounts: Named Volumes and Bind Mounts
+	for _, m := range info.Mounts {
+		if m.Type == "volume" || docker.IsNamedVolume(m) {
+			volName := m.Name
+			if volName == "" {
+				volName = m.Source
+			}
+			if isDatabase && info.IsDatabaseDataDir(m.Destination) {
+				// Live physical database directory is excluded in favor of logical hot dump
+				continue
+			}
+			archiveRel := fmt.Sprintf("volumes/%s/data.tar", volName)
+			archiveFull := path.Join(projectDir, archiveRel)
+			manifest.Volumes = append(manifest.Volumes, docker.ManifestVolume{
+				OriginalName: volName,
+				Archive:      archiveRel,
+				Target:       m.Destination,
+			})
+
+			_, _ = fmt.Fprintf(consoleOut, "  -> Archiving named volume %q to %s...\n", volName, archiveRel)
+			exportScript := docker.BuildVolumeExportScript(volName, archiveFull)
+			expRes, expErr := execToUse.Execute(ctx, target, "export-vol-"+volName, exportScript, consoleOut)
+			if expErr != nil || (expRes != nil && !expRes.Success) {
+				return nil, fmt.Errorf("failed to export volume %q on target %s: %v", volName, serverName, expErr)
+			}
+			tempFilesToClean = append(tempFilesToClean, archiveFull)
+		} else if m.Type == "bind" {
+			if docker.IsSystemMount(m.Source) {
+				manifest.ExternalMounts = append(manifest.ExternalMounts, docker.ManifestExternalMount{
+					Source:   m.Source,
+					Target:   m.Destination,
+					Required: true,
+					Reason:   "system_mount",
+				})
+			} else {
+				manifest.ExternalMounts = append(manifest.ExternalMounts, docker.ManifestExternalMount{
+					Source:   m.Source,
+					Target:   m.Destination,
+					Required: true,
+					Reason:   "bind_mount",
+				})
+				if !strings.HasPrefix(m.Source, projectDir) {
 					backupPaths = append(backupPaths, m.Source)
 				}
 			}
 		}
-	} else {
-		// Standalone container: reverse-translate to compose.yaml
-		_, _ = fmt.Fprintf(consoleOut, "  -> Standalone container detected, reverse-compiling compose.yaml (name: %q)...\n", finalName)
-		yamlStr, genErr := docker.GenerateComposeYAML(info, opts.AliasName)
-		if genErr != nil {
-			return nil, fmt.Errorf("failed to generate compose.yaml: %w", genErr)
-		}
-
-		projectDir := fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
-		composeFile := filepath.Join(projectDir, "compose.yaml")
-		composePath = composeFile
-
-		// Write generated compose.yaml on target host
-		writeScript := fmt.Sprintf("mkdir -p %q && cat << 'EOF' > %q\n%s\nEOF\n", projectDir, composeFile, yamlStr)
-		writeRes, writeErr := execToUse.Execute(ctx, target, "write-compose-"+finalName, writeScript, io.Discard)
-		if writeErr != nil || (writeRes != nil && !writeRes.Success) {
-			return nil, fmt.Errorf("failed to write generated compose.yaml on target %s: %v", serverName, writeErr)
-		}
-
-		backupPaths = append(backupPaths, projectDir)
-
-		// Collect host bind mounts
-		for _, m := range info.Mounts {
-			if m.Type == "bind" && m.Source != "" {
-				backupPaths = append(backupPaths, m.Source)
-			}
-		}
 	}
 
-	// 3. Handle Database Hot Dump if applicable
+	// 4. Handle Database Hot Dump if applicable
 	if isDatabase {
 		engine := info.DatabaseEngine()
 		dumpFileName := docker.DumpFileName(finalName)
-		tempDumpPath = fmt.Sprintf("/tmp/opspulse-dumps/%s", dumpFileName)
-		tempFilesToClean = append(tempFilesToClean, tempDumpPath)
+		dumpRel := fmt.Sprintf("dumps/%s", dumpFileName)
+		dumpFull := path.Join(projectDir, dumpRel)
+		tempDumpPath = dumpFull
+		tempFilesToClean = append(tempFilesToClean, dumpFull)
 
-		_, _ = fmt.Fprintf(consoleOut, "  -> Database container detected (%s), creating online hot dump at %s...\n", engine, tempDumpPath)
-		dumpScript, dumpScriptErr := docker.BuildDumpScript(engine, containerName, tempDumpPath)
+		manifest.Database = &docker.ManifestDatabase{
+			Engine:    engine,
+			Container: containerName,
+			Dump:      dumpRel,
+		}
+
+		_, _ = fmt.Fprintf(consoleOut, "  -> Database container detected (%s), creating online hot dump at %s...\n", engine, dumpRel)
+		dumpScript, dumpScriptErr := docker.BuildDumpScript(engine, containerName, dumpFull)
 		if dumpScriptErr != nil {
 			return nil, fmt.Errorf("failed to build dump script: %w", dumpScriptErr)
 		}
@@ -170,11 +203,39 @@ func (r *Runner) RunContainerBackup(
 		if dumpErr != nil || (dumpRes != nil && !dumpRes.Success) {
 			return nil, fmt.Errorf("database dump failed for container %q: %v", containerName, dumpErr)
 		}
-
-		backupPaths = append(backupPaths, tempDumpPath)
 	}
 
-	// 4. Inherit repository backend and credentials
+	// 5. Generate and write compose.yaml (for standalone) and manifest.yaml (all)
+	if !isCompose {
+		_, _ = fmt.Fprintf(consoleOut, "  -> Standalone container detected, reverse-compiling compose.yaml (name: %q)...\n", finalName)
+		yamlStr, genErr := docker.GenerateComposeYAML(info, opts.AliasName)
+		if genErr != nil {
+			return nil, fmt.Errorf("failed to generate compose.yaml: %w", genErr)
+		}
+
+		writeScript := fmt.Sprintf("mkdir -p %s && cat << 'EOF' > %s\n%s\nEOF\n",
+			shellquote.Quote(projectDir), shellquote.Quote(composePath), yamlStr)
+		writeRes, writeErr := execToUse.Execute(ctx, target, "write-compose-"+finalName, writeScript, io.Discard)
+		if writeErr != nil || (writeRes != nil && !writeRes.Success) {
+			return nil, fmt.Errorf("failed to write generated compose.yaml on target %s: %v", serverName, writeErr)
+		}
+	}
+
+	manifestYAML, mErr := docker.MarshalManifest(manifest)
+	if mErr != nil {
+		return nil, fmt.Errorf("failed to marshal container manifest: %w", mErr)
+	}
+	manifestFile := path.Join(projectDir, docker.ManifestFileName)
+	writeManifestScript := fmt.Sprintf("mkdir -p %s && cat << 'EOF' > %s\n%s\nEOF\n",
+		shellquote.Quote(projectDir), shellquote.Quote(manifestFile), manifestYAML)
+	mRes, mErr := execToUse.Execute(ctx, target, "write-manifest-"+finalName, writeManifestScript, io.Discard)
+	if mErr != nil || (mRes != nil && !mRes.Success) {
+		return nil, fmt.Errorf("failed to write manifest.yaml on target %s: %v", serverName, mErr)
+	}
+
+	backupPaths = append(backupPaths, projectDir)
+
+	// 6. Inherit repository backend and credentials
 	backend, env := r.resolveInheritedBackend(finalName)
 	if backend == "" {
 		return nil, fmt.Errorf("no backup repository configured in backups.yaml and RESTIC_REPOSITORY is not set")
@@ -183,7 +244,7 @@ func (r *Runner) RunContainerBackup(
 	cleanPaths := dedupPaths(backupPaths)
 	_, _ = fmt.Fprintf(consoleOut, "  -> Target paths to back up: %s\n", strings.Join(cleanPaths, ", "))
 
-	// 5. Execute backup
+	// 7. Execute backup
 	job := Job{
 		Name:        finalName,
 		Server:      serverName,
@@ -199,10 +260,12 @@ func (r *Runner) RunContainerBackup(
 		return nil, runErr
 	}
 
-	// 6. Automatically persist configuration on success
+	// 8. Automatically persist configuration on success
 	if runRecord != nil && runRecord.Status == "success" {
 		if r.backupStore != nil {
-			_ = r.backupStore.Save(job)
+			if err := r.backupStore.Save(job); err != nil {
+				_, _ = fmt.Fprintf(consoleOut, "Warning: failed to persist backup job %q to store: %v\n", job.Name, err)
+			}
 		}
 		if r.assetStore != nil {
 			assetType := asset.TypeDockerCompose
@@ -219,7 +282,9 @@ func (r *Runner) RunContainerBackup(
 				newAsset.Engine = info.DatabaseEngine()
 				newAsset.Container = containerName
 			}
-			_ = r.assetStore.Save(newAsset)
+			if err := r.assetStore.Save(newAsset); err != nil {
+				_, _ = fmt.Fprintf(consoleOut, "Warning: failed to persist asset %q to store: %v\n", newAsset.ID, err)
+			}
 		}
 	}
 

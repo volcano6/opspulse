@@ -55,6 +55,7 @@ func TestRestoreRunner_Run_AutoStartByDefault(t *testing.T) {
 	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
 	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
 
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
 	_ = serverStore.Save(server.Server{Name: "vps-02", Host: "10.0.0.2", User: "root"})
 
 	job := Job{
@@ -85,16 +86,16 @@ func TestRestoreRunner_Run_AutoStartByDefault(t *testing.T) {
 		t.Errorf("record.Status = %q, want success", record.Status)
 	}
 
-	// Verify autostart was invoked
+	// Verify autostart or manifest check was invoked
 	foundAutostart := false
 	for _, task := range mockExec.tasksExecuted {
-		if strings.HasPrefix(task, "autostart-") {
+		if strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "read-manifest-") {
 			foundAutostart = true
 			break
 		}
 	}
 	if !foundAutostart {
-		t.Errorf("expected autostart task to be executed, executed tasks: %v", mockExec.tasksExecuted)
+		t.Errorf("expected autostart or read-manifest task to be executed, executed tasks: %v", mockExec.tasksExecuted)
 	}
 }
 
@@ -111,6 +112,7 @@ func TestRestoreRunner_Run_NoStartSuppressed(t *testing.T) {
 	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
 	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
 
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
 	_ = serverStore.Save(server.Server{Name: "vps-02", Host: "10.0.0.2", User: "root"})
 
 	job := Job{
@@ -141,8 +143,68 @@ func TestRestoreRunner_Run_NoStartSuppressed(t *testing.T) {
 
 	// Verify autostart was NOT invoked
 	for _, task := range mockExec.tasksExecuted {
-		if strings.HasPrefix(task, "autostart-") {
+		if strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "read-manifest-") {
 			t.Errorf("autostart task should NOT be executed when NoStart is true, got: %v", mockExec.tasksExecuted)
 		}
+	}
+}
+
+func TestRestoredPath(t *testing.T) {
+	tests := []struct {
+		target   string
+		original string
+		expected string
+	}{
+		{"/", "/var/lib/app", "/var/lib/app"},
+		{"", "/var/lib/app", "/var/lib/app"},
+		{"/mnt/restore", "/var/lib/app", "/mnt/restore/var/lib/app"},
+		{"/mnt/restore/", "/var/lib/app", "/mnt/restore/var/lib/app"},
+		{"/opt/dest", "/tmp/dump.sql.gz", "/opt/dest/tmp/dump.sql.gz"},
+	}
+
+	for _, tt := range tests {
+		got := RestoredPath(tt.target, tt.original)
+		if got != tt.expected {
+			t.Errorf("RestoredPath(%q, %q) = %q, want %q", tt.target, tt.original, got, tt.expected)
+		}
+	}
+}
+
+func TestRestoreRunner_Run_WrongSnapshotRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	restoreRepo := storage.NewRestoreRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
+
+	job := Job{
+		Name:    "my-app",
+		Server:  "vps-01",
+		Paths:   []string{"/var/lib/opspulse/containers/my-app"},
+		Backend: "/mnt/repo",
+	}
+
+	mockExec := &restoreMockExecutor{}
+	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
+
+	opts := RestoreOptions{
+		SnapshotID: "wrong-snapshot-from-other-job",
+	}
+
+	var buf bytes.Buffer
+	_, err = runner.Run(context.Background(), job, opts, &buf)
+	if err == nil {
+		t.Fatal("expected error when restoring snapshot belonging to another job, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not belong to job") {
+		t.Errorf("error message should mention snapshot mismatch: %v", err)
 	}
 }

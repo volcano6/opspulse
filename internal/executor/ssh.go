@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -20,44 +21,116 @@ var ErrInvalidTarget = errors.New("invalid target for executor")
 type SSHExecutor struct {
 	ConnectTimeout time.Duration
 	ExecuteTimeout time.Duration
+	ServerResolver func(name string) (*server.Server, error)
 }
 
 // NewSSHExecutor creates a new SSHExecutor with sensible default timeouts.
 func NewSSHExecutor() *SSHExecutor {
 	return &SSHExecutor{
 		ConnectTimeout: 15 * time.Second,
-		ExecuteTimeout: 15 * time.Minute,
+		ExecuteTimeout: 0,
 	}
+}
+
+// WithServerResolver sets the server resolver callback and returns the executor.
+func (e *SSHExecutor) WithServerResolver(resolver func(name string) (*server.Server, error)) *SSHExecutor {
+	e.ServerResolver = resolver
+	return e
+}
+
+// DialTarget establishes an SSH client connection to the target server, optionally
+// tunneling through target.JumpServer via SSH direct-tcpip port forwarding.
+// The caller must invoke the returned cleanup function when finished.
+func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Client, func(), error) {
+	if target.Server == nil {
+		return nil, nil, fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
+	}
+	srv := *target.Server
+
+	targetConfig, err := BuildClientConfig(srv, e.ConnectTimeout)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	jumpSrv := target.JumpServer
+	if jumpSrv == nil && srv.JumpHost != "" && e.ServerResolver != nil {
+		resolved, err := e.ServerResolver(srv.JumpHost)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to resolve jump host %q for server %q: %w", srv.JumpHost, srv.Name, err)
+		}
+		jumpSrv = resolved
+	}
+
+	var dialer net.Dialer
+
+	// 1. If Jump Host is configured, establish direct-tcpip tunnel through it
+	if jumpSrv != nil {
+		jumpConfig, err := BuildClientConfig(*jumpSrv, e.ConnectTimeout)
+		if err != nil {
+			return nil, nil, fmt.Errorf("jump host %s config error: %w", jumpSrv.Name, err)
+		}
+
+		jumpConn, err := dialer.DialContext(ctx, "tcp", jumpSrv.Address())
+		if err != nil {
+			return nil, nil, &NetworkError{Host: jumpSrv.Host, Reason: fmt.Errorf("connect to jump host: %w", err)}
+		}
+
+		jumpSSHConn, chans, reqs, err := ssh.NewClientConn(jumpConn, jumpSrv.Address(), jumpConfig)
+		if err != nil {
+			_ = jumpConn.Close()
+			return nil, nil, &AuthError{User: jumpSrv.User, Host: jumpSrv.Host, Reason: fmt.Errorf("authenticate with jump host: %w", err)}
+		}
+		jumpClient := ssh.NewClient(jumpSSHConn, chans, reqs)
+
+		tunnelConn, err := jumpClient.Dial("tcp", srv.Address())
+		if err != nil {
+			_ = jumpClient.Close()
+			return nil, nil, &NetworkError{Host: srv.Host, Reason: fmt.Errorf("open tunnel through jump host %s: %w", jumpSrv.Name, err)}
+		}
+
+		targetSSHConn, tChans, tReqs, err := ssh.NewClientConn(tunnelConn, srv.Address(), targetConfig)
+		if err != nil {
+			_ = tunnelConn.Close()
+			_ = jumpClient.Close()
+			return nil, nil, &AuthError{User: srv.User, Host: srv.Host, Reason: err}
+		}
+		targetClient := ssh.NewClient(targetSSHConn, tChans, tReqs)
+
+		cleanup := func() {
+			_ = targetClient.Close()
+			_ = tunnelConn.Close()
+			_ = jumpClient.Close()
+		}
+		return targetClient, cleanup, nil
+	}
+
+	// 2. Direct connection
+	addr := srv.Address()
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, nil, &NetworkError{Host: srv.Host, Reason: err}
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, targetConfig)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, &AuthError{User: srv.User, Host: srv.Host, Reason: err}
+	}
+	client := ssh.NewClient(sshConn, chans, reqs)
+	cleanup := func() {
+		_ = client.Close()
+	}
+	return client, cleanup, nil
 }
 
 // Test checks SSH connectivity and returns latency and system info.
 func (e *SSHExecutor) Test(ctx context.Context, target Target) (time.Duration, string, error) {
-	if target.Server == nil {
-		return 0, "", fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
-	}
-	srv := *target.Server
-
-	config, err := BuildClientConfig(srv, e.ConnectTimeout)
+	start := time.Now()
+	client, cleanup, err := e.DialTarget(ctx, target)
 	if err != nil {
 		return 0, "", err
 	}
-
-	start := time.Now()
-	addr := srv.Address()
-
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return 0, "", &NetworkError{Host: srv.Host, Reason: err}
-	}
-	defer func() { _ = conn.Close() }()
-
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-	if err != nil {
-		return 0, "", &AuthError{User: srv.User, Host: srv.Host, Reason: err}
-	}
-	client := ssh.NewClient(sshConn, chans, reqs)
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -90,6 +163,12 @@ func (e *SSHExecutor) Test(ctx context.Context, target Target) (time.Duration, s
 
 // Execute runs a script on the remote server, streaming stdout/stderr to outputWriter.
 func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName string, scriptContent string, outputWriter io.Writer) (*Result, error) {
+	if e.ExecuteTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.ExecuteTimeout)
+		defer cancel()
+	}
+
 	startTime := time.Now()
 	res := &Result{
 		ServerName: target.Name,
@@ -105,36 +184,14 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	}
 	srv := *target.Server
 
-	config, err := BuildClientConfig(srv, e.ConnectTimeout)
+	client, cleanup, err := e.DialTarget(ctx, target)
 	if err != nil {
 		res.Error = err
 		res.EndTime = time.Now()
 		res.Duration = res.EndTime.Sub(startTime)
 		return res, err
 	}
-
-	addr := srv.Address()
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		netErr := &NetworkError{Host: srv.Host, Reason: err}
-		res.Error = netErr
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
-		return res, netErr
-	}
-	defer func() { _ = conn.Close() }()
-
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-	if err != nil {
-		authErr := &AuthError{User: srv.User, Host: srv.Host, Reason: err}
-		res.Error = authErr
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
-		return res, authErr
-	}
-	client := ssh.NewClient(sshConn, chans, reqs)
-	defer func() { _ = client.Close() }()
+	defer cleanup()
 
 	session, err := client.NewSession()
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 var (
@@ -67,12 +69,12 @@ func BuildDumpScript(engine, containerName, destPath string) (string, error) {
 	sb.WriteString("set -euo pipefail\n\n")
 
 	// Ensure destination directory exists
-	_, _ = fmt.Fprintf(&sb, "mkdir -p %q\n\n", dir)
+	sb.WriteString("mkdir -p " + shellquote.Quote(dir) + "\n\n")
 
 	switch canonicalEngine {
 	case EngineMySQL:
 		_, _ = fmt.Fprintf(&sb, `# Dump MySQL/MariaDB database container %s
-docker exec %q sh -c '
+docker exec %s sh -c '
   if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
     PASS="-p$MYSQL_ROOT_PASSWORD"
   elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
@@ -81,23 +83,23 @@ docker exec %q sh -c '
     PASS=""
   fi
   mysqldump --single-transaction --quick -u root $PASS --all-databases
-' | gzip > %q
-`, cName, cName, dst)
+' | gzip > %s
+`, cName, shellquote.Quote(cName), shellquote.Quote(dst))
 
 	case EnginePostgres:
 		_, _ = fmt.Fprintf(&sb, `# Dump PostgreSQL database container %s
-docker exec %q sh -c '
+docker exec %s sh -c '
   export PGPASSWORD="${POSTGRES_PASSWORD:-}"
   pg_dumpall -U "${POSTGRES_USER:-postgres}"
-' | gzip > %q
-`, cName, cName, dst)
+' | gzip > %s
+`, cName, shellquote.Quote(cName), shellquote.Quote(dst))
 	}
 
 	return sb.String(), nil
 }
 
 // BuildImportScript generates a bash script to wait for the target database container to be ready
-// and import a compressed SQL dump.
+// and import a compressed SQL dump. If the dump file does not exist, it exits with error 1.
 func BuildImportScript(engine, containerName, srcPath string) (string, error) {
 	canonicalEngine, err := NormalizeDatabaseEngine(engine)
 	if err != nil {
@@ -116,21 +118,21 @@ func BuildImportScript(engine, containerName, srcPath string) (string, error) {
 	sb.WriteString("#!/usr/bin/env bash\n")
 	sb.WriteString("set -euo pipefail\n\n")
 
-	// Check if dump file exists
-	_, _ = fmt.Fprintf(&sb, `if [ ! -f %q ]; then
-  echo "Dump file %q not found, skipping database import." >&2
-  exit 0
+	// Check if dump file exists; in database restore mode, missing dump is a fatal error
+	_, _ = fmt.Fprintf(&sb, `if [ ! -f %s ]; then
+  echo "Error: Database dump file %s not found on target system." >&2
+  exit 1
 fi
 
-`, src, src)
+`, shellquote.Quote(src), shellquote.Quote(src))
 
 	switch canonicalEngine {
 	case EngineMySQL:
 		_, _ = fmt.Fprintf(&sb, `# Wait for MySQL container %s to accept connections
-echo "Waiting for MySQL in container %q to become ready..."
+echo "Waiting for MySQL in container " %s " to become ready..."
 ready=0
 for i in $(seq 1 60); do
-  if docker exec %q sh -c '
+  if docker exec %s sh -c '
     if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
       PASS="-p$MYSQL_ROOT_PASSWORD"
     elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
@@ -147,12 +149,12 @@ for i in $(seq 1 60); do
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo "Error: Timed out waiting for MySQL container %q to be ready." >&2
+  echo "Error: Timed out waiting for MySQL container " %s " to be ready." >&2
   exit 1
 fi
 
-echo "MySQL is ready. Importing database dump from %q..."
-gunzip -c %q | docker exec -i %q sh -c '
+echo "MySQL is ready. Importing database dump from " %s "..."
+gunzip -c %s | docker exec -i %s sh -c '
   if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
     PASS="-p$MYSQL_ROOT_PASSWORD"
   elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
@@ -162,15 +164,15 @@ gunzip -c %q | docker exec -i %q sh -c '
   fi
   mysql -u root $PASS
 '
-echo "Database import into %q completed successfully."
-`, cName, cName, cName, cName, src, src, cName, cName)
+echo "Database import into " %s " completed successfully."
+`, cName, shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(src), shellquote.Quote(src), shellquote.Quote(cName), shellquote.Quote(cName))
 
 	case EnginePostgres:
 		_, _ = fmt.Fprintf(&sb, `# Wait for PostgreSQL container %s to accept connections
-echo "Waiting for PostgreSQL in container %q to become ready..."
+echo "Waiting for PostgreSQL in container " %s " to become ready..."
 ready=0
 for i in $(seq 1 60); do
-  if docker exec %q sh -c 'pg_isready -U "${POSTGRES_USER:-postgres}"' >/dev/null 2>&1; then
+  if docker exec %s sh -c 'pg_isready -U "${POSTGRES_USER:-postgres}"' >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -178,17 +180,17 @@ for i in $(seq 1 60); do
 done
 
 if [ "$ready" -ne 1 ]; then
-  echo "Error: Timed out waiting for PostgreSQL container %q to be ready." >&2
+  echo "Error: Timed out waiting for PostgreSQL container " %s " to be ready." >&2
   exit 1
 fi
 
-echo "PostgreSQL is ready. Importing database dump from %q..."
-gunzip -c %q | docker exec -i %q sh -c '
+echo "PostgreSQL is ready. Importing database dump from " %s "..."
+gunzip -c %s | docker exec -i %s sh -c '
   export PGPASSWORD="${POSTGRES_PASSWORD:-}"
   psql -U "${POSTGRES_USER:-postgres}"
 '
-echo "Database import into %q completed successfully."
-`, cName, cName, cName, cName, src, src, cName, cName)
+echo "Database import into " %s " completed successfully."
+`, cName, shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(src), shellquote.Quote(src), shellquote.Quote(cName), shellquote.Quote(cName))
 	}
 
 	return sb.String(), nil

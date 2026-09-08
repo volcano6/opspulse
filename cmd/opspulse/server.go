@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -52,37 +53,53 @@ var serverListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		_, _ = fmt.Fprintln(tw, "NAME\tHOST\tPORT\tUSER\tAUTH\tLABELS\tTAGS\tDESCRIPTION")
-		_, _ = fmt.Fprintln(tw, "----\t----\t----\t----\t----\t------\t----\t-----------")
-
-		for _, s := range filtered {
-			var authMethod string
-			if s.KeyPath != "" {
-				authMethod = fmt.Sprintf("key (%s)", s.KeyPath)
-			} else if s.Password != "" {
-				authMethod = "password"
-			} else {
-				authMethod = "default key"
-			}
-
-			tagsStr := "-"
-			if len(s.Tags) > 0 {
-				tagsStr = strings.Join(s.Tags, ",")
-			}
-
-			labelsStr := s.FormatLabels()
-
-			descStr := s.Description
-			if descStr == "" {
-				descStr = "-"
-			}
-
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n",
-				s.Name, s.Host, s.Port, s.User, authMethod, labelsStr, tagsStr, descStr)
-		}
-		return tw.Flush()
+		return renderServerTable(os.Stdout, filtered)
 	},
+}
+
+func renderServerTable(w io.Writer, servers []server.Server) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "NAME\tTARGET\tVIA JUMP\tAUTH\tTAGS\tDESCRIPTION")
+
+	for _, s := range servers {
+		user := s.User
+		if user == "" {
+			user = "root"
+		}
+		target := fmt.Sprintf("%s@%s", user, s.Host)
+		if s.Port > 0 && s.Port != 22 {
+			target = fmt.Sprintf("%s:%d", target, s.Port)
+		}
+
+		var authMethod string
+		if s.KeyPath != "" {
+			if isManagedKey(s.KeyPath) {
+				authMethod = "key (managed)"
+			} else {
+				authMethod = fmt.Sprintf("key (%s)", formatKeyDisplay(s.KeyPath))
+			}
+		} else if s.Password != "" {
+			authMethod = "password"
+		} else {
+			authMethod = "default key"
+		}
+
+		jumpStr := "-"
+		if s.JumpHost != "" {
+			jumpStr = s.JumpHost
+		}
+
+		tagsStr := formatTagsAndLabels(s)
+
+		descStr := s.Description
+		if descStr == "" {
+			descStr = "-"
+		}
+
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			s.Name, target, jumpStr, authMethod, tagsStr, descStr)
+	}
+	return tw.Flush()
 }
 
 var serverInfoCmd = &cobra.Command{
@@ -97,8 +114,12 @@ var serverInfoCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("🔍 Probing system information for %s (%s)...\n", srv.Name, srv.Address())
-		exec := executor.NewSSHExecutor()
+		if srv.JumpHost != "" {
+			fmt.Printf("🔍 Probing system information for %s (%s via %s)...\n", srv.Name, srv.Address(), srv.JumpHost)
+		} else {
+			fmt.Printf("🔍 Probing system information for %s (%s)...\n", srv.Name, srv.Address())
+		}
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -140,8 +161,12 @@ var serverTestCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Printf("Connecting to %s (%s)...\n", srv.Name, srv.Address())
-		exec := executor.NewSSHExecutor()
+		if srv.JumpHost != "" {
+			fmt.Printf("Connecting to %s (%s via jump host %s)...\n", srv.Name, srv.Address(), srv.JumpHost)
+		} else {
+			fmt.Printf("Connecting to %s (%s)...\n", srv.Name, srv.Address())
+		}
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -176,6 +201,17 @@ var serverRemoveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		dependents, depErr := store.GetDependents(name)
+		if depErr == nil && len(dependents) > 0 {
+			var depNames []string
+			for _, d := range dependents {
+				depNames = append(depNames, d.Name)
+			}
+			return fmt.Errorf("cannot remove server %q: %d server(s) depend on it as a jump host (%s). Please remove or reconfigure them first",
+				name, len(dependents), strings.Join(depNames, ", "))
+		}
+
 		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
 			return err
 		}
@@ -198,13 +234,53 @@ func completeServerNames(_ *cobra.Command, args []string, _ string) ([]string, c
 	}
 	var comps []string
 	for _, s := range servers {
-		if s.Description != "" {
-			comps = append(comps, fmt.Sprintf("%s\t%s (%s)", s.Name, s.Host, s.Description))
-		} else {
-			comps = append(comps, fmt.Sprintf("%s\t%s", s.Name, s.Host))
+		var descParts []string
+		user := s.User
+		if user == "" {
+			user = "root"
 		}
+		target := fmt.Sprintf("%s@%s", user, s.Host)
+		if s.Port > 0 && s.Port != 22 {
+			target = fmt.Sprintf("%s:%d", target, s.Port)
+		}
+		descParts = append(descParts, target)
+
+		if s.JumpHost != "" {
+			descParts = append(descParts, fmt.Sprintf("via %s", s.JumpHost))
+		}
+		if s.Description != "" {
+			descParts = append(descParts, s.Description)
+		}
+		comps = append(comps, fmt.Sprintf("%s\t%s", s.Name, strings.Join(descParts, ", ")))
 	}
 	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+func formatKeyDisplay(keyPath string) string {
+	if strings.HasPrefix(keyPath, "~") {
+		return keyPath
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" && strings.HasPrefix(keyPath, home) {
+		rel := strings.TrimPrefix(keyPath, home)
+		return "~" + filepath.ToSlash(rel)
+	}
+	return filepath.Base(keyPath)
+}
+
+func formatTagsAndLabels(s server.Server) string {
+	var parts []string
+	if len(s.Tags) > 0 {
+		parts = append(parts, strings.Join(s.Tags, ","))
+	}
+	lbls := s.FormatLabels()
+	if lbls != "-" && lbls != "" {
+		parts = append(parts, lbls)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
 }
 
 func init() {
@@ -223,8 +299,13 @@ func init() {
 
 	lsCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by key=value, tag, or name")
 
+	testCmd.ValidArgsFunction = completeServerNames
+	infoCmd.ValidArgsFunction = completeServerNames
+
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(lsCmd)
+	rootCmd.AddCommand(testCmd)
+	rootCmd.AddCommand(infoCmd)
 }
 
 var lsCmd = &cobra.Command{
@@ -235,16 +316,61 @@ var lsCmd = &cobra.Command{
 	},
 }
 
+var testCmd = &cobra.Command{
+	Use:   "test <name>",
+	Short: "Test SSH connectivity to a server (shortcut for 'ops server test')",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return serverTestCmd.RunE(cmd, args)
+	},
+}
+
+var infoCmd = &cobra.Command{
+	Use:   "info <name>",
+	Short: "Inspect system OS, hardware resources, and Docker status of a server (shortcut for 'ops server info')",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return serverInfoCmd.RunE(cmd, args)
+	},
+}
+
 func completePrivateKeyPath(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	expanded := expandHome(toComplete)
-	dir := filepath.Dir(expanded)
-	prefix := filepath.Base(expanded)
-	displayDir := filepath.Dir(toComplete)
-	if strings.HasSuffix(toComplete, "/") || strings.HasSuffix(toComplete, `\`) {
-		dir = strings.TrimRight(expanded, `/\`)
+	var dir, prefix, displayDir string
+	isSlash := strings.Contains(toComplete, "/") || !strings.Contains(toComplete, `\`)
+
+	if toComplete == "" {
+		dir = "."
 		prefix = ""
-		displayDir = strings.TrimRight(toComplete, `/\`)
+		displayDir = ""
+	} else {
+		expanded := expandHome(toComplete)
+		if strings.HasSuffix(toComplete, "/") || strings.HasSuffix(toComplete, `\`) {
+			dir = strings.TrimRight(expanded, `/\`)
+			if dir == "" && (strings.HasPrefix(expanded, "/") || strings.HasPrefix(expanded, `\`)) {
+				dir = "/"
+			}
+			if len(dir) == 2 && dir[1] == ':' {
+				dir += `\`
+			}
+			prefix = ""
+			displayDir = strings.TrimRight(toComplete, `/\`)
+			if displayDir == "" && (strings.HasPrefix(toComplete, "/") || strings.HasPrefix(toComplete, `\`)) {
+				displayDir = "/"
+			}
+		} else {
+			dir = filepath.Dir(expanded)
+			if dir == "" {
+				dir = "."
+			}
+			prefix = filepath.Base(expanded)
+			if isSlash {
+				displayDir = path.Dir(toComplete)
+			} else {
+				displayDir = filepath.Dir(toComplete)
+			}
+		}
 	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
@@ -253,25 +379,85 @@ func completePrivateKeyPath(_ *cobra.Command, _ []string, toComplete string) ([]
 	if displayDir == "." && !strings.ContainsAny(toComplete, `/\`) {
 		displayDir = ""
 	}
+
 	completions := make([]string, 0, len(entries))
+	hasDir := false
+
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !isPrivateKeyName(entry.Name()) {
+		name := entry.Name()
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		candidate := entry.Name()
+
+		// Skip hidden files/directories unless prefix explicitly starts with a dot
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
+			continue
+		}
+
+		if entry.IsDir() {
+			hasDir = true
+			candidate := name + "/"
+			if displayDir != "" {
+				if displayDir == "/" {
+					candidate = "/" + name + "/"
+				} else if isSlash {
+					candidate = path.Join(displayDir, name) + "/"
+				} else {
+					candidate = filepath.Join(displayDir, name) + `\`
+				}
+			}
+			completions = append(completions, candidate)
+			continue
+		}
+
+		if !isPrivateKeyName(name) {
+			continue
+		}
+
+		candidate := name
 		if displayDir != "" {
-			if strings.Contains(toComplete, "/") && !strings.Contains(toComplete, `\`) {
-				candidate = path.Join(displayDir, entry.Name())
+			if displayDir == "/" {
+				candidate = "/" + name
+			} else if isSlash {
+				candidate = path.Join(displayDir, name)
 			} else {
-				candidate = filepath.Join(displayDir, entry.Name())
+				candidate = filepath.Join(displayDir, name)
 			}
 		}
 		completions = append(completions, candidate)
 	}
-	return completions, cobra.ShellCompDirectiveNoFileComp
+
+	// When user starts from empty, also suggest ~/.ssh/ as a convenient shortcut
+	if toComplete == "" {
+		completions = append(completions, "~/.ssh/")
+		hasDir = true
+	}
+
+	directive := cobra.ShellCompDirectiveNoFileComp
+	if hasDir {
+		directive = cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp
+	}
+
+	return completions, directive
 }
 
 func isPrivateKeyName(name string) bool {
-	return (strings.HasPrefix(name, "id_") && !strings.HasSuffix(name, ".pub")) ||
-		strings.EqualFold(filepath.Ext(name), ".pem")
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".pub") {
+		return false
+	}
+	if lower == "known_hosts" || lower == "known_hosts.old" || lower == "authorized_keys" || lower == "config" {
+		return false
+	}
+	ext := filepath.Ext(lower)
+	if ext == ".pem" || ext == ".key" || ext == ".rsa" || ext == ".pkcs8" {
+		return true
+	}
+	if strings.HasPrefix(lower, "id_") {
+		return true
+	}
+	if ext == ".txt" || ext == ".json" || ext == ".yaml" || ext == ".yml" || ext == ".md" || ext == ".sh" || ext == ".exe" || ext == ".log" {
+		return false
+	}
+	return true
 }

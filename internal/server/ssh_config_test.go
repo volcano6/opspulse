@@ -25,6 +25,7 @@ func TestRenderSSHConfig(t *testing.T) {
 			User:     "postgres",
 			Password: "mypassword",
 			Labels:   map[string]string{"env": "prod"},
+			JumpHost: "web-01",
 		},
 	}
 
@@ -63,6 +64,9 @@ func TestRenderSSHConfig(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "    PreferredAuthentications password,keyboard-interactive\n") {
 		t.Errorf("missing password auth for db-01")
+	}
+	if !strings.Contains(rendered, "    ProxyJump web-01\n") {
+		t.Errorf("missing ProxyJump web-01 for db-01")
 	}
 }
 

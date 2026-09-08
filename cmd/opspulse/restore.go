@@ -73,7 +73,7 @@ Examples:
 		restoreRepo := storage.NewRestoreRepo(db)
 		serverStore := server.NewDefaultStore()
 		assetStore := asset.NewDefaultStore()
-		exec := executor.NewSSHExecutor()
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
 
 		runner := backup.NewRestoreRunner(exec, serverStore, restoreRepo, backupStore, assetStore)
 
@@ -95,8 +95,8 @@ Examples:
 			return err
 		}
 
-		if runRecord != nil && runRecord.Status == "failed" {
-			return fmt.Errorf("restore failed: %s", runRecord.ErrorMessage)
+		if runRecord != nil && (runRecord.Status == "failed" || runRecord.Status == "partial") {
+			return fmt.Errorf("restore finished with status %q: %s", runRecord.Status, runRecord.ErrorMessage)
 		}
 
 		return nil

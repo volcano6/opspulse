@@ -78,10 +78,10 @@ func TestCompleteServerNames(t *testing.T) {
 	foundWeb := false
 	foundDB := false
 	for _, c := range comps {
-		if strings.HasPrefix(c, "web-01\t198.51.100.10 (Production web server)") {
+		if strings.HasPrefix(c, "web-01\troot@198.51.100.10, Production web server") {
 			foundWeb = true
 		}
-		if strings.HasPrefix(c, "db-01\t198.51.100.20") {
+		if strings.HasPrefix(c, "db-01\troot@198.51.100.20") {
 			foundDB = true
 		}
 	}
@@ -229,6 +229,18 @@ func TestCompleteBootstrapArgsAndFlags(t *testing.T) {
 	}
 }
 
+func TestCompleteAddJumpHostFlag(t *testing.T) {
+	setupTestEnv(t)
+
+	comps, directive := completeServerNames(serverAddCmd, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("expected ShellCompDirectiveNoFileComp, got %v", directive)
+	}
+	if len(comps) != 2 {
+		t.Fatalf("expected 2 server completions for jump-host, got %d: %v", len(comps), comps)
+	}
+}
+
 func TestCompletePrivateKeyPath(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
@@ -242,13 +254,24 @@ func TestCompletePrivateKeyPath(t *testing.T) {
 		}
 	}
 
+	// Create a subfolder with keys to test directory navigation
+	subDir := filepath.Join(sshDir, "custom_keys")
+	if err := os.MkdirAll(subDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "deploy.key"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Completing ~/.ssh/ should now list the files AND the directory custom_keys/
 	completions, directive := completePrivateKeyPath(serverAddCmd, nil, "~/.ssh/")
-	if directive != cobra.ShellCompDirectiveNoFileComp {
-		t.Fatalf("unexpected completion directive: %v", directive)
+	if directive != (cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp) {
+		t.Fatalf("unexpected completion directive for directory listing: %v", directive)
 	}
 	want := map[string]bool{
-		"~/.ssh/id_ed25519": true,
-		"~/.ssh/server.pem": true,
+		"~/.ssh/id_ed25519":    true,
+		"~/.ssh/server.pem":    true,
+		"~/.ssh/custom_keys/": true,
 	}
 	if len(completions) != len(want) {
 		t.Fatalf("private key completions = %v, want %v", completions, want)
@@ -257,5 +280,43 @@ func TestCompletePrivateKeyPath(t *testing.T) {
 		if !want[completion] {
 			t.Fatalf("unexpected private key completion %q", completion)
 		}
+	}
+
+	// 2. Navigating into subfolder ~/.ssh/custom_keys/
+	subComps, subDirDirective := completePrivateKeyPath(serverAddCmd, nil, "~/.ssh/custom_keys/")
+	if subDirDirective != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("unexpected completion directive for leaf keys: %v", subDirDirective)
+	}
+	if len(subComps) != 1 || subComps[0] != "~/.ssh/custom_keys/deploy.key" {
+		t.Fatalf("expected [~/.ssh/custom_keys/deploy.key], got %v", subComps)
+	}
+
+	// 3. Partial directory completion ~/.ssh/cust
+	prefixComps, prefixDirective := completePrivateKeyPath(serverAddCmd, nil, "~/.ssh/cust")
+	if prefixDirective != (cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp) {
+		t.Fatalf("unexpected completion directive for partial dir: %v", prefixDirective)
+	}
+	if len(prefixComps) != 1 || prefixComps[0] != "~/.ssh/custom_keys/" {
+		t.Fatalf("expected [~/.ssh/custom_keys/], got %v", prefixComps)
+	}
+
+	// 4. Arbitrary path completion (e.g. /mnt or custom folder structure)
+	arbitraryDir := filepath.Join(t.TempDir(), "mnt", "keys")
+	if err := os.MkdirAll(arbitraryDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keyFile := filepath.Join(arbitraryDir, "id_rsa")
+	if err := os.WriteFile(keyFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	mntParent := filepath.ToSlash(filepath.Dir(arbitraryDir)) + "/"
+	dirComps, dirDirective := completePrivateKeyPath(serverAddCmd, nil, mntParent)
+	if dirDirective != (cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp) {
+		t.Fatalf("unexpected completion directive for arbitrary parent dir: %v", dirDirective)
+	}
+	expectedSub := mntParent + "keys/"
+	if len(dirComps) != 1 || dirComps[0] != expectedSub {
+		t.Fatalf("expected [%s], got %v", expectedSub, dirComps)
 	}
 }

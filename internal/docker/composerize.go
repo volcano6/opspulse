@@ -25,6 +25,7 @@ type ComposeService struct {
 	WorkingDir    string   `yaml:"working_dir,omitempty"`
 	Command       any      `yaml:"command,omitempty"`
 	NetworkMode   string   `yaml:"network_mode,omitempty"`
+	Devices       []string `yaml:"devices,omitempty"`
 }
 
 // GenerateComposeYAML translates ContainerInfo into a standard compose.yaml document.
@@ -103,7 +104,7 @@ func GenerateComposeYAML(info *ContainerInfo, aliasName string) (string, error) 
 			volumeStrings = append(volumeStrings, str)
 		}
 		// Check if it's a named volume
-		if isNamedVolume(m) {
+		if IsNamedVolume(m) {
 			namedVolumes[m.Source] = nil
 		}
 	}
@@ -115,6 +116,11 @@ func GenerateComposeYAML(info *ContainerInfo, aliasName string) (string, error) 
 	// Command
 	if len(info.Command) > 0 {
 		service.Command = info.Command
+	}
+
+	// Devices
+	if len(info.Devices) > 0 {
+		service.Devices = info.Devices
 	}
 
 	cfg := ComposeConfig{
@@ -152,7 +158,8 @@ func sanitizeServiceName(name string) string {
 	return res
 }
 
-func isNamedVolume(m VolumeMount) bool {
+// IsNamedVolume checks if a volume mount refers to a Docker named volume.
+func IsNamedVolume(m VolumeMount) bool {
 	if m.Type == "volume" {
 		return true
 	}

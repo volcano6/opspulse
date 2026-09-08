@@ -92,6 +92,18 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
 		Timeout:         timeout,
+		HostKeyAlgorithms: []string{
+			ssh.KeyAlgoED25519,
+			ssh.KeyAlgoSKED25519,
+			ssh.KeyAlgoECDSA256,
+			ssh.KeyAlgoSKECDSA256,
+			ssh.KeyAlgoECDSA384,
+			ssh.KeyAlgoECDSA521,
+			ssh.KeyAlgoRSASHA512,
+			ssh.KeyAlgoRSASHA256,
+			ssh.KeyAlgoRSA,
+			ssh.KeyAlgoDSA,
+		},
 	}
 
 	return config, nil
@@ -133,6 +145,18 @@ func tofuHostKeyCallbackFor(knownHostsPath string) ssh.HostKeyCallback {
 		}
 		var keyErr *knownhosts.KeyError
 		if !errors.As(checkErr, &keyErr) || len(keyErr.Want) != 0 {
+			if errors.As(checkErr, &keyErr) && len(keyErr.Want) > 0 {
+				var locs []string
+				for _, w := range keyErr.Want {
+					locs = append(locs, fmt.Sprintf("%s:%d", w.Filename, w.Line))
+				}
+				hostOnly, _, _ := net.SplitHostPort(hostname)
+				if hostOnly == "" {
+					hostOnly = hostname
+				}
+				return fmt.Errorf("verify SSH host key for %s: knownhosts key mismatch (existing key recorded at %s). Run 'ssh-keygen -R %s' or remove the old key line to accept the new key",
+					hostname, strings.Join(locs, ", "), hostOnly)
+			}
 			return fmt.Errorf("verify SSH host key for %s: %w", hostname, checkErr)
 		}
 

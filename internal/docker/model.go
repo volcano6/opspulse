@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"strings"
 )
 
@@ -19,9 +20,9 @@ var (
 
 // Standard Docker Compose label keys.
 const (
-	LabelComposeProject    = "com.docker.compose.project"
-	LabelComposeService    = "com.docker.compose.service"
-	LabelComposeWorkingDir = "com.docker.compose.project.working_dir"
+	LabelComposeProject     = "com.docker.compose.project"
+	LabelComposeService     = "com.docker.compose.service"
+	LabelComposeWorkingDir  = "com.docker.compose.project.working_dir"
 	LabelComposeConfigFiles = "com.docker.compose.project.config_files"
 )
 
@@ -54,7 +55,9 @@ func (p PortMapping) String() string {
 // VolumeMount represents a bind mount or named volume attached to the container.
 type VolumeMount struct {
 	Type        string `json:"type" yaml:"type"` // "bind" or "volume"
+	Name        string `json:"name,omitempty" yaml:"name,omitempty"`
 	Source      string `json:"source" yaml:"source"`
+	HostPath    string `json:"host_path,omitempty" yaml:"host_path,omitempty"`
 	Destination string `json:"destination" yaml:"destination"`
 	ReadOnly    bool   `json:"read_only,omitempty" yaml:"read_only,omitempty"`
 }
@@ -81,6 +84,7 @@ type ContainerInfo struct {
 	NetworkMode   string            `json:"network_mode,omitempty"`
 	Ports         []PortMapping     `json:"ports,omitempty"`
 	Mounts        []VolumeMount     `json:"mounts,omitempty"`
+	Devices       []string          `json:"devices,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 }
 
@@ -122,6 +126,37 @@ func (c *ContainerInfo) DatabaseEngine() string {
 	return ""
 }
 
+// IsSystemMount returns true if the mount source represents a host system socket,
+// virtual filesystem, or runtime-injected configuration that should not be archived.
+func IsSystemMount(source string) bool {
+	clean := path.Clean(strings.ReplaceAll(source, "\\", "/"))
+	if clean == "/var/run/docker.sock" || clean == "/run/docker.sock" {
+		return true
+	}
+	if clean == "/etc/localtime" || clean == "/etc/timezone" || clean == "/etc/resolv.conf" || clean == "/etc/hosts" || clean == "/etc/hostname" {
+		return true
+	}
+	if strings.HasPrefix(clean, "/proc") || strings.HasPrefix(clean, "/sys") || strings.HasPrefix(clean, "/dev") || strings.HasPrefix(clean, "/run") {
+		return true
+	}
+	return false
+}
+
+// IsDatabaseDataDir returns true if the container is a database and the destination
+// matches standard physical database storage locations.
+func (c *ContainerInfo) IsDatabaseDataDir(destination string) bool {
+	if !c.IsDatabase() {
+		return false
+	}
+	clean := path.Clean(strings.ReplaceAll(destination, "\\", "/"))
+	return clean == "/var/lib/mysql" ||
+		clean == "/var/lib/postgresql/data" ||
+		clean == "/var/lib/postgresql" ||
+		clean == "/bitnami/mariadb/data" ||
+		clean == "/bitnami/mysql/data" ||
+		clean == "/bitnami/postgresql/data"
+}
+
 // Raw inspect structures used for unmarshaling `docker inspect` JSON.
 type rawInspectContainer struct {
 	ID         string `json:"Id"`
@@ -148,6 +183,13 @@ type rawHostConfig struct {
 	PortBindings map[string][]rawPortBinding `json:"PortBindings"`
 	Binds        []string                    `json:"Binds"`
 	NetworkMode  string                      `json:"NetworkMode"`
+	Devices      []rawDevice                 `json:"Devices"`
+}
+
+type rawDevice struct {
+	PathOnHost        string `json:"PathOnHost"`
+	PathInContainer   string `json:"PathInContainer"`
+	CgroupPermissions string `json:"CgroupPermissions"`
 }
 
 type rawPortBinding struct {
@@ -235,11 +277,28 @@ func ParseInspectJSON(data []byte) (*ContainerInfo, error) {
 		}
 	}
 
+	// Parse Devices from HostConfig
+	for _, d := range raw.HostConfig.Devices {
+		if d.PathOnHost != "" {
+			devStr := d.PathOnHost
+			if d.PathInContainer != "" {
+				devStr = fmt.Sprintf("%s:%s", d.PathOnHost, d.PathInContainer)
+			}
+			if d.CgroupPermissions != "" {
+				devStr = fmt.Sprintf("%s:%s", devStr, d.CgroupPermissions)
+			}
+			info.Devices = append(info.Devices, devStr)
+		}
+	}
+
 	// Parse Mounts
 	seenDests := make(map[string]bool)
 	for _, m := range raw.Mounts {
 		src := m.Source
+		name := ""
+		hostPath := m.Source
 		if m.Type == "volume" && m.Name != "" {
+			name = m.Name
 			src = m.Name
 		}
 		mountType := m.Type
@@ -248,7 +307,9 @@ func ParseInspectJSON(data []byte) (*ContainerInfo, error) {
 		}
 		info.Mounts = append(info.Mounts, VolumeMount{
 			Type:        mountType,
+			Name:        name,
 			Source:      src,
+			HostPath:    hostPath,
 			Destination: m.Destination,
 			ReadOnly:    !m.RW || strings.Contains(m.Mode, "ro"),
 		})

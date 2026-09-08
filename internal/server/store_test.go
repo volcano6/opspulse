@@ -293,3 +293,70 @@ func TestStoreReadRejectsUnknownFields(t *testing.T) {
 		t.Fatal("List() accepted an unknown server field")
 	}
 }
+
+func TestServer_Validate_JumpHostSelfReference(t *testing.T) {
+	srv := Server{
+		Name:     "vps-01",
+		Host:     "192.168.1.10",
+		JumpHost: "vps-01",
+	}
+	if err := srv.Validate(); err != ErrSelfReferencingJumpHost {
+		t.Fatalf("expected ErrSelfReferencingJumpHost, got %v", err)
+	}
+}
+
+func TestStore_JumpHostCycleDetection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+
+	// Save vps1
+	if err := store.Save(Server{Name: "vps1", Host: "1.1.1.1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Save vps2 with JumpHost vps1
+	if err := store.Save(Server{Name: "vps2", Host: "10.0.0.2", JumpHost: "vps1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Save vps3 with JumpHost vps2
+	if err := store.Save(Server{Name: "vps3", Host: "10.0.0.3", JumpHost: "vps2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Try updating vps1 to jump via vps3 (creating cycle vps1 -> vps3 -> vps2 -> vps1)
+	err := store.Save(Server{Name: "vps1", Host: "1.1.1.1", JumpHost: "vps3"})
+	if err == nil {
+		t.Fatal("expected cyclic jump host error, got nil")
+	}
+
+	// Direct two-node cycle: vps1 -> vps2, vps2 -> vps1
+	err = store.Save(Server{Name: "vps1", Host: "1.1.1.1", JumpHost: "vps2"})
+	if err == nil {
+		t.Fatal("expected direct cyclic jump host error, got nil")
+	}
+}
+
+func TestStore_GetDependents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+
+	_ = store.Save(Server{Name: "bastion", Host: "1.1.1.1"})
+	_ = store.Save(Server{Name: "internal-1", Host: "10.0.0.1", JumpHost: "bastion"})
+	_ = store.Save(Server{Name: "internal-2", Host: "10.0.0.2", JumpHost: "bastion"})
+	_ = store.Save(Server{Name: "standalone", Host: "2.2.2.2"})
+
+	deps, err := store.GetDependents("bastion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deps) != 2 {
+		t.Fatalf("expected 2 dependents, got %d", len(deps))
+	}
+
+	standaloneDeps, err := store.GetDependents("standalone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(standaloneDeps) != 0 {
+		t.Fatalf("expected 0 dependents for standalone, got %d", len(standaloneDeps))
+	}
+}

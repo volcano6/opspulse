@@ -40,33 +40,33 @@ func TestBuildBackupScript(t *testing.T) {
 		t.Fatalf("BuildBackupScript() error: %v", err)
 	}
 
-	// Verify environment variables
-	if !strings.Contains(script, `export AWS_ACCESS_KEY_ID="mock-key"`) {
+	// Verify environment variables with single quotes
+	if !strings.Contains(script, `export AWS_ACCESS_KEY_ID='mock-key'`) {
 		t.Error("script missing AWS_ACCESS_KEY_ID")
 	}
-	if !strings.Contains(script, `export RESTIC_PASSWORD="secret-pw"`) {
+	if !strings.Contains(script, `export RESTIC_PASSWORD='secret-pw'`) {
 		t.Error("script missing RESTIC_PASSWORD")
 	}
-	if !strings.Contains(script, `export RESTIC_REPOSITORY="s3:s3.amazonaws.com/backup-bucket"`) {
+	if !strings.Contains(script, `export RESTIC_REPOSITORY='s3:s3.amazonaws.com/backup-bucket'`) {
 		t.Error("script missing RESTIC_REPOSITORY")
 	}
 
 	// Verify restic backup command with tags, excludes, and paths
-	if !strings.Contains(script, `restic backup --json`) {
-		t.Error("script missing restic backup --json")
+	if !strings.Contains(script, `restic backup --retry-lock 2m --json`) {
+		t.Error("script missing restic backup --retry-lock 2m --json")
 	}
-	if !strings.Contains(script, `--tag "prod"`) || !strings.Contains(script, `--tag "job:site-backup"`) {
+	if !strings.Contains(script, `--tag 'prod'`) || !strings.Contains(script, `--tag 'job:site-backup'`) {
 		t.Error("script missing expected tags")
 	}
-	if !strings.Contains(script, `--exclude "*.log"`) || !strings.Contains(script, `--exclude ".cache"`) {
+	if !strings.Contains(script, `--exclude '*.log'`) || !strings.Contains(script, `--exclude '.cache'`) {
 		t.Error("script missing expected excludes")
 	}
-	if !strings.Contains(script, `"/var/www"`) || !strings.Contains(script, `"/etc/nginx"`) {
+	if !strings.Contains(script, `'/var/www'`) || !strings.Contains(script, `'/etc/nginx'`) {
 		t.Error("script missing expected backup paths")
 	}
 
-	// Verify retention policy
-	if !strings.Contains(script, `restic forget --prune --keep-daily 7 --keep-weekly 4 --keep-monthly 6`) {
+	// Verify retention policy with strict job tag isolation
+	if !strings.Contains(script, `restic forget --retry-lock 5m --prune --tag 'job:site-backup' --keep-daily 7 --keep-weekly 4 --keep-monthly 6`) {
 		t.Errorf("script missing retention forget command, got:\n%s", script)
 	}
 }
@@ -79,11 +79,11 @@ func TestBuildSnapshotsScript(t *testing.T) {
 	}
 
 	script := BuildSnapshotsScript(job)
-	if !strings.Contains(script, `export RESTIC_REPOSITORY="/mnt/backup"`) {
+	if !strings.Contains(script, `export RESTIC_REPOSITORY='/mnt/backup'`) {
 		t.Error("snapshots script missing RESTIC_REPOSITORY")
 	}
-	if !strings.Contains(script, `restic snapshots --json`) {
-		t.Error("snapshots script missing restic snapshots --json")
+	if !strings.Contains(script, `restic snapshots --retry-lock 30s --json --tag 'job:site-backup'`) {
+		t.Errorf("snapshots script missing restic snapshots with job tag, got:\n%s", script)
 	}
 }
 

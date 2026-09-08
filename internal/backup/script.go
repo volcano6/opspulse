@@ -4,7 +4,14 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
+
+// JobTag returns the canonical restic tag for isolating snapshots by backup job.
+func JobTag(jobName string) string {
+	return "job:" + jobName
+}
 
 // BuildBackupScript generates a self-contained shell script that checks, initializes,
 // executes a restic backup, and optionally prunes old snapshots according to the retention policy.
@@ -29,28 +36,28 @@ fi
 
 	// 3. Auto-initialize repository if not initialized
 	sb.WriteString(`# Check if repository is initialized, if not initialize it
-if ! restic snapshots >/dev/null 2>&1; then
+if ! restic snapshots --retry-lock 1m >/dev/null 2>&1; then
   echo "Repository not initialized. Running restic init..."
   restic init
 fi
 ` + "\n")
 
 	// 4. Build restic backup command
-	sb.WriteString("echo \"Starting restic backup for job: " + job.Name + "...\"\n")
-	sb.WriteString("restic backup --json")
+	sb.WriteString("echo \"Starting restic backup for job: \" " + shellquote.Quote(job.Name) + " \"...\"\n")
+	sb.WriteString("restic backup --retry-lock 2m --json")
 
 	for _, tag := range job.Tags {
-		sb.WriteString(fmt.Sprintf(" --tag %q", tag))
+		sb.WriteString(" --tag " + shellquote.Quote(tag))
 	}
-	// Add job name tag by default
-	sb.WriteString(fmt.Sprintf(" --tag %q", "job:"+job.Name))
+	// Add job name tag by default for strict snapshot isolation
+	sb.WriteString(" --tag " + shellquote.Quote(JobTag(job.Name)))
 
 	for _, excl := range job.Excludes {
-		sb.WriteString(fmt.Sprintf(" --exclude %q", excl))
+		sb.WriteString(" --exclude " + shellquote.Quote(excl))
 	}
 
 	for _, p := range job.Paths {
-		sb.WriteString(fmt.Sprintf(" %q", p))
+		sb.WriteString(" " + shellquote.Quote(p))
 	}
 	sb.WriteString("\n\n")
 
@@ -58,6 +65,9 @@ fi
 	if job.Retention != nil {
 		ret := job.Retention
 		var forgetArgs []string
+
+		// Isolate retention strictly to this job's snapshots
+		forgetArgs = append(forgetArgs, "--tag "+shellquote.Quote(JobTag(job.Name)))
 
 		if ret.KeepLast > 0 {
 			forgetArgs = append(forgetArgs, fmt.Sprintf("--keep-last %d", ret.KeepLast))
@@ -75,19 +85,20 @@ fi
 			forgetArgs = append(forgetArgs, fmt.Sprintf("--keep-yearly %d", ret.KeepYearly))
 		}
 		for _, tag := range ret.KeepTags {
-			forgetArgs = append(forgetArgs, fmt.Sprintf("--keep-tag %q", tag))
+			forgetArgs = append(forgetArgs, "--keep-tag "+shellquote.Quote(tag))
 		}
 
-		if len(forgetArgs) > 0 {
+		if len(forgetArgs) > 1 {
 			sb.WriteString("echo \"Applying retention policy (restic forget --prune)...\"\n")
-			sb.WriteString("restic forget --prune " + strings.Join(forgetArgs, " ") + "\n")
+			sb.WriteString("restic forget --retry-lock 5m --prune " + strings.Join(forgetArgs, " ") + "\n")
 		}
 	}
 
 	return sb.String(), nil
 }
 
-// BuildSnapshotsScript generates a shell script to list all snapshots in JSON format.
+// BuildSnapshotsScript generates a shell script to list all snapshots in JSON format,
+// filtered strictly to the current job's tag for shared repository isolation.
 func BuildSnapshotsScript(job Job) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -95,7 +106,7 @@ func BuildSnapshotsScript(job Job) string {
 
 	writeEnvBlock(&sb, job)
 
-	sb.WriteString("restic snapshots --json\n")
+	sb.WriteString("restic snapshots --retry-lock 30s --json --tag " + shellquote.Quote(JobTag(job.Name)) + "\n")
 	return sb.String()
 }
 
@@ -116,11 +127,11 @@ fi
 `)
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("echo \"Starting restic restore (snapshot: %s, target: %s)...\"\n", snapshotID, targetPath))
-	sb.WriteString(fmt.Sprintf("restic restore %q --target %q", snapshotID, targetPath))
+	sb.WriteString("echo \"Starting restic restore (snapshot: \" " + shellquote.Quote(snapshotID) + " \", target: \" " + shellquote.Quote(targetPath) + " \")...\"\n")
+	sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target " + shellquote.Quote(targetPath))
 
 	for _, pattern := range includePatterns {
-		sb.WriteString(fmt.Sprintf(" --include %q", pattern))
+		sb.WriteString(" --include " + shellquote.Quote(pattern))
 	}
 
 	sb.WriteString(" --verbose\n")
@@ -146,11 +157,11 @@ fi
 `)
 	sb.WriteString("\n")
 
-	sb.WriteString(fmt.Sprintf("echo \"[DRY-RUN] Listing files in snapshot %s...\"\n", snapshotID))
-	sb.WriteString(fmt.Sprintf("restic ls %q", snapshotID))
+	sb.WriteString("echo \"[DRY-RUN] Listing files in snapshot \" " + shellquote.Quote(snapshotID) + " \"...\"\n")
+	sb.WriteString("restic ls --retry-lock 30s " + shellquote.Quote(snapshotID))
 
 	for _, pattern := range includePatterns {
-		sb.WriteString(fmt.Sprintf(" --include %q", pattern))
+		sb.WriteString(" --include " + shellquote.Quote(pattern))
 	}
 
 	sb.WriteString("\n")
@@ -158,11 +169,13 @@ fi
 }
 
 // writeEnvBlock writes the common environment variable export block for a backup job,
-// including RESTIC_REPOSITORY if not already set via Env map.
+// validating variable names and single-quoting all values to prevent shell injection and variable expansion.
 func writeEnvBlock(sb *strings.Builder, job Job) {
 	envKeys := make([]string, 0, len(job.Env))
 	for k := range job.Env {
-		envKeys = append(envKeys, k)
+		if shellquote.ValidEnvName(k) {
+			envKeys = append(envKeys, k)
+		}
 	}
 	sort.Strings(envKeys)
 
@@ -171,12 +184,11 @@ func writeEnvBlock(sb *strings.Builder, job Job) {
 		if k == "RESTIC_REPOSITORY" {
 			hasRepo = true
 		}
-		sb.WriteString(fmt.Sprintf("export %s=%q\n", k, job.Env[k]))
+		sb.WriteString(fmt.Sprintf("export %s=%s\n", k, shellquote.Quote(job.Env[k])))
 	}
 
 	if !hasRepo && job.Backend != "" {
-		sb.WriteString(fmt.Sprintf("export RESTIC_REPOSITORY=%q\n", job.Backend))
+		sb.WriteString(fmt.Sprintf("export RESTIC_REPOSITORY=%s\n", shellquote.Quote(job.Backend)))
 	}
 	sb.WriteString("\n")
 }
-
