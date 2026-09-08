@@ -40,14 +40,14 @@ Ops 支持全自动 Shell 补全（Tab 键自动补全子命令、标志、服�
 
 ### 全自动一键安装（推荐）
 
-直接在终端执行：
+直接在终端执行（若当前终端尚未加载 PATH，可直接运行 `./bin/ops`）：
 
 ```bash
-ops completion --install
+./bin/ops completion --install
 source ~/.zshrc  # 若使用 Bash 则执行 source ~/.bashrc
 ```
 
-该命令会自动探测你当前使用的 Shell（Bash / Zsh / Fish / PowerShell），并将对应的补全逻辑安全、幂等地写入用户 Profile，同时若系统 PATH 中尚未发现 `ops`，会自动将其安装至 `~/.local/bin/ops`。
+该命令会自动探测你当前使用的 Shell（Bash / Zsh / Fish / PowerShell），并将对应的 PATH 保障逻辑与补全脚本安全、幂等地写入用户 Profile，同时若系统 PATH 中尚未发现 `ops`，会自动将其安装至 `~/.local/bin/ops` 与 `~/.local/bin/opspulse`。
 
 ### 常见踩坑排查（FAQ / Troubleshooting）
 
@@ -57,9 +57,14 @@ source ~/.zshrc  # 若使用 Bash 则执行 source ~/.bashrc
   - **正确操作**：
     - 想查看帮助：输入 `ops -h` 然后按 **回车 (Enter)**。
     - 想使用自动补全：输入 `ops <Tab>`（空格后直接按 Tab），即可列出所有子命令；输入 `ops l<Tab>` 会自动补全为 `ops ls`。
-* ⚠️ **注意事项 2：重新编译新版本后需同步二进制**
+* ⚠️ **注意事项 2：提示 `找不到命令 “ops”` 或 `opspulse: unknown flag: --install`**
+  - **原因**：
+    1. `make install` 默认安装在 `~/go/bin` 与 `~/.local/bin`。若你的终端未将这些目录加入 `$PATH`，会提示找不到 `ops`；
+    2. 若系统之前在 `/usr/local/bin` 残留了早期旧版本 `opspulse`，输入 `opspulse` 会误触发没有 `--install` 参数的旧程序。
+  - **解决办法**：直接运行当前仓库构建出的 `./bin/ops completion --install`，然后执行 `source ~/.bashrc`（或 `source ~/.zshrc`），即可自动修复 PATH 并激活补全。若有旧残留，可用 `sudo rm -f $(which opspulse)` 清理。
+* ⚠️ **注意事项 3：重新编译新版本后需同步二进制**
   - 新增子命令或更新后，运行 `make install` 即可同步覆盖最新二进制。
-* ⚠️ **注意事项 3：当前打开的终端未生效**
+* ⚠️ **注意事项 4：当前打开的终端未生效**
   - 在当前打开的终端中执行一次 `rehash` 或 `source ~/.zshrc` 即可使新加入 PATH 的命令立即生效。
 
 ---

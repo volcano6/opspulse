@@ -8,6 +8,7 @@ LDFLAGS     := -s -w \
                -X github.com/volcano6/opspulse/internal/version.Date=$(DATE)
 
 GOPATH_BIN  := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)/bin
+LOCAL_BIN   := $(HOME)/.local/bin
 export PATH := $(GOPATH_BIN):$(PATH)
 
 .PHONY: build install test lint ci clean docker dev tools
@@ -20,7 +21,17 @@ install: build
 	@mkdir -p $(GOPATH_BIN)
 	@cp bin/$(APP_NAME) $(GOPATH_BIN)/$(APP_NAME)
 	@cp bin/$(APP_NAME) $(GOPATH_BIN)/opspulse 2>/dev/null || true
-	@echo "✅ Installed $(APP_NAME) to $(GOPATH_BIN)/$(APP_NAME)"
+	@mkdir -p $(LOCAL_BIN) 2>/dev/null || true
+	@cp bin/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME) 2>/dev/null || true
+	@cp bin/$(APP_NAME) $(LOCAL_BIN)/opspulse 2>/dev/null || true
+	@echo "✅ Installed $(APP_NAME) to $(GOPATH_BIN)/$(APP_NAME) and $(LOCAL_BIN)/$(APP_NAME)"
+	@case ":$$PATH:" in \
+		*":$(GOPATH_BIN):"*|*":$(LOCAL_BIN):"*) ;; \
+		*) \
+			echo "💡 Tip: Neither $(GOPATH_BIN) nor $(LOCAL_BIN) is in your current PATH."; \
+			echo "   Run: ./bin/$(APP_NAME) completion --install"; \
+			echo "   Or add to your shell profile: export PATH=\"\$$HOME/.local/bin:\$$HOME/go/bin:\$$PATH\"" ;; \
+	esac
 
 test:
 	go test -race -coverprofile=coverage.out ./...
