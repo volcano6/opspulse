@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/server"
 )
 
 func TestParseExecArgs(t *testing.T) {
@@ -122,3 +123,72 @@ func TestLinePrefixWriter_Concurrent(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectBatchServers(t *testing.T) {
+	servers := []server.Server{
+		{Name: "vps-personal", Host: "1.1.1.1", Tags: []string{"web", "dev"}},
+		{Name: "vps-company", Host: "2.2.2.2", SkipBatch: true, Tags: []string{"prod", "web"}},
+		{Name: "vps-backup", Host: "3.3.3.3", Tags: []string{"backup"}},
+	}
+
+	t.Run("filter all without includeSkipped excludes SkipBatch servers", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "all", false)
+		if len(targets) != 2 {
+			t.Fatalf("expected 2 targets, got %d", len(targets))
+		}
+		if targets[0].Name != "vps-personal" || targets[1].Name != "vps-backup" {
+			t.Errorf("unexpected targets: %+v", targets)
+		}
+		if len(skipped) != 1 || skipped[0] != "vps-company" {
+			t.Errorf("expected skipped=[vps-company], got %+v", skipped)
+		}
+	})
+
+	t.Run("filter all with includeSkipped includes all servers", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "all", true)
+		if len(targets) != 3 {
+			t.Fatalf("expected 3 targets, got %d", len(targets))
+		}
+		if len(skipped) != 0 {
+			t.Errorf("expected empty skipped, got %+v", skipped)
+		}
+	})
+
+	t.Run("tag filter matching SkipBatch server without includeSkipped excludes it", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "prod", false)
+		if len(targets) != 0 {
+			t.Fatalf("expected 0 targets, got %d", len(targets))
+		}
+		if len(skipped) != 1 || skipped[0] != "vps-company" {
+			t.Errorf("expected skipped=[vps-company], got %+v", skipped)
+		}
+	})
+
+	t.Run("tag filter matching SkipBatch server with includeSkipped includes it", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "prod", true)
+		if len(targets) != 1 || targets[0].Name != "vps-company" {
+			t.Fatalf("expected target vps-company, got %+v", targets)
+		}
+		if len(skipped) != 0 {
+			t.Errorf("expected empty skipped, got %+v", skipped)
+		}
+	})
+
+	t.Run("filter by server name in batch mode without includeSkipped respects SkipBatch", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "vps-company", false)
+		if len(targets) != 0 {
+			t.Fatalf("expected 0 targets, got %d", len(targets))
+		}
+		if len(skipped) != 1 || skipped[0] != "vps-company" {
+			t.Errorf("expected skipped=[vps-company], got %+v", skipped)
+		}
+	})
+
+	t.Run("filter with no matches", func(t *testing.T) {
+		targets, skipped := selectBatchServers(servers, "nonexistent", false)
+		if len(targets) != 0 || len(skipped) != 0 {
+			t.Errorf("expected 0 targets and 0 skipped, got %d targets, %d skipped", len(targets), len(skipped))
+		}
+	})
+}
+

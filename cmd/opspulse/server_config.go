@@ -14,10 +14,12 @@ import (
 )
 
 var (
-	setHost      string
-	setPort      int
-	setKey       string
-	setNoCopyKey bool
+	setHost        string
+	setPort        int
+	setKey         string
+	setNoCopyKey   bool
+	setSkipBatch   bool
+	setNoSkipBatch bool
 )
 
 var serverSetCmd = &cobra.Command{
@@ -45,17 +47,32 @@ var serverSetCmd = &cobra.Command{
 				key = &setKey
 			}
 		}
-		return setServerFields(server.NewDefaultStore(), args[0], host, port, key)
+
+		var skipBatch *bool
+		hasSkip := cmd.Flags().Changed("skip-batch")
+		hasNoSkip := cmd.Flags().Changed("no-skip-batch")
+		if hasSkip && hasNoSkip {
+			return fmt.Errorf("cannot use both --skip-batch and --no-skip-batch")
+		}
+		if hasSkip {
+			val := true
+			skipBatch = &val
+		} else if hasNoSkip {
+			val := false
+			skipBatch = &val
+		}
+
+		return setServerFields(server.NewDefaultStore(), args[0], host, port, key, skipBatch)
 	},
 }
 
-func setServerFields(store *server.Store, name string, host *string, port *int, key *string) error {
+func setServerFields(store *server.Store, name string, host *string, port *int, key *string, skipBatch *bool) error {
 	srv, err := store.Get(name)
 	if err != nil {
 		return err
 	}
-	if host == nil && port == nil && key == nil {
-		return fmt.Errorf("at least one of --host, --port, or --key is required")
+	if host == nil && port == nil && key == nil && skipBatch == nil {
+		return fmt.Errorf("at least one of --host, --port, --key, --skip-batch, or --no-skip-batch is required")
 	}
 	if host != nil {
 		if strings.TrimSpace(*host) == "" {
@@ -74,6 +91,9 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 			_ = CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, false)
 		}
 		srv.KeyPath = *key
+	}
+	if skipBatch != nil {
+		srv.SkipBatch = *skipBatch
 	}
 	if err := store.Save(*srv); err != nil {
 		return fmt.Errorf("update server %q: %w", srv.Name, err)
@@ -193,6 +213,8 @@ func init() {
 	serverSetCmd.Flags().IntVarP(&setPort, "port", "p", 0, "New SSH port")
 	serverSetCmd.Flags().StringVarP(&setKey, "key", "k", "", "New private key path (empty clears it)")
 	serverSetCmd.Flags().BoolVar(&setNoCopyKey, "no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
+	serverSetCmd.Flags().BoolVar(&setSkipBatch, "skip-batch", false, "Exclude server from implicit batch operations (e.g. ops exec -f all, ops doctor)")
+	serverSetCmd.Flags().BoolVar(&setNoSkipBatch, "no-skip-batch", false, "Remove skip-batch restriction from server")
 	_ = serverSetCmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 	serverSetCmd.ValidArgsFunction = completeServerNames
 	serverEditCmd.ValidArgsFunction = completeServerNames

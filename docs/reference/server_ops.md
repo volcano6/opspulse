@@ -24,11 +24,15 @@ ops add oracle-sg ubuntu@168.138.1.1:2222 \
 # 3. 通过跳板机（Bastion / Jump Host）添加内网机器（免查内网 IP，名字由跳板机解析）
 ops add vps2 ubuntu@vps2 -J vps1 -p 123456
 
-# 4. 亦可使用传统全 flag 形式（兼容 ops server add）
+# 4. 敏感/公司服务器防手滑保护（跳过 ops exec -f all 与 ops doctor 等隐式批量运维）
+ops add company-srv 10.0.0.1 --skip-batch
+
+# 5. 亦可使用传统全 flag 形式（兼容 ops server add）
 ops server add oracle-sg --host 168.138.1.1 --user ubuntu -i ~/.ssh/id_ed25519
 ```
 
 > 🛡️ **密码静默输入与公钥免密直连引导**：
+> - **隐式批量防呆保护（SkipBatch）**：对于公司服务器、归档节点或特殊机器，配置 `--skip-batch`。在执行 `ops exec -f all` 或 `ops doctor` 等过滤式批量操作时会自动跳过，防止手滑误伤。显式单机操作（如 `ops ssh <name>`、`ops exec <name>`）不受任何影响；如确需批量包含，可临时传递 `--include-skipped` 覆盖。
 > - **跳板机穿透（Jump Host）**：通过 `-J / --jump-host <server_name>` 关联跳板机，支持连续按 `<Tab>` 补全现有服务器。内网机器的主机名（如 `vps2`）将直接由跳板机在远程内网中解析，无需事先查探内网 IP。所有 SSH、SFTP、命令执行、自动化备份与 VS Code Remote-SSH（自动导出 `ProxyJump`）均走端到端加密通道，私钥无需在跳板机上落地。
 > - **静默密码交互**：未提供 `-i` 私钥时，终端会提示输入 SSH 密码，输入过程静默隐藏不回显，绝不留在 Shell 历史记录中。
 > - **公钥一键注入**：首次密码连通成功后，Ops 会检测本地通用公钥（如 `~/.ssh/id_ed25519.pub` 或 `~/.ssh/id_rsa.pub`，若无则自动生成专用密钥），并询问是否注入远端 VPS 的 `~/.ssh/authorized_keys`。注入成功并验证通过后，本地自动升级为密钥直连认证，且清空本地密码明文存储，兼顾极速与安全。
@@ -42,6 +46,10 @@ ops server add oracle-sg --host 168.138.1.1 --user ubuntu -i ~/.ssh/id_ed25519
 # 仅修改指定字段，其他配置保持不变；--key "" 可清除绑定密钥
 ops server set oracle-sg --port 2222
 ops server set oracle-sg --host 203.0.113.10 --key ~/.ssh/oracle-sg
+
+# 随时开启或撤销批量跳过保护
+ops server set company-srv --skip-batch
+ops server set company-srv --no-skip-batch
 
 # 使用 $VISUAL、$EDITOR 或系统默认编辑器打开完整清单并定位该服务器
 ops server edit oracle-sg
@@ -175,6 +183,13 @@ ops exec oracle-sg cat /var/log/nginx/access.log | grep 404 | wc -l
 
 # 3. 设置超时时间（默认 60 秒，传 0 禁用超时）
 ops exec oracle-sg "apt-get update" --timeout 120s
+
+# 4. 批量并发执行（默认自动排除配置了 --skip-batch 的服务器）
+ops exec -f all "uptime"
+ops exec -f "provider=oracle" -p 10 "docker ps -q | wc -l"
+
+# 5. 显式临时包含 skip-batch 服务器进行批量操作
+ops exec -f all --include-skipped "uptime"
 ```
 
 ---

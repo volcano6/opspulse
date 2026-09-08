@@ -65,6 +65,7 @@ func setupAddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("tags", "t", "", "Comma-separated tags (e.g. prod,web)")
 	cmd.Flags().StringP("labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
 	cmd.Flags().StringP("desc", "d", "", "Server description")
+	cmd.Flags().Bool("skip-batch", false, "Exclude server from implicit batch operations (e.g. ops exec -f all, ops doctor)")
 	_ = cmd.RegisterFlagCompletionFunc("identity", completePrivateKeyPath)
 	_ = cmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 	_ = cmd.RegisterFlagCompletionFunc("jump-host", completeServerNames)
@@ -423,6 +424,14 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 		usedPassword = true
 	}
 
+	skipBatchFlag, _ := cmd.Flags().GetBool("skip-batch")
+	skipBatch := false
+	if cmd.Flags().Changed("skip-batch") {
+		skipBatch = skipBatchFlag
+	} else if existingSrv, err := store.Get(name); err == nil {
+		skipBatch = existingSrv.SkipBatch
+	}
+
 	srv := server.Server{
 		Name:        name,
 		Host:        host,
@@ -431,6 +440,7 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 		KeyPath:     finalKeyPath,
 		Password:    password,
 		JumpHost:    jumpHost,
+		SkipBatch:   skipBatch,
 		Tags:        tags,
 		Labels:      labels,
 		Description: desc,

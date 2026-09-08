@@ -78,4 +78,8 @@ func TestDoctorCmdFlags(t *testing.T) {
 	if cmd.Flags().Lookup("timeout") == nil {
 		t.Error("expected --timeout flag")
 	}
+	if cmd.Flags().Lookup("include-skipped") == nil {
+		t.Error("expected --include-skipped flag")
+	}
 }
+

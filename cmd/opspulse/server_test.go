@@ -53,6 +53,16 @@ func TestFormatTagsAndLabels(t *testing.T) {
 	if got := formatTagsAndLabels(s4); got != "-" {
 		t.Errorf("expected '-', got %q", got)
 	}
+
+	s5 := server.Server{SkipBatch: true}
+	if got := formatTagsAndLabels(s5); got != "[skip-batch]" {
+		t.Errorf("expected '[skip-batch]', got %q", got)
+	}
+
+	s6 := server.Server{Tags: []string{"prod"}, SkipBatch: true}
+	if got := formatTagsAndLabels(s6); got != "prod [skip-batch]" {
+		t.Errorf("expected 'prod [skip-batch]', got %q", got)
+	}
 }
 
 func TestRenderServerTable(t *testing.T) {

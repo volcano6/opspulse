@@ -311,4 +311,18 @@ func TestServerAddCommand_Integration(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("unexpected error removing jump host after dependent was removed: %v", err)
 	}
+
+	// Test 9: Add with --skip-batch
+	rootCmd.SetArgs([]string{"add", "node-skip", "10.0.0.9", "--skip-test", "--skip-batch", "-J", ""})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(add with --skip-batch) error: %v", err)
+	}
+	sSkip, err := store.Get("node-skip")
+	if err != nil {
+		t.Fatalf("failed to retrieve node-skip: %v", err)
+	}
+	if !sSkip.SkipBatch {
+		t.Errorf("expected node-skip to have SkipBatch=true, got false")
+	}
 }
+
