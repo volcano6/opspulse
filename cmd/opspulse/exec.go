@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	execTimeout  time.Duration
-	execFilter   string
-	execParallel int
+	execTimeout        time.Duration
+	execFilter         string
+	execParallel       int
+	execIncludeSkipped bool
 )
 
 var execCmd = &cobra.Command{
@@ -46,7 +47,7 @@ Examples:
 				return errors.New("command is required when using --filter (e.g. ops exec --filter all 'uptime')")
 			}
 			commandStr := strings.Join(args, " ")
-			return executeFiltered(store, execFilter, commandStr, execParallel, execTimeout)
+			return executeFiltered(store, execFilter, commandStr, execParallel, execTimeout, execIncludeSkipped)
 		}
 
 		if len(args) < 2 {
@@ -156,17 +157,33 @@ func (w *LinePrefixWriter) writeFormattedLine(line string) {
 	_, _ = fmt.Fprint(w.out, prefixStr+line)
 }
 
-func executeFiltered(store *server.Store, filter, commandStr string, parallel int, timeout time.Duration) error {
+// selectBatchServers filters a server list for batch operations.
+// Servers with SkipBatch=true are excluded unless includeSkipped is true.
+func selectBatchServers(servers []server.Server, filter string, includeSkipped bool) (targets []server.Server, skipped []string) {
+	for _, s := range servers {
+		if !s.MatchFilter(filter) {
+			continue
+		}
+		if s.SkipBatch && !includeSkipped {
+			skipped = append(skipped, s.Name)
+			continue
+		}
+		targets = append(targets, s)
+	}
+	return targets, skipped
+}
+
+func executeFiltered(store *server.Store, filter, commandStr string, parallel int, timeout time.Duration, includeSkipped bool) error {
 	allServers, err := store.List()
 	if err != nil {
 		return err
 	}
 
-	var targets []server.Server
-	for _, s := range allServers {
-		if s.MatchFilter(filter) {
-			targets = append(targets, s)
-		}
+	targets, skipped := selectBatchServers(allServers, filter, includeSkipped)
+
+	if len(skipped) > 0 {
+		fmt.Printf("ℹ️  Skipped %d server(s) configured with skip_batch: %s (use --include-skipped to run on all)\n",
+			len(skipped), strings.Join(skipped, ", "))
 	}
 
 	if len(targets) == 0 {
@@ -270,6 +287,7 @@ func init() {
 	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "T", 60*time.Second, "Command execution timeout (0 to disable)")
 	execCmd.Flags().StringVarP(&execFilter, "filter", "f", "", "Filter target servers (e.g. 'all', 'provider=racknerd', or tag)")
 	execCmd.Flags().IntVarP(&execParallel, "parallel", "p", 5, "Maximum number of parallel server executions")
+	execCmd.Flags().BoolVar(&execIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in batch execution")
 	execCmd.ValidArgsFunction = completeExecArgs
 	rootCmd.AddCommand(execCmd)
 }

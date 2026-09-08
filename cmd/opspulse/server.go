@@ -277,6 +277,18 @@ func formatTagsAndLabels(s server.Server) string {
 	if lbls != "-" && lbls != "" {
 		parts = append(parts, lbls)
 	}
+	if s.SkipBatch {
+		hasTag := false
+		for _, t := range s.Tags {
+			if strings.EqualFold(t, "skip-batch") || strings.EqualFold(t, "[skip-batch]") {
+				hasTag = true
+				break
+			}
+		}
+		if !hasTag {
+			parts = append(parts, "[skip-batch]")
+		}
+	}
 	if len(parts) == 0 {
 		return "-"
 	}

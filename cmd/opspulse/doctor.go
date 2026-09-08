@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"text/tabwriter"
@@ -18,9 +19,10 @@ import (
 )
 
 var (
-	doctorFilter   string
-	doctorParallel int
-	doctorTimeout  time.Duration
+	doctorFilter         string
+	doctorParallel       int
+	doctorTimeout        time.Duration
+	doctorIncludeSkipped bool
 )
 
 var doctorCmd = &cobra.Command{
@@ -40,11 +42,11 @@ Examples:
 			return err
 		}
 
-		var targets []server.Server
-		for _, s := range servers {
-			if s.MatchFilter(doctorFilter) {
-				targets = append(targets, s)
-			}
+		targets, skipped := selectBatchServers(servers, doctorFilter, doctorIncludeSkipped)
+
+		if len(skipped) > 0 {
+			fmt.Printf("ℹ️  Skipped %d server(s) configured with skip_batch: %s (use --include-skipped to inspect all)\n\n",
+				len(skipped), strings.Join(skipped, ", "))
 		}
 
 		if len(targets) == 0 {
@@ -170,6 +172,7 @@ func init() {
 	doctorCmd.Flags().StringVarP(&doctorFilter, "filter", "f", "all", "Filter target servers (e.g. 'all', 'provider=oracle', tag)")
 	doctorCmd.Flags().IntVarP(&doctorParallel, "parallel", "p", 5, "Maximum number of concurrent server probes")
 	doctorCmd.Flags().DurationVarP(&doctorTimeout, "timeout", "T", 15*time.Second, "Per-server probe timeout")
+	doctorCmd.Flags().BoolVar(&doctorIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in health checks")
 
 	rootCmd.AddCommand(doctorCmd)
 }

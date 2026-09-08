@@ -32,6 +32,7 @@ type Server struct {
 	KeyPath     string            `yaml:"key_path,omitempty" json:"key_path,omitempty"`
 	Password    string            `yaml:"password,omitempty" json:"password,omitempty"`
 	JumpHost    string            `yaml:"jump_host,omitempty" json:"jump_host,omitempty"`
+	SkipBatch   bool              `yaml:"skip_batch,omitempty" json:"skip_batch,omitempty"`
 	Tags        []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
@@ -123,4 +124,13 @@ func (s *Server) MatchFilter(filter string) bool {
 
 	// 4. Check in Server Name
 	return strings.EqualFold(s.Name, trimmed)
+}
+
+// MatchBatchFilter checks whether the server matches a filter for batch operations.
+// Servers with SkipBatch=true are excluded unless includeSkipped is true.
+func (s *Server) MatchBatchFilter(filter string, includeSkipped bool) bool {
+	if s.SkipBatch && !includeSkipped {
+		return false
+	}
+	return s.MatchFilter(filter)
 }

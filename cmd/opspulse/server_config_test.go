@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
@@ -21,6 +22,7 @@ func TestSetServerFieldsPreservesUnchangedFields(t *testing.T) {
 		User:        "ubuntu",
 		KeyPath:     "~/.ssh/old",
 		Password:    "recovery-password",
+		SkipBatch:   true,
 		Tags:        []string{"prod"},
 		Labels:      map[string]string{"region": "sg"},
 		Description: "primary",
@@ -31,7 +33,7 @@ func TestSetServerFieldsPreservesUnchangedFields(t *testing.T) {
 
 	port := 2222
 	key := "~/.ssh/new"
-	if err := setServerFields(store, original.Name, nil, &port, &key); err != nil {
+	if err := setServerFields(store, original.Name, nil, &port, &key, nil); err != nil {
 		t.Fatalf("setServerFields() error: %v", err)
 	}
 	got, err := store.Get(original.Name)
@@ -40,6 +42,9 @@ func TestSetServerFieldsPreservesUnchangedFields(t *testing.T) {
 	}
 	if got.Port != port || got.KeyPath != key {
 		t.Fatalf("updated fields = port %d, key %q", got.Port, got.KeyPath)
+	}
+	if !got.SkipBatch {
+		t.Errorf("expected SkipBatch=true to be preserved, got false")
 	}
 	if got.Host != original.Host || got.User != original.User || got.Password != original.Password ||
 		got.Description != original.Description || len(got.Tags) != 1 || got.Labels["region"] != "sg" {
@@ -52,14 +57,67 @@ func TestSetServerFieldsRejectsNoChangesAndInvalidPort(t *testing.T) {
 	if err := store.Save(server.Server{Name: "web-01", Host: "192.0.2.10", Port: 22}); err != nil {
 		t.Fatal(err)
 	}
-	if err := setServerFields(store, "web-01", nil, nil, nil); err == nil {
+	if err := setServerFields(store, "web-01", nil, nil, nil, nil); err == nil {
 		t.Fatal("expected no-change update to fail")
 	}
 	invalidPort := 70000
-	if err := setServerFields(store, "web-01", nil, &invalidPort, nil); err == nil {
+	if err := setServerFields(store, "web-01", nil, &invalidPort, nil, nil); err == nil {
 		t.Fatal("expected invalid port update to fail")
 	}
 }
+
+func TestSetServerFields_SkipBatchToggle(t *testing.T) {
+	store := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
+	srv := server.Server{Name: "app-node", Host: "10.0.0.1", Port: 22}
+	if err := store.Save(srv); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Enable skip-batch
+	enable := true
+	if err := setServerFields(store, "app-node", nil, nil, nil, &enable); err != nil {
+		t.Fatalf("failed to enable skip-batch: %v", err)
+	}
+	got, err := store.Get("app-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.SkipBatch {
+		t.Errorf("expected SkipBatch to be true")
+	}
+
+	// 2. Disable skip-batch
+	disable := false
+	if err := setServerFields(store, "app-node", nil, nil, nil, &disable); err != nil {
+		t.Fatalf("failed to disable skip-batch: %v", err)
+	}
+	got, err = store.Get("app-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SkipBatch {
+		t.Errorf("expected SkipBatch to be false")
+	}
+}
+
+func TestServerSetCmd_FlagsConflict(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv(config.EnvHome, tempHome)
+	setTestHome(t, tempHome)
+
+	store := server.NewDefaultStore()
+	_ = store.Save(server.Server{Name: "srv-conflict", Host: "10.0.0.1", Port: 22})
+
+	rootCmd.SetArgs([]string{"server", "set", "srv-conflict", "--skip-batch", "--no-skip-batch"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when both --skip-batch and --no-skip-batch are provided, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot use both --skip-batch and --no-skip-batch") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
 
 func TestEditServerConfigValidatesBeforeReplacing(t *testing.T) {
 	tests := []struct {

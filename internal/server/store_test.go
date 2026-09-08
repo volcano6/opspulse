@@ -360,3 +360,75 @@ func TestStore_GetDependents(t *testing.T) {
 		t.Fatalf("expected 0 dependents for standalone, got %d", len(standaloneDeps))
 	}
 }
+
+func TestServer_SkipBatchAndMatchBatchFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+
+	// 1. Save servers (one normal, one with SkipBatch=true)
+	normal := Server{Name: "personal-vps", Host: "1.2.3.4", Tags: []string{"web"}}
+	protected := Server{Name: "company-vps", Host: "10.0.0.1", SkipBatch: true, Tags: []string{"prod", "web"}}
+
+	if err := store.Save(normal); err != nil {
+		t.Fatalf("save normal server failed: %v", err)
+	}
+	if err := store.Save(protected); err != nil {
+		t.Fatalf("save protected server failed: %v", err)
+	}
+
+	// 2. Reload and verify persistence
+	loadedNormal, err := store.Get("personal-vps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loadedNormal.SkipBatch {
+		t.Errorf("expected loadedNormal.SkipBatch to be false, got true")
+	}
+
+	loadedProtected, err := store.Get("company-vps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loadedProtected.SkipBatch {
+		t.Errorf("expected loadedProtected.SkipBatch to be true, got false")
+	}
+
+	// 3. Verify normal MatchFilter remains completely intact
+	if !loadedProtected.MatchFilter("all") {
+		t.Error("MatchFilter('all') should still be true for protected server")
+	}
+	if !loadedProtected.MatchFilter("prod") {
+		t.Error("MatchFilter('prod') should still be true for protected server")
+	}
+	if !loadedProtected.MatchFilter("company-vps") {
+		t.Error("MatchFilter('company-vps') should still be true for protected server")
+	}
+
+	// 4. Verify MatchBatchFilter:
+	// When includeSkipped is false, any batch filter excludes protected server
+	if loadedProtected.MatchBatchFilter("all", false) {
+		t.Error("MatchBatchFilter('all', false) should be false for SkipBatch server")
+	}
+	if loadedProtected.MatchBatchFilter("prod", false) {
+		t.Error("MatchBatchFilter('prod', false) should be false for SkipBatch server")
+	}
+	if loadedProtected.MatchBatchFilter("company-vps", false) {
+		t.Error("MatchBatchFilter('company-vps', false) should be false for SkipBatch server")
+	}
+
+	// When includeSkipped is true, protected server is included
+	if !loadedProtected.MatchBatchFilter("all", true) {
+		t.Error("MatchBatchFilter('all', true) should be true for SkipBatch server")
+	}
+	if !loadedProtected.MatchBatchFilter("prod", true) {
+		t.Error("MatchBatchFilter('prod', true) should be true for SkipBatch server")
+	}
+
+	// Normal server is always matched regardless of includeSkipped
+	if !loadedNormal.MatchBatchFilter("all", false) {
+		t.Error("MatchBatchFilter('all', false) should be true for normal server")
+	}
+	if !loadedNormal.MatchBatchFilter("all", true) {
+		t.Error("MatchBatchFilter('all', true) should be true for normal server")
+	}
+}
