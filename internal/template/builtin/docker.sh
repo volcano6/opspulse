@@ -77,21 +77,41 @@ fi
 
 echo "==> Configuring Docker daemon options (log rotation)..."
 mkdir -p /etc/docker
+
+OPS_DEFAULTS='{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}'
+
 if [ ! -f /etc/docker/daemon.json ]; then
-    cat << 'EOF' > /etc/docker/daemon.json
-{
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
-}
-EOF
+    echo "$OPS_DEFAULTS" > /etc/docker/daemon.json
+    echo "✅ Created /etc/docker/daemon.json with default log rotation."
+elif command -v jq >/dev/null 2>&1; then
+    MERGED=$(jq -s '.[0] * .[1]' <(echo "$OPS_DEFAULTS") /etc/docker/daemon.json)
+    echo "$MERGED" > /etc/docker/daemon.json
+    echo "✅ Merged log rotation defaults into existing /etc/docker/daemon.json."
+elif command -v python3 >/dev/null 2>&1; then
+    python3 -c "
+import json
+defaults = json.loads('$OPS_DEFAULTS')
+with open('/etc/docker/daemon.json') as f:
+    existing = json.load(f)
+merged = {**defaults, **existing}
+if 'log-opts' in defaults and 'log-opts' in existing:
+    merged['log-opts'] = {**defaults['log-opts'], **existing['log-opts']}
+with open('/etc/docker/daemon.json', 'w') as f:
+    json.dump(merged, f, indent=2)
+"
+    echo "✅ Merged log rotation defaults (via python3 fallback)."
+else
+    echo "⚠️  /etc/docker/daemon.json already exists but jq/python3 not available for safe merging. Skipping."
 fi
 
 echo "==> Configuring Docker service and auto-start on boot..."
-systemctl daemon-reload || true
-systemctl enable --now docker.service containerd.service
+if ps -p 1 -o comm= | grep -q systemd || [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    systemctl enable --now docker.service containerd.service || true
+else
+    echo "⚠️  systemd not detected (WSL/SysV init). Starting Docker via service..."
+    service docker start || true
+fi
 
 echo "==> Configuring Docker user permissions..."
 groupadd -f docker

@@ -9,9 +9,13 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo "==> 1. Installing basic dependencies (Zsh, Git, Curl, Tar)..."
-apt-get update -y
-apt-get install -y zsh git curl tar
+if command -v zsh >/dev/null 2>&1 && command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+    echo "==> 1. Basic dependencies (Zsh, Git, Curl, Tar) are already installed. Skipping apt-get."
+else
+    echo "==> 1. Installing basic dependencies (Zsh, Git, Curl, Tar)..."
+    apt-get update -y
+    apt-get install -y zsh git curl tar
+fi
 
 echo "==> 2. Installing Starship prompt (with mirror fallback)..."
 if ! command -v starship &> /dev/null; then
@@ -112,6 +116,44 @@ disabled = true
 disabled = true
 EOF
 
+echo "==> 4.5. Extracting user customizations from .bashrc to ~/.zshrc.local..."
+if [ ! -f "$HOME/.zshrc.local" ] && [ -f "$HOME/.bashrc" ]; then
+    {
+        echo "# Auto-extracted from .bashrc by OpsPulse zsh-starship template"
+        echo "# $(date -Iseconds)"
+        echo ""
+        
+        # Extract export statements, avoiding boilerplate
+        grep -E '^export\s+' "$HOME/.bashrc" \
+            | grep -v -E '(HISTSIZE|HISTFILESIZE|HISTCONTROL|LESSOPEN|LESSCLOSE)' \
+            || true
+        
+        # Extract alias statements, avoiding basic ones
+        grep -E '^\s*alias\s+' "$HOME/.bashrc" \
+            | grep -v -E "alias\s+(ls|grep|fgrep|egrep|ll|la|l)=" \
+            || true
+        
+        # Extract PATH additions
+        grep -E 'PATH=.*\$PATH|PATH=.*\$HOME|path\+=' "$HOME/.bashrc" || true
+        
+        # Extract sourcing and eval
+        grep -E '^\s*(eval|source|\.)(\s+|$)' "$HOME/.bashrc" \
+            | grep -v -E '(bash_completion|bashrc)' \
+            || true
+    } > "$HOME/.zshrc.local"
+    
+    if [ "$(grep -c -v '^#\|^$' "$HOME/.zshrc.local")" -eq 0 ]; then
+        rm -f "$HOME/.zshrc.local"
+        echo "ℹ️  No user customizations found in .bashrc."
+    else
+        echo "✅ User customizations saved to ~/.zshrc.local"
+    fi
+else
+    if [ -f "$HOME/.zshrc.local" ]; then
+        echo "ℹ️  ~/.zshrc.local already exists, skipping extraction."
+    fi
+fi
+
 echo "==> 5. Generating ~/.zshrc..."
 if [ -f "$HOME/.zshrc" ]; then
     echo "==> Backing up existing ~/.zshrc..."
@@ -134,6 +176,9 @@ source ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null ||
 
 eval "$(starship init zsh)"
 
+# Source user customizations (proxy, API keys, PATH, aliases)
+[ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
+
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│ 🚀 Starship + Zsh modern terminal is ready                  │"
 echo "│ • Aliases: ll, la, df, free                                 │"
@@ -143,7 +188,7 @@ EOF
 
 echo "==> 6. Changing default login shell to Zsh..."
 ZSH_PATH=$(which zsh)
-chsh -s "$ZSH_PATH" "$(whoami)" 2>/dev/null || true
+chsh -s "$ZSH_PATH" "${SUDO_USER:-$(whoami)}" 2>/dev/null || true
 
 echo "=========================================================="
 echo "🎉 Zsh + Starship installation and configuration completed!"
