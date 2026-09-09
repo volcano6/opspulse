@@ -102,7 +102,6 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 			ssh.KeyAlgoRSASHA512,
 			ssh.KeyAlgoRSASHA256,
 			ssh.KeyAlgoRSA,
-			ssh.KeyAlgoDSA,
 		},
 	}
 
