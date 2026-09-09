@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -148,9 +149,18 @@ func UpdateSSHConfigFile(filePath string, servers []Server) (string, int, error)
 
 	if err := os.Rename(tempPath, filePath); err != nil {
 		// Fallback for Windows file rename when destination file exists
-		_ = os.Remove(filePath)
-		if retryErr := os.Rename(tempPath, filePath); retryErr != nil {
-			return "", 0, fmt.Errorf("replace ssh config %s: %w", filePath, retryErr)
+		backupPath := fmt.Sprintf("%s.bak.%d", filePath, time.Now().UnixNano())
+		if renameBackupErr := os.Rename(filePath, backupPath); renameBackupErr == nil {
+			if retryErr := os.Rename(tempPath, filePath); retryErr != nil {
+				_ = os.Rename(backupPath, filePath) // restore original on failure
+				return "", 0, fmt.Errorf("replace ssh config %s: %w", filePath, retryErr)
+			}
+			_ = os.Remove(backupPath)
+		} else {
+			_ = os.Remove(filePath)
+			if retryErr := os.Rename(tempPath, filePath); retryErr != nil {
+				return "", 0, fmt.Errorf("replace ssh config %s: %w", filePath, retryErr)
+			}
 		}
 	}
 	_ = os.Chmod(filePath, 0o600)

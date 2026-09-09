@@ -1,11 +1,17 @@
 #!/bin/bash
 # ---
 # name: caddy
-# version: 1
+# version: 2
 # os: [ubuntu, debian]
 # description: Install official Caddy Web server with automatic HTTPS reverse proxy
 # ---
 set -euo pipefail
+
+if command -v caddy >/dev/null 2>&1; then
+    echo "==> Caddy is already installed. Skipping package installation."
+    caddy version
+    exit 0
+fi
 
 echo "==> Setting up official Caddy repository..."
 export DEBIAN_FRONTEND=noninteractive
@@ -21,6 +27,12 @@ apt-get install -y caddy
 
 echo "==> Enabling and starting Caddy service..."
 systemctl enable --now caddy
+
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -qw "active"; then
+    echo "==> Allowing standard Web ports in UFW..."
+    ufw allow 80/tcp comment 'Caddy HTTP' || true
+    ufw allow 443/tcp comment 'Caddy HTTPS' || true
+fi
 
 echo "==> Verifying Caddy version..."
 caddy version

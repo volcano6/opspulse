@@ -1,7 +1,7 @@
 #!/bin/bash
 # ---
 # name: zsh-starship
-# version: 1
+# version: 2
 # os: [ubuntu, debian]
 # description: Install Zsh + Starship with double-line rounded theme, auto-suggestions and syntax highlighting
 # ---
@@ -17,9 +17,12 @@ echo "==> 2. Installing Starship prompt (with mirror fallback)..."
 if ! command -v starship &> /dev/null; then
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)  STARSHIP_ARCH="x86_64-unknown-linux-musl" ;;
-        aarch64) STARSHIP_ARCH="aarch64-unknown-linux-musl" ;;
-        *)       STARSHIP_ARCH="x86_64-unknown-linux-musl" ;;
+        x86_64)        STARSHIP_ARCH="x86_64-unknown-linux-musl" ;;
+        aarch64|arm64) STARSHIP_ARCH="aarch64-unknown-linux-musl" ;;
+        *)
+            echo "Error: Unsupported architecture for starship: $ARCH" >&2
+            exit 1
+            ;;
     esac
 
     TARBALL_NAME="starship-${STARSHIP_ARCH}.tar.gz"
@@ -28,7 +31,7 @@ if ! command -v starship &> /dev/null; then
 
     TMP_DIR=$(mktemp -d)
     if ! curl -fsSL --connect-timeout 8 -m 30 "$RAW_URL" -o "${TMP_DIR}/${TARBALL_NAME}" 2>/dev/null; then
-        echo "--> Direct download timed out, switching to accelerated mirror..."
+        echo "--> Direct download timed out, switching to mirror..."
         curl -fsSL --connect-timeout 10 -m 60 "$MIRROR_URL" -o "${TMP_DIR}/${TARBALL_NAME}"
     fi
 
@@ -60,6 +63,10 @@ clone_or_mirror "$ZSH_PLUGIN_DIR/zsh-syntax-highlighting" "https://github.com/zs
 
 echo "==> 4. Generating Starship theme config (~/.config/starship.toml)..."
 mkdir -p "$HOME/.config"
+if [ -f "$HOME/.config/starship.toml" ]; then
+    echo "==> Backing up existing ~/.config/starship.toml..."
+    cp "$HOME/.config/starship.toml" "$HOME/.config/starship.toml.bak.$(date +%Y%m%d%H%M%S)"
+fi
 cat << 'EOF' > "$HOME/.config/starship.toml"
 format = """
 $username\
@@ -106,6 +113,10 @@ disabled = true
 EOF
 
 echo "==> 5. Generating ~/.zshrc..."
+if [ -f "$HOME/.zshrc" ]; then
+    echo "==> Backing up existing ~/.zshrc..."
+    cp "$HOME/.zshrc" "$HOME/.zshrc.bak.$(date +%Y%m%d%H%M%S)"
+fi
 cat << 'EOF' > "$HOME/.zshrc"
 HISTFILE=$HOME/.zsh_history
 HISTSIZE=10000

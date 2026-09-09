@@ -98,13 +98,17 @@ func TestDedupPaths(t *testing.T) {
 	}
 }
 
-// dynamicMockExecutor handles different tasks in container backup pipeline
 type dynamicMockExecutor struct {
-	inspectJSON  string
-	resticOutput string
+	inspectJSON     string
+	resticOutput    string
+	executedScripts map[string]string
 }
 
-func (m *dynamicMockExecutor) Execute(_ context.Context, target executor.Target, taskName string, _ string, output io.Writer) (*executor.Result, error) {
+func (m *dynamicMockExecutor) Execute(_ context.Context, target executor.Target, taskName string, script string, output io.Writer) (*executor.Result, error) {
+	if m.executedScripts == nil {
+		m.executedScripts = make(map[string]string)
+	}
+	m.executedScripts[taskName] = script
 	if strings.HasPrefix(taskName, "inspect-") {
 		if output != nil && m.inspectJSON != "" {
 			_, _ = io.WriteString(output, m.inspectJSON)
@@ -235,6 +239,14 @@ func TestRunContainerBackup_Standalone_WithAlias(t *testing.T) {
 	}
 	if savedAsset.Type != asset.TypeDockerCompose {
 		t.Errorf("savedAsset.Type = %v, want docker_compose", savedAsset.Type)
+	}
+	// Verify write-compose script used base64 encoding instead of vulnerable heredoc
+	writeScript := exec.executedScripts["write-compose-nginx"]
+	if strings.Contains(writeScript, "cat << 'EOF'") {
+		t.Error("write-compose script must not use vulnerable heredoc cat << 'EOF'")
+	}
+	if !strings.Contains(writeScript, "base64 -d") {
+		t.Error("write-compose script should decode via base64 -d")
 	}
 }
 
