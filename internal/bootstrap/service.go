@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type Service struct {
 	serverStore    *server.Store
 	templateLoader *template.Loader
 	executor       executor.Executor
+	localExecutor  *executor.LocalExecutor
 }
 
 // NewService creates a new bootstrap Service.
@@ -35,6 +37,7 @@ func NewService(serverStore *server.Store, templateLoader *template.Loader, exec
 		serverStore:    serverStore,
 		templateLoader: templateLoader,
 		executor:       exec,
+		localExecutor:  executor.NewLocalExecutor(),
 	}
 }
 
@@ -47,6 +50,24 @@ func NewDefaultService() *Service {
 	)
 }
 
+// ResolveTarget determines whether the target is local or a remote server from inventory.
+func (s *Service) ResolveTarget(serverName string) (executor.Target, error) {
+	if serverName == "local" || serverName == "" {
+		return executor.NewLocalTarget(), nil
+	}
+
+	if s.serverStore == nil {
+		return executor.Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
+	}
+
+	srv, err := s.serverStore.Get(serverName)
+	if err != nil {
+		return executor.Target{}, fmt.Errorf("server %q not found in inventory: %w", serverName, err)
+	}
+
+	return executor.NewServerTarget(*srv), nil
+}
+
 // Run executes the bootstrap workflow according to the provided options.
 func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer) (*Summary, error) {
 	if len(opts.ServerNames) == 0 {
@@ -57,13 +78,13 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 	}
 
 	// 1. Resolve all target servers
-	var targetServers []server.Server
+	var targetServers []executor.Target
 	for _, name := range opts.ServerNames {
-		srv, err := s.serverStore.Get(name)
+		target, err := s.ResolveTarget(name)
 		if err != nil {
-			return nil, fmt.Errorf("server %q not found in inventory: %w", name, err)
+			return nil, err
 		}
-		targetServers = append(targetServers, *srv)
+		targetServers = append(targetServers, target)
 	}
 
 	// 2. Resolve all templates and inline arguments in specified order
@@ -96,8 +117,6 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			quotedArg := shellquote.Quote(arg)
 			execContent = fmt.Sprintf("set -- %s\nexport SCRIPT_ARG=%s\n%s", quotedArg, quotedArg, tmpl.Content)
 		}
-		privGuard := fmt.Sprintf("if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Error: bootstrap template %s requires root privileges.\" >&2\n  echo \"Current user is not root and lacks passwordless sudo (NOPASSWD). Please switch server user to root or configure sudoers.\" >&2\n  exit 1\nfi\n", shellquote.Quote(spec))
-		execContent = privGuard + execContent
 
 		targetTemplates = append(targetTemplates, resolvedTemplate{
 			Template:    *tmpl,
@@ -117,21 +136,29 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 	}
 
 	// 3. Sequential server execution loop
-	for serverIdx, srv := range targetServers {
+	for serverIdx, target := range targetServers {
+		srvName := target.Name
+		srvAddr := target.Name
+		if target.Server != nil {
+			srvAddr = target.Server.Address()
+		} else {
+			srvAddr = "localhost"
+		}
+
 		_, _ = fmt.Fprintf(consoleOut, "\n[%d/%d] >>> Starting bootstrap on server: %s (%s) <<<\n",
-			serverIdx+1, len(targetServers), srv.Name, srv.Address())
+			serverIdx+1, len(targetServers), srvName, srvAddr)
 
 		var logFile *os.File
 		var logFilePath string
 
 		if !opts.DryRun {
 			var err error
-			logFilePath, err = executor.LogPathFor(srv.Name, time.Now())
+			logFilePath, err = executor.LogPathFor(srvName, time.Now())
 			if err == nil {
 				logFile, _ = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 				if logFile != nil {
 					_, _ = fmt.Fprintf(logFile, "=== Bootstrap Log for Server %s (%s) at %s ===\n\n",
-						srv.Name, srv.Address(), time.Now().Format(time.RFC3339))
+						srvName, srvAddr, time.Now().Format(time.RFC3339))
 				}
 			}
 		}
@@ -143,7 +170,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			if serverFailed && opts.StopOnError {
 				// Record skipped template
 				summary.Results = append(summary.Results, executor.Result{
-					ServerName: srv.Name,
+					ServerName: srvName,
 					Template:   targetTmpl.DisplayName,
 					Success:    false,
 					Error:      errors.New("skipped due to previous error"),
@@ -154,13 +181,13 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			}
 
 			_, _ = fmt.Fprintf(consoleOut, "\n--> [%s] Running template [%d/%d]: %s (v%d) - %s\n",
-				srv.Name, tmplIdx+1, len(targetTemplates), targetTmpl.DisplayName, targetTmpl.Metadata.Version, targetTmpl.Metadata.Description)
+				srvName, tmplIdx+1, len(targetTemplates), targetTmpl.DisplayName, targetTmpl.Metadata.Version, targetTmpl.Metadata.Description)
 
 			if opts.DryRun {
 				_, _ = fmt.Fprintf(consoleOut, "[DRY-RUN] Would execute script (%d bytes) on %s\n",
-					len(targetTmpl.ExecContent), srv.Address())
+					len(targetTmpl.ExecContent), srvAddr)
 				summary.Results = append(summary.Results, executor.Result{
-					ServerName: srv.Name,
+					ServerName: srvName,
 					Template:   targetTmpl.DisplayName,
 					Success:    true,
 					Duration:   10 * time.Millisecond,
@@ -171,7 +198,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			}
 
 			// Setup prefixed console output & log file writer
-			prefix := fmt.Sprintf("[%s] ", srv.Name)
+			prefix := fmt.Sprintf("[%s] ", srvName)
 			prefixedConsole := executor.NewPrefixedWriter(prefix, consoleOut)
 
 			var multiWriter io.Writer = prefixedConsole
@@ -181,21 +208,45 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			}
 
 			// Inject server execution environment variables (port, name, host, user)
-			serverPort := srv.Port
-			if serverPort <= 0 {
-				serverPort = 22
+			serverPort := 22
+			serverHost := "localhost"
+			serverUser := "root"
+			if target.Server != nil {
+				if target.Server.Port > 0 {
+					serverPort = target.Server.Port
+				}
+				serverHost = target.Server.Host
+				serverUser = target.Server.User
 			}
+
 			serverEnv := fmt.Sprintf("export OPS_SERVER_NAME=%s\nexport OPS_SERVER_HOST=%s\nexport OPS_SSH_PORT=%d\nexport OPS_SERVER_USER=%s\n",
-				shellquote.Quote(srv.Name),
-				shellquote.Quote(srv.Host),
+				shellquote.Quote(srvName),
+				shellquote.Quote(serverHost),
 				serverPort,
-				shellquote.Quote(srv.User),
+				shellquote.Quote(serverUser),
 			)
 			execContent := serverEnv + targetTmpl.ExecContent
 
+			// Inject privilege guard and handle local sudo
+			execToUse := s.executor
+			if target.IsLocal {
+				execToUse = s.localExecutor
+				
+				// Perform a quick pre-authentication check so the user isn't prompted repeatedly during execution
+				sudoCheck := exec.CommandContext(ctx, "sudo", "-v")
+				sudoCheck.Stdout = consoleOut
+				sudoCheck.Stderr = consoleOut
+				_ = sudoCheck.Run() // Ignore error here, it will fail in the script if not authenticated
+
+				privGuard := "if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Elevating privileges for local bootstrap...\" >&2\n  exec sudo -E bash -s << 'EOF_OPSPULSE_BOOTSTRAP'\n"
+				execContent = privGuard + execContent + "\nEOF_OPSPULSE_BOOTSTRAP\nfi\n"
+			} else {
+				privGuard := fmt.Sprintf("if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Error: bootstrap template %s requires root privileges.\" >&2\n  echo \"Current user is not root and lacks passwordless sudo (NOPASSWD). Please switch server user to root or configure sudoers.\" >&2\n  exit 1\nfi\n", shellquote.Quote(targetTmpl.DisplayName))
+				execContent = privGuard + execContent
+			}
+
 			// Execute template via Executor interface
-			target := executor.NewServerTarget(srv)
-			res, err := s.executor.Execute(ctx, target, targetTmpl.DisplayName, execContent, multiWriter)
+			res, err := execToUse.Execute(ctx, target, targetTmpl.DisplayName, execContent, multiWriter)
 			_ = prefixedConsole.Flush()
 
 			res.LogPath = logFilePath
@@ -205,27 +256,27 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 				serverFailed = true
 				summary.FailureCount++
 				_, _ = fmt.Fprintf(consoleOut, "[%s] ❌ Template %s failed: %v (Duration: %.2fs)\n",
-					srv.Name, targetTmpl.DisplayName, res.Error, res.Duration.Seconds())
+					srvName, targetTmpl.DisplayName, res.Error, res.Duration.Seconds())
 			} else {
 				summary.SuccessCount++
 				_, _ = fmt.Fprintf(consoleOut, "[%s] ✅ Template %s completed successfully (Duration: %.2fs)\n",
-					srv.Name, targetTmpl.DisplayName, res.Duration.Seconds())
+					srvName, targetTmpl.DisplayName, res.Duration.Seconds())
 			}
 		}
 
 		if logFile != nil {
 			_, _ = fmt.Fprintf(logFile, "\n=== Finished Bootstrap for Server %s at %s ===\n",
-				srv.Name, time.Now().Format(time.RFC3339))
+				srvName, time.Now().Format(time.RFC3339))
 			_ = logFile.Close()
 		}
 
 		if serverFailed && opts.StopOnError {
 			// Record skipped remaining servers and templates
 			for remIdx := serverIdx + 1; remIdx < len(targetServers); remIdx++ {
-				remSrv := targetServers[remIdx]
+				remTarget := targetServers[remIdx]
 				for _, targetTmpl := range targetTemplates {
 					summary.Results = append(summary.Results, executor.Result{
-						ServerName: remSrv.Name,
+						ServerName: remTarget.Name,
 						Template:   targetTmpl.DisplayName,
 						Success:    false,
 						Error:      errors.New("skipped due to previous server failure"),

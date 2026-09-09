@@ -100,6 +100,9 @@ func completeBootstrapServerArgs(_ *cobra.Command, args []string, toComplete str
 		}
 
 		var comps []string
+		if !selected["local"] {
+			comps = append(comps, fmt.Sprintf("%slocal\tLocal execution", prefix))
+		}
 		for _, s := range servers {
 			if !selected[s.Name] {
 				if s.Description != "" {
@@ -113,6 +116,9 @@ func completeBootstrapServerArgs(_ *cobra.Command, args []string, toComplete str
 	}
 
 	var comps []string
+	if !selected["local"] {
+		comps = append(comps, "local\tLocal execution")
+	}
 	for _, s := range servers {
 		if !selected[s.Name] {
 			if s.Description != "" {
