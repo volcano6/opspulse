@@ -61,7 +61,7 @@ func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Clien
 		jumpSrv = resolved
 	}
 
-	var dialer net.Dialer
+	dialer := net.Dialer{Timeout: e.ConnectTimeout}
 
 	// 1. If Jump Host is configured, establish direct-tcpip tunnel through it
 	if jumpSrv != nil {
@@ -258,12 +258,13 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 		return res, nil
 	}
 }
+
 func remoteShellCommand(scriptContent string) (string, io.Reader) {
-	// Select one available shell before execution. Using "bash || sh" would
-	// rerun an already-consumed script with sh and mask bash's exit status.
+	// Select one available shell before execution and automatically elevate
+	// with passwordless sudo if the remote session user is non-root.
 	if len(scriptContent) <= 64*1024 {
 		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
-		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; printf '%%s' '%s' | base64 -d | \"$shell\"", encoded), nil
+		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then runner=\"sudo -E $shell\"; else runner=\"$shell\"; fi; printf '%%s' '%s' | base64 -d | $runner", encoded), nil
 	}
-	return "if command -v bash >/dev/null 2>&1; then bash -s; else sh -s; fi", strings.NewReader(scriptContent)
+	return "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then sudo -E \"$shell\" -s; else \"$shell\" -s; fi", strings.NewReader(scriptContent)
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/template"
 )
 
@@ -92,8 +93,11 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 
 		execContent := tmpl.Content
 		if arg != "" {
-			execContent = fmt.Sprintf("set -- %q\nexport SCRIPT_ARG=%q\n%s", arg, arg, tmpl.Content)
+			quotedArg := shellquote.Quote(arg)
+			execContent = fmt.Sprintf("set -- %s\nexport SCRIPT_ARG=%s\n%s", quotedArg, quotedArg, tmpl.Content)
 		}
+		privGuard := fmt.Sprintf("if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Error: bootstrap template %s requires root privileges.\" >&2\n  echo \"Current user is not root and lacks passwordless sudo (NOPASSWD). Please switch server user to root or configure sudoers.\" >&2\n  exit 1\nfi\n", shellquote.Quote(spec))
+		execContent = privGuard + execContent
 
 		targetTemplates = append(targetTemplates, resolvedTemplate{
 			Template:    *tmpl,
@@ -176,9 +180,22 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 				multiWriter = io.MultiWriter(prefixedConsole, logFile)
 			}
 
+			// Inject server execution environment variables (port, name, host, user)
+			serverPort := srv.Port
+			if serverPort <= 0 {
+				serverPort = 22
+			}
+			serverEnv := fmt.Sprintf("export OPS_SERVER_NAME=%s\nexport OPS_SERVER_HOST=%s\nexport OPS_SSH_PORT=%d\nexport OPS_SERVER_USER=%s\n",
+				shellquote.Quote(srv.Name),
+				shellquote.Quote(srv.Host),
+				serverPort,
+				shellquote.Quote(srv.User),
+			)
+			execContent := serverEnv + targetTmpl.ExecContent
+
 			// Execute template via Executor interface
 			target := executor.NewServerTarget(srv)
-			res, err := s.executor.Execute(ctx, target, targetTmpl.DisplayName, targetTmpl.ExecContent, multiWriter)
+			res, err := s.executor.Execute(ctx, target, targetTmpl.DisplayName, execContent, multiWriter)
 			_ = prefixedConsole.Flush()
 
 			res.LogPath = logFilePath

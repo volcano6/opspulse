@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -199,6 +200,18 @@ func TestReadSSHAskpassPasswordMultiHost(t *testing.T) {
 	if err != nil || defaultPass != "fallback-pass" {
 		t.Fatalf("expected 'fallback-pass', got %q, err: %v", defaultPass, err)
 	}
+
+	// 4. Corrupted JSON file returns error instead of leaking content
+	corruptedPath := filepath.Join(t.TempDir(), "corrupted.json")
+	_ = os.WriteFile(corruptedPath, []byte("{\"corrupted\": true, invalid"), 0o600)
+	t.Setenv(askpassDataFile, corruptedPath)
+	leaked, err := readSSHAskpassPassword("any prompt")
+	if err == nil {
+		t.Fatalf("expected error for corrupted askpass file, got nil, returned content: %q", leaked)
+	}
+	if leaked != "" {
+		t.Fatalf("expected empty string on error, got %q", leaked)
+	}
 }
 
 func TestSelectServerInteractively(t *testing.T) {
@@ -247,5 +260,111 @@ func TestSelectServerInteractively(t *testing.T) {
 	_, err = selectServerInteractively(inInvalid, nil, servers)
 	if err == nil || !strings.Contains(err.Error(), "invalid server number") {
 		t.Fatalf("expected invalid error, got: %v", err)
+	}
+}
+
+func TestTitleFilterWriter(t *testing.T) {
+	tests := []struct {
+		name     string
+		chunks   []string
+		expected string
+	}{
+		{
+			name:     "simple OSC 0 with BEL",
+			chunks:   []string{"prompt \033]0;user@host:dir\007$ "},
+			expected: "prompt $ ",
+		},
+		{
+			name:     "simple OSC 2 with BEL",
+			chunks:   []string{"prompt \033]2;user@host:dir\007$ "},
+			expected: "prompt $ ",
+		},
+		{
+			name:     "OSC 0 with ST terminator",
+			chunks:   []string{"prompt \033]0;user@host:dir\033\\$ "},
+			expected: "prompt $ ",
+		},
+		{
+			name:     "OSC 2 with ST terminator",
+			chunks:   []string{"prompt \033]2;user@host:dir\033\\$ "},
+			expected: "prompt $ ",
+		},
+		{
+			name:     "preserve ANSI color sequences",
+			chunks:   []string{"\033[32m[user@host ~]$\033[0m "},
+			expected: "\033[32m[user@host ~]$\033[0m ",
+		},
+		{
+			name:     "chunk split right at ESC",
+			chunks:   []string{"hello \033", "]0;title\007world"},
+			expected: "hello world",
+		},
+		{
+			name:     "chunk split inside OSC header",
+			chunks:   []string{"hello \033]0", ";title\007world"},
+			expected: "hello world",
+		},
+		{
+			name:     "chunk split at ST terminator",
+			chunks:   []string{"hello \033]0;title\033", "\\world"},
+			expected: "hello world",
+		},
+		{
+			name:     "preserve non-title OSC sequence",
+			chunks:   []string{"\033]10;rgb:12/34/56\007text"},
+			expected: "\033]10;rgb:12/34/56\007text",
+		},
+		{
+			name:     "preserve UTF-8 multibyte characters",
+			chunks:   []string{"你好世界\033]0;火把开发机:/var/www\007！欢迎使用"},
+			expected: "你好世界！欢迎使用",
+		},
+		{
+			name:     "multiple title sequences in single stream",
+			chunks:   []string{"\033]0;title1\007A\033]2;title2\007B\033]0;title3\033\\C"},
+			expected: "ABC",
+		},
+		{
+			name:     "flush pending byte when EOF without sequence completion",
+			chunks:   []string{"unfinished \033"},
+			expected: "unfinished \033",
+		},
+		{
+			name:     "bare LF converted to CRLF to prevent staircase effect",
+			chunks:   []string{"Welcome\nUpdates available\n  Notice\n"},
+			expected: "Welcome\r\nUpdates available\r\n  Notice\r\n",
+		},
+		{
+			name:     "existing CRLF preserved without double CR",
+			chunks:   []string{"Prompt line\r\nNext line\r\n"},
+			expected: "Prompt line\r\nNext line\r\n",
+		},
+		{
+			name:     "CR and LF split across chunks",
+			chunks:   []string{"Prompt line\r", "\nNext line\n"},
+			expected: "Prompt line\r\nNext line\r\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			w := newTitleFilterWriter(buf)
+			for _, chunk := range tt.chunks {
+				n, err := w.Write([]byte(chunk))
+				if err != nil {
+					t.Fatalf("Write error: %v", err)
+				}
+				if n != len(chunk) {
+					t.Fatalf("Write returned %d, expected %d", n, len(chunk))
+				}
+			}
+			if err := w.Flush(); err != nil {
+				t.Fatalf("Flush error: %v", err)
+			}
+			if got := buf.String(); got != tt.expected {
+				t.Errorf("got %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }

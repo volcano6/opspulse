@@ -14,6 +14,7 @@ func setTestHome(t *testing.T, home string) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOMEDRIVE", "")
 	t.Setenv("HOMEPATH", "")
+	t.Setenv("OPSPULSE_HOME", home)
 }
 
 func TestSetupKeyPath(t *testing.T) {

@@ -232,12 +232,75 @@ func TestBootstrap_TemplateArguments(t *testing.T) {
 		t.Errorf("expected task 1 to be 'timezone:UTC', got %q", exec.capturedTasks[1])
 	}
 
-	// Verify script content had arguments injected
-	if !strings.Contains(exec.capturedScripts[0], `set -- "4"`) {
-		t.Errorf("expected script 0 to inject 'set -- \"4\"', got:\n%s", exec.capturedScripts[0])
+	// Verify script content had arguments safely escaped via single quotes
+	if !strings.Contains(exec.capturedScripts[0], `set -- '4'`) || !strings.Contains(exec.capturedScripts[0], `export SCRIPT_ARG='4'`) {
+		t.Errorf("expected script 0 to inject 'set -- \\'4\\'', got:\n%s", exec.capturedScripts[0])
 	}
-	if !strings.Contains(exec.capturedScripts[1], `set -- "UTC"`) {
-		t.Errorf("expected script 1 to inject 'set -- \"UTC\"', got:\n%s", exec.capturedScripts[1])
+	if !strings.Contains(exec.capturedScripts[1], `set -- 'UTC'`) || !strings.Contains(exec.capturedScripts[1], `export SCRIPT_ARG='UTC'`) {
+		t.Errorf("expected script 1 to inject 'set -- \\'UTC\\'', got:\n%s", exec.capturedScripts[1])
+	}
+
+	// Verify dangerous metacharacters are safely neutralized with single quotes
+	exec2 := &mockCapturingExecutor{}
+	svc2 := NewService(serverStore, templateLoader, exec2)
+	dangerousArg := `$(id); echo "pwned"`
+	_, err = svc2.Run(context.Background(), RunOptions{
+		ServerNames:   []string{"vps-01"},
+		TemplateNames: []string{"timezone:" + dangerousArg},
+	}, &console)
+	if err != nil {
+		t.Fatalf("Run() with special characters failed: %v", err)
+	}
+	if !strings.Contains(exec2.capturedScripts[0], "set -- '$(id); echo \"pwned\"'") {
+		t.Errorf("expected dangerous argument to be strictly single-quoted, got:\n%s", exec2.capturedScripts[0])
 	}
 }
+
+func TestBootstrap_ServerEnvironmentVariables(t *testing.T) {
+	tmpDir := t.TempDir()
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	_ = serverStore.Save(server.Server{
+		Name: "custom-vps",
+		Host: "192.168.10.100",
+		Port: 2222,
+		User: "deployer",
+	})
+	_ = serverStore.Save(server.Server{
+		Name: "default-vps",
+		Host: "192.168.10.101",
+		Port: 0, // Should default to 22
+		User: "root",
+	})
+
+	templateLoader := template.NewLoader("")
+	exec := &mockCapturingExecutor{}
+	svc := NewService(serverStore, templateLoader, exec)
+
+	var console bytes.Buffer
+	_, err := svc.Run(context.Background(), RunOptions{
+		ServerNames:   []string{"custom-vps", "default-vps"},
+		TemplateNames: []string{"base"},
+	}, &console)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if len(exec.capturedScripts) != 2 {
+		t.Fatalf("expected 2 captured scripts, got %d", len(exec.capturedScripts))
+	}
+
+	// Verify custom port 2222
+	if !strings.Contains(exec.capturedScripts[0], "export OPS_SSH_PORT=2222") {
+		t.Errorf("expected custom port script to contain OPS_SSH_PORT=2222, got:\n%s", exec.capturedScripts[0])
+	}
+	if !strings.Contains(exec.capturedScripts[0], "export OPS_SERVER_NAME='custom-vps'") {
+		t.Errorf("expected script to contain OPS_SERVER_NAME='custom-vps', got:\n%s", exec.capturedScripts[0])
+	}
+
+	// Verify default port 22
+	if !strings.Contains(exec.capturedScripts[1], "export OPS_SSH_PORT=22") {
+		t.Errorf("expected default port script to contain OPS_SSH_PORT=22, got:\n%s", exec.capturedScripts[1])
+	}
+}
+
 

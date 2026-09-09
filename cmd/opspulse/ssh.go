@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
+	"golang.org/x/term"
 )
 
 var sshCmd = &cobra.Command{
@@ -65,6 +67,12 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			fmt.Printf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())
 		}
 
+		shouldFilter := len(extraArgs) == 0 && !sshNoTitle && term.IsTerminal(int(os.Stdin.Fd()))
+		if len(extraArgs) == 0 && !sshNoTitle {
+			setTerminalTitle(srv.Name)
+			defer resetTerminalTitle()
+		}
+
 		needsPassword := (srv.Password != "" && srv.KeyPath == "")
 		if srv.JumpHost != "" {
 			if jumpSrv, err := store.Get(srv.JumpHost); err == nil && jumpSrv.Password != "" && jumpSrv.KeyPath == "" {
@@ -72,9 +80,9 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			}
 		}
 		if needsPassword {
-			return runPasswordSSH(sshPath, sshArgs, *srv, store)
+			return runPasswordSSH(sshPath, sshArgs, *srv, store, shouldFilter)
 		}
-		return runInteractiveSSH(sshPath, sshArgs)
+		return runInteractiveSSH(sshPath, sshArgs, shouldFilter)
 	},
 }
 
@@ -233,17 +241,176 @@ func expandHome(path string) string {
 	return executor.ExpandPath(path)
 }
 
-func runInteractiveSSH(binary string, args []string) error {
-	// On Unix-like systems, replace current process with exec
-	if runtime.GOOS != "windows" {
-		return syscall.Exec(binary, args, os.Environ())
+func setTerminalTitle(title string) {
+	fmt.Printf("\033]0;%s\007", title)
+}
+
+func resetTerminalTitle() {
+	fmt.Print("\033]0;\007")
+}
+
+type filterState int
+
+const (
+	stateNormal filterState = iota
+	stateEscape
+	stateOSCHeader
+	stateInTitle
+	stateTitleEsc
+)
+
+type titleFilterWriter struct {
+	w        io.Writer
+	state    filterState
+	pending  []byte
+	lastByte byte
+}
+
+func newTitleFilterWriter(w io.Writer) *titleFilterWriter {
+	return &titleFilterWriter{w: w, state: stateNormal}
+}
+
+func (f *titleFilterWriter) Write(p []byte) (int, error) {
+	totalLen := len(p)
+	var out []byte
+
+	emitByte := func(b byte) {
+		if b == '\n' && f.lastByte != '\r' {
+			out = append(out, '\r')
+		}
+		out = append(out, b)
+		f.lastByte = b
 	}
 
-	// On Windows, run child process with stdin/stdout/stderr attached
-	cmd := exec.Command(binary, args[1:]...)
+	emitBytes := func(bs []byte) {
+		for _, b := range bs {
+			emitByte(b)
+		}
+	}
+
+	for len(p) > 0 {
+		switch f.state {
+		case stateNormal:
+			idx := bytes.IndexByte(p, 0x1b)
+			if idx == -1 {
+				emitBytes(p)
+				p = nil
+			} else {
+				emitBytes(p[:idx])
+				f.pending = append(f.pending[:0], 0x1b)
+				f.state = stateEscape
+				p = p[idx+1:]
+			}
+
+		case stateEscape:
+			b := p[0]
+			p = p[1:]
+			if b == ']' {
+				f.pending = append(f.pending, ']')
+				f.state = stateOSCHeader
+			} else {
+				emitBytes(f.pending)
+				f.pending = f.pending[:0]
+				emitByte(b)
+				f.state = stateNormal
+			}
+
+		case stateOSCHeader:
+			b := p[0]
+			p = p[1:]
+			f.pending = append(f.pending, b)
+			s := string(f.pending)
+			if s == "\x1b]0;" || s == "\x1b]2;" {
+				f.pending = f.pending[:0]
+				f.state = stateInTitle
+			} else if len(s) >= 4 || (len(s) == 3 && b != '0' && b != '2') {
+				emitBytes(f.pending)
+				f.pending = f.pending[:0]
+				f.state = stateNormal
+			}
+
+		case stateInTitle:
+			idx := bytes.IndexAny(p, "\x07\x1b")
+			if idx == -1 {
+				p = nil
+			} else {
+				termByte := p[idx]
+				p = p[idx+1:]
+				if termByte == 0x07 {
+					f.state = stateNormal
+				} else {
+					f.state = stateTitleEsc
+				}
+			}
+
+		case stateTitleEsc:
+			b := p[0]
+			p = p[1:]
+			if b == '\\' || b == 0x07 {
+				f.state = stateNormal
+			} else {
+				f.state = stateInTitle
+			}
+		}
+	}
+
+	if len(out) > 0 {
+		if _, err := f.w.Write(out); err != nil {
+			return 0, err
+		}
+	}
+	return totalLen, nil
+}
+
+func (f *titleFilterWriter) Flush() error {
+	if len(f.pending) > 0 {
+		var out []byte
+		for _, b := range f.pending {
+			if b == '\n' && f.lastByte != '\r' {
+				out = append(out, '\r')
+			}
+			out = append(out, b)
+			f.lastByte = b
+		}
+		f.pending = f.pending[:0]
+		if len(out) > 0 {
+			_, err := f.w.Write(out)
+			return err
+		}
+	}
+	return nil
+}
+
+func runInteractiveSSH(binary string, args []string, shouldFilter bool) error {
+	if !shouldFilter {
+		// On Unix-like systems, replace current process with exec
+		if runtime.GOOS != "windows" {
+			return syscall.Exec(binary, args, os.Environ())
+		}
+
+		// On Windows, run child process with stdin/stdout/stderr attached
+		cmd := exec.Command(binary, args[1:]...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+
+	cmdArgs := append([]string{"-tt"}, args[1:]...)
+	cmd := exec.Command(binary, cmdArgs...)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	filterOut := newTitleFilterWriter(os.Stdout)
+	filterErr := newTitleFilterWriter(os.Stderr)
+	defer func() {
+		_ = filterOut.Flush()
+		_ = filterErr.Flush()
+	}()
+	cmd.Stdout = filterOut
+	cmd.Stderr = filterErr
+
+	cleanupResize := setupTerminalResizeNotify(cmd)
+	defer cleanupResize()
+
 	return cmd.Run()
 }
 
@@ -257,7 +424,7 @@ type askpassConfig struct {
 	HostPass    map[string]string `json:"host_pass"`
 }
 
-func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store) error {
+func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store, shouldFilter bool) error {
 	askpassPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve SSH password helper: %w", err)
@@ -293,16 +460,36 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 		return fmt.Errorf("write SSH password helper file: %w", err)
 	}
 
-	cmd := exec.Command(binary, args[1:]...)
+	cmdArgs := args[1:]
+	if shouldFilter {
+		cmdArgs = append([]string{"-tt"}, cmdArgs...)
+	}
+
+	cmd := exec.Command(binary, cmdArgs...)
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = overrideEnv(os.Environ(), map[string]string{
+	if shouldFilter {
+		filterOut := newTitleFilterWriter(os.Stdout)
+		filterErr := newTitleFilterWriter(os.Stderr)
+		defer func() {
+			_ = filterOut.Flush()
+			_ = filterErr.Flush()
+		}()
+		cmd.Stdout = filterOut
+		cmd.Stderr = filterErr
+		cleanupResize := setupTerminalResizeNotify(cmd)
+		defer cleanupResize()
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	envMap := map[string]string{
 		"SSH_ASKPASS":         askpassPath,
 		"SSH_ASKPASS_REQUIRE": "force",
 		askpassHelperFlag:     "1",
 		askpassDataFile:       passwordPath,
-	})
+	}
+	cmd.Env = overrideEnv(os.Environ(), envMap)
 	return cmd.Run()
 }
 
@@ -312,8 +499,13 @@ func readSSHAskpassPassword(prompt string) (string, error) {
 		return "", fmt.Errorf("read SSH password helper file: %w", err)
 	}
 
-	var cfg askpassConfig
-	if err := json.Unmarshal(data, &cfg); err == nil {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("{")) {
+		var cfg askpassConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return "", fmt.Errorf("parse SSH password helper file: %w", err)
+		}
+
 		if prompt != "" && len(cfg.HostPass) > 0 {
 			lowerPrompt := strings.ToLower(prompt)
 			for hostOrName, pass := range cfg.HostPass {
@@ -328,6 +520,7 @@ func readSSHAskpassPassword(prompt string) (string, error) {
 		return "", fmt.Errorf("no matching password for SSH prompt %q", prompt)
 	}
 
+	// Legacy or direct raw password string (when not JSON formatted)
 	return string(data), nil
 }
 
@@ -345,7 +538,10 @@ func overrideEnv(environ []string, values map[string]string) []string {
 	return result
 }
 
+var sshNoTitle bool
+
 func init() {
+	sshCmd.Flags().BoolVar(&sshNoTitle, "no-title", false, "Do not set terminal title during SSH session")
 	sshCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sshCmd)
 }

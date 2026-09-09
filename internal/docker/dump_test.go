@@ -62,6 +62,12 @@ func TestBuildDumpScript_MySQL(t *testing.T) {
 	if !strings.Contains(script, "gzip > '/tmp/dumps/db.sql.gz'") {
 		t.Error("script missing gzip output redirection to destination")
 	}
+	if !strings.Contains(script, "export MYSQL_PWD=") {
+		t.Error("script missing MYSQL_PWD environment variable export")
+	}
+	if strings.Contains(script, "$PASS") {
+		t.Error("script should not use unquoted CLI $PASS")
+	}
 	if !strings.Contains(script, "mkdir -p '/tmp/dumps'") {
 		t.Error("script missing destination dir creation")
 	}
@@ -113,6 +119,12 @@ func TestBuildImportScript_MySQL(t *testing.T) {
 	}
 	if !strings.Contains(script, "mysql -u root") {
 		t.Error("script missing mysql command")
+	}
+	if !strings.Contains(script, "export MYSQL_PWD=") {
+		t.Error("script missing MYSQL_PWD environment variable export")
+	}
+	if strings.Contains(script, "$PASS") {
+		t.Error("script should not use unquoted CLI $PASS")
 	}
 	if !strings.Contains(script, "exit 1") {
 		t.Error("script missing exit 1 on missing dump file")

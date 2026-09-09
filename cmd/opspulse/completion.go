@@ -187,7 +187,13 @@ func updateProfileFile(path, beginMarker, endMarker, blockContent string) error 
 }
 
 func ensureBinaryInPath(home string) {
-	if _, err := exec.LookPath("ops"); err == nil {
+	binName := "ops"
+	aliasName := "opspulse"
+	if runtime.GOOS == "windows" {
+		binName = "ops.exe"
+		aliasName = "opspulse.exe"
+	}
+	if _, err := exec.LookPath(binName); err == nil {
 		return
 	}
 	exe, err := os.Executable()
@@ -198,7 +204,7 @@ func ensureBinaryInPath(home string) {
 	if err := os.MkdirAll(localBin, 0o750); err != nil {
 		return
 	}
-	targetExe := filepath.Clean(filepath.Join(localBin, "ops"))
+	targetExe := filepath.Clean(filepath.Join(localBin, binName))
 	data, err := os.ReadFile(filepath.Clean(exe))
 	if err != nil {
 		return
@@ -209,9 +215,9 @@ func ensureBinaryInPath(home string) {
 	}
 	// #nosec G302
 	if err := os.Chmod(targetExe, 0o755); err == nil {
-		fmt.Printf("✅ Automatically installed 'ops' binary to %s (user PATH)\n", targetExe)
+		fmt.Printf("✅ Automatically installed '%s' binary to %s (user PATH)\n", binName, targetExe)
 	}
-	targetOpspulse := filepath.Clean(filepath.Join(localBin, "opspulse"))
+	targetOpspulse := filepath.Clean(filepath.Join(localBin, aliasName))
 	// #nosec G703
 	if err := os.WriteFile(targetOpspulse, data, 0o600); err == nil {
 		// #nosec G302

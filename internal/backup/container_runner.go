@@ -3,11 +3,11 @@ package backup
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/volcano6/opspulse/internal/asset"
@@ -213,8 +213,9 @@ func (r *Runner) RunContainerBackup(
 			return nil, fmt.Errorf("failed to generate compose.yaml: %w", genErr)
 		}
 
-		writeScript := fmt.Sprintf("mkdir -p %s && cat << 'EOF' > %s\n%s\nEOF\n",
-			shellquote.Quote(projectDir), shellquote.Quote(composePath), yamlStr)
+		encodedCompose := base64.StdEncoding.EncodeToString([]byte(yamlStr))
+		writeScript := fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' | base64 -d > %s\n",
+			shellquote.Quote(projectDir), encodedCompose, shellquote.Quote(composePath))
 		writeRes, writeErr := execToUse.Execute(ctx, target, "write-compose-"+finalName, writeScript, io.Discard)
 		if writeErr != nil || (writeRes != nil && !writeRes.Success) {
 			return nil, fmt.Errorf("failed to write generated compose.yaml on target %s: %v", serverName, writeErr)
@@ -226,8 +227,9 @@ func (r *Runner) RunContainerBackup(
 		return nil, fmt.Errorf("failed to marshal container manifest: %w", mErr)
 	}
 	manifestFile := path.Join(projectDir, docker.ManifestFileName)
-	writeManifestScript := fmt.Sprintf("mkdir -p %s && cat << 'EOF' > %s\n%s\nEOF\n",
-		shellquote.Quote(projectDir), shellquote.Quote(manifestFile), manifestYAML)
+	encodedManifest := base64.StdEncoding.EncodeToString([]byte(manifestYAML))
+	writeManifestScript := fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' | base64 -d > %s\n",
+		shellquote.Quote(projectDir), encodedManifest, shellquote.Quote(manifestFile))
 	mRes, mErr := execToUse.Execute(ctx, target, "write-manifest-"+finalName, writeManifestScript, io.Discard)
 	if mErr != nil || (mRes != nil && !mRes.Success) {
 		return nil, fmt.Errorf("failed to write manifest.yaml on target %s: %v", serverName, mErr)
@@ -340,10 +342,14 @@ func dedupPaths(paths []string) []string {
 	seen := make(map[string]bool)
 	var res []string
 	for _, p := range paths {
-		clean := filepath.Clean(strings.TrimSpace(p))
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		clean := path.Clean(strings.ReplaceAll(trimmed, "\\", "/"))
 		if clean != "" && !seen[clean] {
 			seen[clean] = true
-			res = append(res, p)
+			res = append(res, clean)
 		}
 	}
 	return res

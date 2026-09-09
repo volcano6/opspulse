@@ -75,14 +75,8 @@ func BuildDumpScript(engine, containerName, destPath string) (string, error) {
 	case EngineMySQL:
 		_, _ = fmt.Fprintf(&sb, `# Dump MySQL/MariaDB database container %s
 docker exec %s sh -c '
-  if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
-    PASS="-p$MYSQL_ROOT_PASSWORD"
-  elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
-    PASS="-p$MARIADB_ROOT_PASSWORD"
-  else
-    PASS=""
-  fi
-  mysqldump --single-transaction --quick -u root $PASS --all-databases
+  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
+  mysqldump --single-transaction --quick -u root --all-databases
 ' | gzip > %s
 `, cName, shellquote.Quote(cName), shellquote.Quote(dst))
 
@@ -133,14 +127,8 @@ echo "Waiting for MySQL in container " %s " to become ready..."
 ready=0
 for i in $(seq 1 60); do
   if docker exec %s sh -c '
-    if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
-      PASS="-p$MYSQL_ROOT_PASSWORD"
-    elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
-      PASS="-p$MARIADB_ROOT_PASSWORD"
-    else
-      PASS=""
-    fi
-    mysqladmin ping -u root $PASS --silent
+    export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
+    mysqladmin ping -u root --silent
   ' >/dev/null 2>&1; then
     ready=1
     break
@@ -155,14 +143,8 @@ fi
 
 echo "MySQL is ready. Importing database dump from " %s "..."
 gunzip -c %s | docker exec -i %s sh -c '
-  if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
-    PASS="-p$MYSQL_ROOT_PASSWORD"
-  elif [ -n "${MARIADB_ROOT_PASSWORD:-}" ]; then
-    PASS="-p$MARIADB_ROOT_PASSWORD"
-  else
-    PASS=""
-  fi
-  mysql -u root $PASS
+  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
+  mysql -u root
 '
 echo "Database import into " %s " completed successfully."
 `, cName, shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(src), shellquote.Quote(src), shellquote.Quote(cName), shellquote.Quote(cName))

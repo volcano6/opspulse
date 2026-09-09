@@ -1,16 +1,25 @@
 #!/bin/bash
 # ---
 # name: tmux
-# version: 1
+# version: 2
 # os: [ubuntu, debian]
 # description: Install tmux with mouse scroll support, 10000-line history, and clean status bar
 # ---
 set -euo pipefail
 
-echo "==> Installing tmux..."
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y tmux
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "==> Installing tmux..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y tmux
+else
+    echo "==> tmux is already installed. Updating global configuration..."
+fi
+
+if [ -f /etc/tmux.conf ]; then
+    echo "==> Backing up existing /etc/tmux.conf..."
+    cp /etc/tmux.conf "/etc/tmux.conf.bak.$(date +%Y%m%d%H%M%S)"
+fi
 
 echo "==> Configuring global /etc/tmux.conf..."
 cat << 'EOF' > /etc/tmux.conf

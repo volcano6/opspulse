@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	bootstrapTemplates string
+	bootstrapTemplates []string
 	bootstrapDryRun    bool
 	bootstrapContinue  bool
 )
@@ -26,7 +26,7 @@ a series of script templates over SSH. Logs are streamed to the console
 and saved locally under $XDG_DATA_HOME/opspulse/logs/.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		if bootstrapTemplates == "" {
+		if len(bootstrapTemplates) == 0 {
 			return fmt.Errorf("at least one template must be specified using --templates or -t (e.g. -t docker,base)")
 		}
 
@@ -40,11 +40,13 @@ and saved locally under $XDG_DATA_HOME/opspulse/logs/.`,
 			}
 		}
 
-		// Split templates by comma
+		// Split templates by comma or multiple flags
 		var templateNames []string
-		for _, t := range strings.Split(bootstrapTemplates, ",") {
-			if trimmed := strings.TrimSpace(t); trimmed != "" {
-				templateNames = append(templateNames, trimmed)
+		for _, item := range bootstrapTemplates {
+			for _, t := range strings.Split(item, ",") {
+				if trimmed := strings.TrimSpace(t); trimmed != "" {
+					templateNames = append(templateNames, trimmed)
+				}
 			}
 		}
 
@@ -154,7 +156,7 @@ func completeBootstrapTemplateFlag(_ *cobra.Command, _ []string, toComplete stri
 				}
 			}
 		}
-		return comps, cobra.ShellCompDirectiveNoFileComp
+		return comps, cobra.ShellCompDirectiveNoSpace | cobra.ShellCompDirectiveNoFileComp
 	}
 
 	var comps []string
@@ -169,7 +171,7 @@ func completeBootstrapTemplateFlag(_ *cobra.Command, _ []string, toComplete stri
 }
 
 func init() {
-	bootstrapCmd.Flags().StringVarP(&bootstrapTemplates, "templates", "t", "", "Comma-separated list of templates to execute (e.g. base,security,docker)")
+	bootstrapCmd.Flags().StringSliceVarP(&bootstrapTemplates, "templates", "t", nil, "Comma-separated list of templates to execute (e.g. -t base,security,docker or -t base -t docker)")
 	bootstrapCmd.Flags().BoolVar(&bootstrapDryRun, "dry-run", false, "Simulate execution without establishing SSH connections")
 	bootstrapCmd.Flags().BoolVar(&bootstrapContinue, "continue-on-error", false, "Continue executing remaining templates/servers if an error occurs")
 

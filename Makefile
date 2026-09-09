@@ -19,11 +19,11 @@ build:
 
 install: build
 	@mkdir -p $(GOPATH_BIN)
-	@cp bin/$(APP_NAME) $(GOPATH_BIN)/$(APP_NAME)
-	@cp bin/$(APP_NAME) $(GOPATH_BIN)/opspulse 2>/dev/null || true
+	@cp --remove-destination bin/$(APP_NAME) $(GOPATH_BIN)/$(APP_NAME) 2>/dev/null || cp bin/$(APP_NAME) $(GOPATH_BIN)/$(APP_NAME)
+	@cp --remove-destination bin/$(APP_NAME) $(GOPATH_BIN)/opspulse 2>/dev/null || true
 	@mkdir -p $(LOCAL_BIN) 2>/dev/null || true
-	@cp bin/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME) 2>/dev/null || true
-	@cp bin/$(APP_NAME) $(LOCAL_BIN)/opspulse 2>/dev/null || true
+	@cp --remove-destination bin/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME) 2>/dev/null || cp bin/$(APP_NAME) $(LOCAL_BIN)/$(APP_NAME)
+	@cp --remove-destination bin/$(APP_NAME) $(LOCAL_BIN)/opspulse 2>/dev/null || true
 	@echo "✅ Installed $(APP_NAME) to $(GOPATH_BIN)/$(APP_NAME) and $(LOCAL_BIN)/$(APP_NAME)"
 	@case ":$$PATH:" in \
 		*":$(GOPATH_BIN):"*|*":$(LOCAL_BIN):"*) ;; \
