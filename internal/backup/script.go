@@ -2,6 +2,7 @@ package backup
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -127,16 +128,64 @@ fi
 `)
 	sb.WriteString("\n")
 
-	sb.WriteString("echo \"Starting restic restore (snapshot: \" " + shellquote.Quote(snapshotID) + " \", target: \" " + shellquote.Quote(targetPath) + " \")...\"\n")
-	sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target " + shellquote.Quote(targetPath))
+	if len(job.Remap) > 0 {
+		// Use staging directory for remapping
+		sb.WriteString("echo \"Starting restic restore with path remapping (snapshot: \" " + shellquote.Quote(snapshotID) + " \")...\"\n")
+		sb.WriteString("STAGING=$(mktemp -d -t opspulse-restore-XXXXXX)\n")
+		sb.WriteString("trap 'rm -rf \"$STAGING\"' EXIT\n\n")
+		
+		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target \"$STAGING\"")
+		for _, pattern := range includePatterns {
+			sb.WriteString(" --include " + shellquote.Quote(pattern))
+		}
+		sb.WriteString(" --verbose\n\n")
 
-	for _, pattern := range includePatterns {
-		sb.WriteString(" --include " + shellquote.Quote(pattern))
+		remapper := NewPathRemapper(job.Remap)
+		sb.WriteString("echo \"Applying path remapping...\"\n")
+		
+		// If includePatterns are specified, only remap those. Otherwise remap job.Paths
+		pathsToRemap := job.Paths
+		if len(includePatterns) > 0 {
+			pathsToRemap = includePatterns
+		}
+		
+		for _, p := range pathsToRemap {
+			origClean := path.Clean(p)
+			if !strings.HasPrefix(origClean, "/") {
+				origClean = "/" + origClean
+			}
+			targetRemap := remapper.Remap(origClean)
+			
+			// Adjust target if it's absolute
+			targetPathAbs := targetPath
+			if targetPathAbs == "" {
+				targetPathAbs = "/"
+			}
+			
+			finalTarget := path.Join(targetPathAbs, strings.TrimPrefix(targetRemap, "/"))
+			
+			// We cannot shellquote $STAGING entirely because we need the shell to expand it
+			// We shellquote the relative path and concatenate.
+			relPath := strings.TrimPrefix(origClean, "/")
+			
+			sb.WriteString(fmt.Sprintf("if [ -e \"$STAGING\"/%s ]; then\n", shellquote.Quote(relPath)))
+			sb.WriteString(fmt.Sprintf("  mkdir -p %s\n", shellquote.Quote(path.Dir(finalTarget))))
+			sb.WriteString(fmt.Sprintf("  echo \"Moving \"$STAGING\"/%s -> %s\"\n", shellquote.Quote(relPath), shellquote.Quote(finalTarget)))
+			sb.WriteString(fmt.Sprintf("  cp -a \"$STAGING\"/%s %s\n", shellquote.Quote(relPath), shellquote.Quote(path.Dir(finalTarget))))
+			sb.WriteString("fi\n")
+		}
+	} else {
+		// Standard restore
+		sb.WriteString("echo \"Starting restic restore (snapshot: \" " + shellquote.Quote(snapshotID) + " \", target: \" " + shellquote.Quote(targetPath) + " \")...\"\n")
+		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target " + shellquote.Quote(targetPath))
+
+		for _, pattern := range includePatterns {
+			sb.WriteString(" --include " + shellquote.Quote(pattern))
+		}
+		sb.WriteString(" --verbose\n")
 	}
 
-	sb.WriteString(" --verbose\n")
-
-	sb.WriteString("echo \"Restore completed successfully.\"\n")
+	sb.WriteString("\necho \"Restore completed successfully.\"\n")
 	return sb.String()
 }
 

@@ -45,6 +45,7 @@ type Job struct {
 	Tags        []string          `yaml:"tags,omitempty" json:"tags,omitempty"`
 	Description string            `yaml:"description,omitempty" json:"description,omitempty"`
 	Schedule    string            `yaml:"schedule,omitempty" json:"schedule,omitempty"` // Cron expression (e.g. "0 2 * * *", "@daily")
+	Remap       map[string]string `yaml:"remap,omitempty" json:"remap,omitempty"`       // Source prefix -> Target prefix mapping for cross-machine restore
 }
 
 // Validate checks that the backup job contains all required fields and valid data.
