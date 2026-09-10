@@ -10,6 +10,7 @@ import (
 
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
 )
@@ -137,6 +138,13 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	_, _ = fmt.Fprintf(consoleOut, "--> Starting backup job %q on %s (Backend: %s)...\n",
 		job.Name, job.Server, job.Backend)
 
+	// Resolve op:// secrets in environment variables
+	resolvedEnv, err := secret.NewResolver().ResolveMap(ctx, job.Env)
+	if err != nil {
+		return r.finalizeRun(ctx, runRecord, false, 0, fmt.Errorf("failed to resolve secrets: %w", err), startTime, logFile, prefixedConsole)
+	}
+	job.Env = resolvedEnv
+
 	// 3. Build script and execute via appropriate executor
 	script, err := BuildBackupScript(job)
 	if err != nil {
@@ -234,6 +242,12 @@ func (r *Runner) ListSnapshots(ctx context.Context, job Job) ([]Snapshot, error)
 	if err != nil {
 		return nil, err
 	}
+
+	resolvedEnv, err := secret.NewResolver().ResolveMap(ctx, job.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve secrets: %w", err)
+	}
+	job.Env = resolvedEnv
 
 	script := BuildSnapshotsScript(job)
 	var outputBuf bytes.Buffer
