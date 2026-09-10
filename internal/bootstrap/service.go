@@ -138,7 +138,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 	// 3. Sequential server execution loop
 	for serverIdx, target := range targetServers {
 		srvName := target.Name
-		srvAddr := target.Name
+		var srvAddr string
 		if target.Server != nil {
 			srvAddr = target.Server.Address()
 		} else {

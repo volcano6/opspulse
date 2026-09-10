@@ -194,17 +194,27 @@ func TestCompleteBootstrapArgsAndFlags(t *testing.T) {
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Errorf("expected directive ShellCompDirectiveNoFileComp, got %v", directive)
 	}
-	if len(comps) != 2 {
-		t.Fatalf("expected 2 server completions, got %d: %v", len(comps), comps)
+	if len(comps) != 3 {
+		t.Fatalf("expected 3 server completions, got %d: %v", len(comps), comps)
 	}
 
 	// Comma-separated server completion
 	comps, _ = completeBootstrapServerArgs(bootstrapCmd, nil, "web-01,")
-	if len(comps) != 1 {
-		t.Fatalf("expected 1 remaining server completion for 'web-01,', got %d: %v", len(comps), comps)
+	if len(comps) != 2 {
+		t.Fatalf("expected 2 remaining server completion for 'web-01,', got %d: %v", len(comps), comps)
 	}
-	if !strings.HasPrefix(comps[0], "web-01,db-01\t") {
-		t.Errorf("expected 'web-01,db-01' completion, got %q", comps[0])
+	foundDb := false
+	foundLocal := false
+	for _, c := range comps {
+		if strings.HasPrefix(c, "web-01,db-01\t") {
+			foundDb = true
+		}
+		if strings.HasPrefix(c, "web-01,local\t") {
+			foundLocal = true
+		}
+	}
+	if !foundDb || !foundLocal {
+		t.Errorf("expected 'web-01,db-01' and 'web-01,local' completions, got %v", comps)
 	}
 
 	// Template flag completion

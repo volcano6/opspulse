@@ -35,6 +35,8 @@ type Scheduler struct {
 	out        io.Writer
 	mu         sync.Mutex
 	jobs       map[cron.EntryID]backup.Job
+	daemonCtx    context.Context
+	daemonCancel context.CancelFunc
 }
 
 // New creates a new Scheduler instance.
@@ -51,13 +53,17 @@ func New(store *backup.Store, runner *backup.Runner, dispatcher *notify.Dispatch
 		),
 	)
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &Scheduler{
-		cron:       c,
-		runner:     runner,
-		store:      store,
-		dispatcher: dispatcher,
-		out:        out,
-		jobs:       make(map[cron.EntryID]backup.Job),
+		cron:         c,
+		runner:       runner,
+		store:        store,
+		dispatcher:   dispatcher,
+		out:          out,
+		jobs:         make(map[cron.EntryID]backup.Job),
+		daemonCtx:    ctx,
+		daemonCancel: cancel,
 	}
 }
 
@@ -139,7 +145,7 @@ func (s *Scheduler) executeJob(job backup.Job) error {
 	_, _ = fmt.Fprintf(s.out, "[scheduler] >>> Triggering scheduled backup job %q (%s) at %s\n",
 		job.Name, job.Server, startTime.Format("2006-01-02 15:04:05"))
 
-	ctx := context.Background()
+	ctx := s.daemonCtx
 	var runRecordErr error
 	var runRecordStatus = "failed"
 	var snapshotID string
@@ -226,6 +232,9 @@ func (s *Scheduler) Start() {
 
 // Stop stops the scheduler and returns a context that finishes when all running jobs complete.
 func (s *Scheduler) Stop() context.Context {
+	if s.daemonCancel != nil {
+		s.daemonCancel()
+	}
 	return s.cron.Stop()
 }
 

@@ -53,18 +53,16 @@ func (pw *PrefixedWriter) Write(p []byte) (n int, err error) {
 
 			if pw.buf.Len() > 0 {
 				pw.buf.Write(line)
-				if _, writeErr := pw.Writer.Write(pw.Prefix); writeErr != nil {
-					return 0, writeErr
-				}
-				if _, writeErr := pw.Writer.Write(pw.buf.Bytes()); writeErr != nil {
+				combined := append([]byte{}, pw.Prefix...)
+				combined = append(combined, pw.buf.Bytes()...)
+				if _, writeErr := pw.Writer.Write(combined); writeErr != nil {
 					return 0, writeErr
 				}
 				pw.buf.Reset()
 			} else {
-				if _, writeErr := pw.Writer.Write(pw.Prefix); writeErr != nil {
-					return 0, writeErr
-				}
-				if _, writeErr := pw.Writer.Write(line); writeErr != nil {
+				combined := append([]byte{}, pw.Prefix...)
+				combined = append(combined, line...)
+				if _, writeErr := pw.Writer.Write(combined); writeErr != nil {
 					return 0, writeErr
 				}
 			}
@@ -82,10 +80,9 @@ func (pw *PrefixedWriter) Flush() error {
 	defer pw.mu.Unlock()
 
 	if pw.buf.Len() > 0 {
-		if _, err := pw.Writer.Write(pw.Prefix); err != nil {
-			return err
-		}
-		if _, err := pw.Writer.Write(pw.buf.Bytes()); err != nil {
+		combined := append([]byte{}, pw.Prefix...)
+		combined = append(combined, pw.buf.Bytes()...)
+		if _, err := pw.Writer.Write(combined); err != nil {
 			return err
 		}
 		pw.buf.Reset()
