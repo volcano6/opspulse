@@ -14,6 +14,7 @@ import (
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/storage"
@@ -67,6 +68,13 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	if consoleOut == nil {
 		consoleOut = io.Discard
 	}
+
+	// 0. Resolve op:// secrets in environment variables
+	resolvedEnv, err := secret.NewResolver().ResolveMap(ctx, job.Env)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve secrets: %w", err)
+	}
+	job.Env = resolvedEnv
 
 	// 1. Resolve snapshot ID: if "latest", query the repository for the most recent snapshot
 	snapshotID := opts.SnapshotID

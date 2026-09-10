@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
@@ -40,6 +42,11 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 	}
 
 	var authMethods []ssh.AuthMethod
+
+	// Priority 1: 1Password SSH Agent
+	if agentConn := secret.Try1PAgentSocket(); agentConn != nil {
+		authMethods = append(authMethods, ssh.PublicKeysCallback(agent.NewClient(agentConn).Signers))
+	}
 
 	// An explicit key is authoritative. A configured password is also
 	// authoritative when no key is bound, avoiding unrelated default keys and
