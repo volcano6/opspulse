@@ -71,6 +71,11 @@ func (l *Loader) List() ([]Template, error) {
 
 // Get returns a single template by name. Custom template takes precedence over built-in.
 func (l *Loader) Get(name string) (*Template, error) {
+	cleanName := filepath.Clean(name)
+	if strings.Contains(cleanName, "..") || filepath.IsAbs(cleanName) {
+		return nil, fmt.Errorf("invalid template name: %q", name)
+	}
+
 	// 1. Check custom directory first by filename
 	if l.customDir != "" {
 		customPath := filepath.Join(l.customDir, name+".sh")
