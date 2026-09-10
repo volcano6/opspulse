@@ -113,7 +113,8 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return 0, fmt.Errorf("failed to create remote temporary file %q: %w", tmpRemote, err)
 	}
 
-	n, copyErr := io.Copy(dstFile, srcFile)
+	progressReader := newProgressReader(srcFile, srcStat.Size(), "Uploading", localPath, remotePath)
+	n, copyErr := io.Copy(dstFile, progressReader)
 	closeErr := dstFile.Close()
 	if copyErr != nil {
 		_ = c.sftpClient.Remove(tmpRemote)
@@ -179,7 +180,8 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		_ = os.Remove(tmpName)
 	}()
 
-	n, copyErr := io.Copy(tmpFile, srcFile)
+	progressReader := newProgressReader(srcFile, srcStat.Size(), "Downloading", remotePath, localPath)
+	n, copyErr := io.Copy(tmpFile, progressReader)
 	if copyErr != nil {
 		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, copyErr)
 	}
