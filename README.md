@@ -35,7 +35,7 @@
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🔒 本地安全边界**：私钥绝不离机，SSH/SFTP 首次连接采用 TOFU 写入 `~/.ssh/known_hosts`，后续拒绝主机密钥变化；无任何外部遥测上报。SSH 密码与备份凭据仍以明文保存在权限为 `0600` 的本地 YAML 中。
+- **🔒 零信任凭证流转与安全边界**：支持在 `backups.yaml` 中使用 `op://` 协议，运行时自动调用 1Password 解析凭证、不落盘；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。私钥绝不主动离机，无任何外部遥测上报。
 
 ---
 
@@ -254,6 +254,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 ## 📖 使用文档
 
 * [新手入门教程](docs/tutorial/getting_started.md)
+* [跨端环境备份与无损还原指南 (WSL/1Password)](docs/tutorial/wsl_env_backup.md)
 * [容器备份与跨机无缝迁移实战指南](docs/tutorial/container_migration.md)
 * [日常服务器管理指南](docs/reference/server_ops.md)
 * [业务资产模型指南](docs/reference/asset.md)

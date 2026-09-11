@@ -54,6 +54,9 @@ func DetectAvailableClients() []ClientInfo {
 	case "darwin":
 		clients = append(clients, detectDarwinClients()...)
 	default:
+		if IsWSL() {
+			clients = append(clients, detectWindowsClients()...)
+		}
 		clients = append(clients, detectLinuxClients()...)
 	}
 
@@ -71,14 +74,23 @@ func DetectAvailableClients() []ClientInfo {
 	return clients
 }
 
+func resolveWinPath(p string) string {
+	if IsWSL() {
+		return translateWindowsPathToWSL(p)
+	}
+	return p
+}
+
 func detectWindowsClients() []ClientInfo {
 	var results []ClientInfo
 
 	// 1. WinSCP
 	winSCPLocations := []string{
-		`C:\Program Files (x86)\WinSCP\WinSCP.exe`,
-		`C:\Program Files\WinSCP\WinSCP.exe`,
+		resolveWinPath(`C:\Program Files (x86)\WinSCP\WinSCP.exe`),
+		resolveWinPath(`C:\Program Files\WinSCP\WinSCP.exe`),
 	}
+	// In WSL, os.Getenv("LOCALAPPDATA") is empty, but we can't easily get it. 
+	// We rely on standard paths or PATH.
 	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
 		winSCPLocations = append(winSCPLocations, filepath.Join(localAppData, "Programs", "WinSCP", "WinSCP.exe"))
 	}
@@ -97,10 +109,10 @@ func detectWindowsClients() []ClientInfo {
 
 	// 2. Xftp (NetSarang)
 	xftpLocations := []string{
-		`C:\Program Files (x86)\NetSarang\Xftp 8\Xftp.exe`,
-		`C:\Program Files\NetSarang\Xftp 8\Xftp.exe`,
-		`C:\Program Files (x86)\NetSarang\Xftp 7\Xftp.exe`,
-		`C:\Program Files\NetSarang\Xftp 7\Xftp.exe`,
+		resolveWinPath(`C:\Program Files (x86)\NetSarang\Xftp 8\Xftp.exe`),
+		resolveWinPath(`C:\Program Files\NetSarang\Xftp 8\Xftp.exe`),
+		resolveWinPath(`C:\Program Files (x86)\NetSarang\Xftp 7\Xftp.exe`),
+		resolveWinPath(`C:\Program Files\NetSarang\Xftp 7\Xftp.exe`),
 	}
 	if p, err := exec.LookPath("Xftp.exe"); err == nil {
 		xftpLocations = append([]string{p}, xftpLocations...)
@@ -117,8 +129,8 @@ func detectWindowsClients() []ClientInfo {
 
 	// 3. FileZilla
 	fzLocations := []string{
-		`C:\Program Files\FileZilla FTP Client\filezilla.exe`,
-		`C:\Program Files (x86)\FileZilla FTP Client\filezilla.exe`,
+		resolveWinPath(`C:\Program Files\FileZilla FTP Client\filezilla.exe`),
+		resolveWinPath(`C:\Program Files (x86)\FileZilla FTP Client\filezilla.exe`),
 	}
 	if p, err := exec.LookPath("filezilla.exe"); err == nil {
 		fzLocations = append([]string{p}, fzLocations...)
@@ -332,13 +344,22 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 		user = "root"
 	}
 
+	keyPathForClient := srv.KeyPath
+	if IsWSL() && client.IsGUI && keyPathForClient != "" {
+		bridged, err := BridgeKeyToWindows(keyPathForClient)
+		if err != nil {
+			return nil, fmt.Errorf("WSL key bridge failed: %w", err)
+		}
+		keyPathForClient = bridged
+	}
+
 	switch client.Type {
 	case ClientWinSCP:
 		// WinSCP supports: WinSCP.exe "sftp://user@host:port/path" [/privatekey="..."]
 		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, srv.KeyPath == "")
 		args := []string{targetURL}
-		if srv.KeyPath != "" {
-			args = append(args, fmt.Sprintf("/privatekey=%s", filepath.Clean(srv.KeyPath)))
+		if keyPathForClient != "" {
+			args = append(args, fmt.Sprintf("/privatekey=%s", filepath.Clean(keyPathForClient)))
 		}
 		return exec.Command(client.Path, args...), nil
 
@@ -373,8 +394,8 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 	case ClientOpenSSH:
 		// Terminal OpenSSH sftp command
 		args := []string{"-P", strconv.Itoa(port)}
-		if srv.KeyPath != "" {
-			args = append(args, "-i", filepath.Clean(srv.KeyPath))
+		if keyPathForClient != "" {
+			args = append(args, "-i", filepath.Clean(keyPathForClient))
 		}
 		target := fmt.Sprintf("%s@%s", user, srv.Host)
 		if remotePath != "/" {
