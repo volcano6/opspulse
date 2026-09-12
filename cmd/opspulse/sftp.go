@@ -121,5 +121,6 @@ func init() {
 	sftpCmd.Flags().StringVar(&sftpRemotePath, "path", "/", "Initial remote directory to open")
 	sftpCmd.Flags().BoolVar(&sftpCLI, "cli", false, "Use terminal OpenSSH sftp client instead of GUI")
 	sftpCmd.Flags().BoolVar(&sftpListApps, "list-apps", false, "List detected SFTP clients on the host system")
+	sftpCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sftpCmd)
 }

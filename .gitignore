@@ -25,6 +25,14 @@ go.work.sum
 bin/
 dist/
 
+# Scratch directories used by scripts/verify-onepassword.sh
+.opstub-verify/
+
+# Agent workspace (WorkBuddy). Local notes and scratch builds live here; verify
+# runs drop throwaway keypairs and built stubs into it, so it must never be
+# committed. Keep the directory itself - only version control ignores it.
+.workbuddy/
+
 # env file
 .env
 .env.*

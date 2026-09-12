@@ -119,7 +119,7 @@ func TestBuildSSHArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs)
+			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, "")
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildSSHArgs() =\n%v\nwant:\n%v", got, tt.want)
 			}

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -16,6 +17,11 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+// secretResolveTimeout bounds how long a single op:// lookup may take. The CLI
+// may be waiting for a biometric approval in the Desktop App, so this is
+// generous compared to a network timeout.
+const secretResolveTimeout = 90 * time.Second
 
 // ExpandPath expands the tilde (~) prefix in a file path to the current user's home directory.
 func ExpandPath(path string) string {
@@ -52,13 +58,17 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 	// authoritative when no key is bound, avoiding unrelated default keys and
 	// remote "too many authentication failures" rejections.
 	if srv.KeyPath != "" {
-		signer, err := loadPrivateKey(ExpandPath(srv.KeyPath))
+		signer, err := loadSigner(srv.KeyPath)
 		if err != nil {
 			return nil, &AuthError{User: srv.User, Host: srv.Host, Reason: fmt.Errorf("failed to load private key %s: %w", srv.KeyPath, err)}
 		}
 		authMethods = append(authMethods, ssh.PublicKeys(signer))
 	} else if srv.Password != "" {
-		authMethods = append(authMethods, ssh.Password(srv.Password))
+		password, err := resolvePassword(srv.Password)
+		if err != nil {
+			return nil, &AuthError{User: srv.User, Host: srv.Host, Reason: err}
+		}
+		authMethods = append(authMethods, ssh.Password(password))
 	} else {
 		defaultKeys := []string{
 			"~/.ssh/id_ed25519",
@@ -188,4 +198,49 @@ func loadPrivateKey(path string) (ssh.Signer, error) {
 		return nil, err
 	}
 	return ssh.ParsePrivateKey(keyBytes)
+}
+
+// loadSigner loads an SSH signer from either a local private key path or a
+// 1Password op:// secret reference.
+//
+// A reference is resolved on every connection, so the private key never has to
+// exist on disk. The trade-off is a `op read` round trip (and, depending on the
+// account settings, a biometric approval) per connection.
+func loadSigner(keyPath string) (ssh.Signer, error) {
+	if !secret.Is1PRef(keyPath) {
+		return loadPrivateKey(ExpandPath(keyPath))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
+	defer cancel()
+
+	pem, err := secret.NewResolver().ResolveSSHKey(ctx, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve 1Password key reference: %w", err)
+	}
+	signer, err := ssh.ParsePrivateKey([]byte(pem))
+	if err != nil {
+		return nil, fmt.Errorf("parse private key resolved from %s: %w", keyPath, err)
+	}
+	return signer, nil
+}
+
+// resolvePassword returns the password to authenticate with, fetching it from
+// 1Password when the stored value is an op:// reference rather than plaintext.
+//
+// The reference form is what `ops 1p push` leaves behind, so that the password
+// no longer has to sit in servers.yaml.
+func resolvePassword(value string) (string, error) {
+	if !secret.Is1PRef(value) {
+		return value, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
+	defer cancel()
+
+	password, err := secret.NewResolver().ResolvePassword(ctx, value)
+	if err != nil {
+		return "", fmt.Errorf("resolve 1Password password reference: %w", err)
+	}
+	return password, nil
 }

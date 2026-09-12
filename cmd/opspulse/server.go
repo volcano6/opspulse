@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
@@ -72,15 +73,22 @@ func renderServerTable(w io.Writer, servers []server.Server) error {
 		}
 
 		var authMethod string
-		if s.KeyPath != "" {
+		switch {
+		case secret.Is1PRef(s.KeyPath):
+			authMethod = fmt.Sprintf("key (1password: %s)", onePasswordRefDisplay(s.KeyPath))
+		case s.KeyPath != "":
 			if isManagedKey(s.KeyPath) {
 				authMethod = "key (managed)"
 			} else {
 				authMethod = fmt.Sprintf("key (%s)", formatKeyDisplay(s.KeyPath))
 			}
-		} else if s.Password != "" {
-			authMethod = "password"
-		} else {
+		case s.Password != "":
+			if secret.Is1PRef(s.Password) {
+				authMethod = fmt.Sprintf("password (1password: %s)", onePasswordRefDisplay(s.Password))
+			} else {
+				authMethod = "password"
+			}
+		default:
 			authMethod = "default key"
 		}
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/term"
 )
@@ -59,7 +60,16 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			return fmt.Errorf("system 'ssh' client not found in PATH: %w", err)
 		}
 
-		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs)
+		// The system ssh(1) binary only understands file paths, so any op://
+		// references are materialised into 0600 temp files for the duration of
+		// the session and removed on the way out.
+		jumpKeyPath, cleanupKeys, err := materializeOnePasswordKeys(srv, store)
+		if err != nil {
+			return err
+		}
+		defer cleanupKeys()
+
+		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, jumpKeyPath)
 
 		if srv.JumpHost != "" {
 			fmt.Printf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
@@ -163,7 +173,10 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 	return nil, fmt.Errorf("server %q not found in inventory", choice)
 }
 
-func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string {
+// buildSSHArgs builds the argv for the system ssh client. jumpKeyPath, when
+// non-empty, overrides the jump host's identity file; it is how a 1Password
+// op:// key of the jump host gets injected after being materialised on disk.
+func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string) []string {
 	args := []string{binary}
 
 	// Compatibility with legacy RSA/DSA host keys and public keys
@@ -186,8 +199,12 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string
 		)
 
 		if err == nil {
-			if jumpSrv.KeyPath != "" {
-				expandedJumpKey := filepath.ToSlash(expandHome(jumpSrv.KeyPath))
+			identity := jumpSrv.KeyPath
+			if jumpKeyPath != "" {
+				identity = jumpKeyPath
+			}
+			if identity != "" && !secret.Is1PRef(identity) {
+				expandedJumpKey := filepath.ToSlash(expandHome(identity))
 				if strings.Contains(expandedJumpKey, " ") {
 					expandedJumpKey = fmt.Sprintf(`"%s"`, expandedJumpKey)
 				}
@@ -215,7 +232,7 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string) []string
 
 	// A configured identity must be the only public key offered. This avoids
 	// exhausting the remote server's authentication attempts via ssh-agent.
-	if srv.KeyPath != "" {
+	if srv.KeyPath != "" && !secret.Is1PRef(srv.KeyPath) {
 		expandedKey := expandHome(srv.KeyPath)
 		args = append(args, "-o", "IdentitiesOnly=yes", "-i", expandedKey)
 	} else if srv.Password != "" {

@@ -1,6 +1,7 @@
 package sftp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,8 +13,39 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 )
+
+// materializeKeyOnDisk resolves a 1Password op:// reference into a real private
+// key file, because no SFTP client understands op:// references.
+//
+// The key is written to ~/.ssh/opspulse-1p/<server> with mode 0600 and kept
+// there rather than in a temp directory: GUI clients open asynchronously and may
+// read the file long after OpsPulse has exited.
+func materializeKeyOnDisk(serverName, ref string) (string, error) {
+	key, err := secret.NewResolver().ResolveSSHKey(context.Background(), ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve 1Password key for %q: %w", serverName, err)
+	}
+	if !strings.HasSuffix(key, "\n") {
+		key += "\n"
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".ssh", "opspulse-1p")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	target := filepath.Join(dir, serverName)
+	if err := os.WriteFile(target, []byte(key), 0o600); err != nil {
+		return "", fmt.Errorf("write resolved key to %s: %w", target, err)
+	}
+	return target, nil
+}
 
 // ClientType denotes the category of SFTP client.
 type ClientType string
@@ -345,6 +377,23 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 	}
 
 	keyPathForClient := srv.KeyPath
+	if secret.Is1PRef(keyPathForClient) {
+		resolved, err := materializeKeyOnDisk(srv.Name, keyPathForClient)
+		if err != nil {
+			return nil, err
+		}
+		keyPathForClient = resolved
+	} else if keyPathForClient != "" {
+		if strings.HasPrefix(keyPathForClient, "~") {
+			if home, err := os.UserHomeDir(); err == nil {
+				if keyPathForClient == "~" {
+					keyPathForClient = home
+				} else if strings.HasPrefix(keyPathForClient, "~/") || strings.HasPrefix(keyPathForClient, "~\\") {
+					keyPathForClient = filepath.Join(home, keyPathForClient[2:])
+				}
+			}
+		}
+	}
 	if IsWSL() && client.IsGUI && keyPathForClient != "" {
 		bridged, err := BridgeKeyToWindows(keyPathForClient)
 		if err != nil {
