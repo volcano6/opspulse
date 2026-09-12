@@ -26,16 +26,26 @@ type Client struct {
 
 // NewClient establishes an SSH connection and initializes an SFTP subsystem client.
 func NewClient(srv server.Server, timeout time.Duration) (*Client, error) {
-	return NewClientWithJump(srv, nil, timeout)
+	return NewClientWithJumpAndWriter(srv, nil, timeout, nil)
+}
+
+// NewClientWithWriter establishes an SSH connection with a custom warning writer and initializes an SFTP subsystem client.
+func NewClientWithWriter(srv server.Server, timeout time.Duration, warnWriter io.Writer) (*Client, error) {
+	return NewClientWithJumpAndWriter(srv, nil, timeout, warnWriter)
 }
 
 // NewClientWithJump establishes an SSH connection (optionally through a jump host) and initializes an SFTP subsystem client.
 func NewClientWithJump(srv server.Server, jump *server.Server, timeout time.Duration) (*Client, error) {
+	return NewClientWithJumpAndWriter(srv, jump, timeout, nil)
+}
+
+// NewClientWithJumpAndWriter establishes an SSH connection (optionally through a jump host and with a custom warning writer) and initializes an SFTP subsystem client.
+func NewClientWithJumpAndWriter(srv server.Server, jump *server.Server, timeout time.Duration, warnWriter io.Writer) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
-	exec := executor.NewSSHExecutor()
+	exec := executor.NewSSHExecutor().WithWarnWriter(warnWriter)
 	exec.ConnectTimeout = timeout
 	target := executor.NewServerTargetWithJump(srv, jump)
 

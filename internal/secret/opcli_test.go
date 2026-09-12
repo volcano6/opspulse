@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestFindWingetCLIIn(t *testing.T) {
 			t.Fatalf("mkdir: %v", err)
 		}
 		want := filepath.Join(pkg, "op.exe")
-		if err := os.WriteFile(want, []byte("stub"), 0o644); err != nil {
+		if err := os.WriteFile(want, []byte("stub"), 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 
@@ -67,7 +68,7 @@ func TestFindWingetCLIIn(t *testing.T) {
 			t.Fatalf("mkdir: %v", err)
 		}
 		want := filepath.Join(links, "op.exe")
-		if err := os.WriteFile(want, []byte("stub"), 0o644); err != nil {
+		if err := os.WriteFile(want, []byte("stub"), 0o600); err != nil {
 			t.Fatalf("write: %v", err)
 		}
 
@@ -104,7 +105,7 @@ func TestWithAccount(t *testing.T) {
 		t.Fatalf("WithAccount env = %v, want [OP_ACCOUNT=acme.1password.com]", got.Env)
 	}
 
-	cmd := got.Exec(nil, "vault", "list")
+	cmd := got.Exec(context.Background(), "vault", "list")
 	if cmd.Env == nil {
 		t.Fatal("Exec did not populate Env although the CLI carries extra environment entries")
 	}

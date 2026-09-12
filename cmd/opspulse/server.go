@@ -127,7 +127,7 @@ var serverInfoCmd = &cobra.Command{
 		} else {
 			fmt.Printf("🔍 Probing system information for %s (%s)...\n", srv.Name, srv.Address())
 		}
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -174,7 +174,7 @@ var serverTestCmd = &cobra.Command{
 		} else {
 			fmt.Printf("Connecting to %s (%s)...\n", srv.Name, srv.Address())
 		}
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()

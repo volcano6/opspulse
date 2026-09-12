@@ -57,6 +57,9 @@ func BuildDumpScript(engine, containerName, destPath string) (string, error) {
 	if cName == "" {
 		return "", ErrEmptyContainerName
 	}
+	if strings.ContainsAny(cName, "\r\n") {
+		return "", fmt.Errorf("invalid container name: cannot contain newlines")
+	}
 	dst := strings.TrimSpace(destPath)
 	if dst == "" {
 		return "", ErrEmptyDumpPath
@@ -78,7 +81,8 @@ docker exec %s sh -c '
   export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
   mysqldump --single-transaction --quick -u root --all-databases
 ' | gzip > %s
-`, cName, shellquote.Quote(cName), shellquote.Quote(dst))
+chmod 0600 %s
+`, cName, shellquote.Quote(cName), shellquote.Quote(dst), shellquote.Quote(dst))
 
 	case EnginePostgres:
 		_, _ = fmt.Fprintf(&sb, `# Dump PostgreSQL database container %s
@@ -86,7 +90,8 @@ docker exec %s sh -c '
   export PGPASSWORD="${POSTGRES_PASSWORD:-}"
   pg_dumpall -U "${POSTGRES_USER:-postgres}"
 ' | gzip > %s
-`, cName, shellquote.Quote(cName), shellquote.Quote(dst))
+chmod 0600 %s
+`, cName, shellquote.Quote(cName), shellquote.Quote(dst), shellquote.Quote(dst))
 	}
 
 	return sb.String(), nil
@@ -102,6 +107,9 @@ func BuildImportScript(engine, containerName, srcPath string) (string, error) {
 	cName := strings.TrimSpace(containerName)
 	if cName == "" {
 		return "", ErrEmptyContainerName
+	}
+	if strings.ContainsAny(cName, "\r\n") {
+		return "", fmt.Errorf("invalid container name: cannot contain newlines")
 	}
 	src := strings.TrimSpace(srcPath)
 	if src == "" {

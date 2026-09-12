@@ -9,9 +9,11 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
+	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/storage"
 )
@@ -69,6 +71,12 @@ func (r *Runner) RunContainerBackup(
 	execToUse := r.executor
 	if target.IsLocal {
 		execToUse = r.localExecutor
+	} else if sshExec, ok := r.executor.(*executor.SSHExecutor); ok {
+		scopedExec := *sshExec
+		if consoleOut != nil {
+			scopedExec.WarnWriter = consoleOut
+		}
+		execToUse = &scopedExec
 	}
 
 	_, _ = fmt.Fprintf(consoleOut, "==> Inspecting container %q on %s...\n", containerName, serverName)
@@ -106,8 +114,15 @@ func (r *Runner) RunContainerBackup(
 			for _, f := range tempFilesToClean {
 				rmParts = append(rmParts, shellquote.Quote(f))
 			}
-			cleanScript := fmt.Sprintf("rm -rf %s >/dev/null 2>&1 || true", strings.Join(rmParts, " "))
-			_, _ = execToUse.Execute(context.Background(), target, "cleanup-temp", cleanScript, io.Discard)
+			cleanScript := fmt.Sprintf("rm -rf %s", strings.Join(rmParts, " "))
+			cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			res, err := execToUse.Execute(cleanCtx, target, "cleanup-temp", cleanScript, io.Discard)
+			if err != nil || (res != nil && !res.Success) {
+				_, _ = fmt.Fprintf(consoleOut, "Warning: failed to clean up temporary dump files on remote host %s: %v. Please remove manually to prevent sensitive data exposure: %s\n",
+					serverName, err, strings.Join(tempFilesToClean, ", "))
+			}
 		}
 	}()
 
@@ -123,6 +138,13 @@ func (r *Runner) RunContainerBackup(
 		projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
 		composePath = path.Join(projectDir, "compose.yaml")
 	}
+
+	// Pre-run sanitization: remove stale dumps and volume archives from prior aborted runs
+	staleCleanupScript := fmt.Sprintf("rm -rf %s %s 2>/dev/null || true",
+		shellquote.Quote(path.Join(projectDir, "dumps")),
+		shellquote.Quote(path.Join(projectDir, "volumes")),
+	)
+	_, _ = execToUse.Execute(ctx, target, "clean-stale-dumps", staleCleanupScript, io.Discard)
 
 	manifest := &docker.ContainerManifest{
 		FormatVersion: 1,
@@ -214,8 +236,8 @@ func (r *Runner) RunContainerBackup(
 		}
 
 		encodedCompose := base64.StdEncoding.EncodeToString([]byte(yamlStr))
-		writeScript := fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' | base64 -d > %s\n",
-			shellquote.Quote(projectDir), encodedCompose, shellquote.Quote(composePath))
+		writeScript := fmt.Sprintf("mkdir -p %s && printf '%%s' %s | base64 -d > %s\n",
+			shellquote.Quote(projectDir), shellquote.Quote(encodedCompose), shellquote.Quote(composePath))
 		writeRes, writeErr := execToUse.Execute(ctx, target, "write-compose-"+finalName, writeScript, io.Discard)
 		if writeErr != nil || (writeRes != nil && !writeRes.Success) {
 			return nil, fmt.Errorf("failed to write generated compose.yaml on target %s: %v", serverName, writeErr)
@@ -228,8 +250,8 @@ func (r *Runner) RunContainerBackup(
 	}
 	manifestFile := path.Join(projectDir, docker.ManifestFileName)
 	encodedManifest := base64.StdEncoding.EncodeToString([]byte(manifestYAML))
-	writeManifestScript := fmt.Sprintf("mkdir -p %s && printf '%%s' '%s' | base64 -d > %s\n",
-		shellquote.Quote(projectDir), encodedManifest, shellquote.Quote(manifestFile))
+	writeManifestScript := fmt.Sprintf("mkdir -p %s && printf '%%s' %s | base64 -d > %s\n",
+		shellquote.Quote(projectDir), shellquote.Quote(encodedManifest), shellquote.Quote(manifestFile))
 	mRes, mErr := execToUse.Execute(ctx, target, "write-manifest-"+finalName, writeManifestScript, io.Discard)
 	if mErr != nil || (mRes != nil && !mRes.Success) {
 		return nil, fmt.Errorf("failed to write manifest.yaml on target %s: %v", serverName, mErr)

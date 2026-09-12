@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,7 +21,10 @@ import (
 )
 
 func TestSSHExecutor_JumpHostTunnel(t *testing.T) {
-	t.Setenv(config.EnvHome, t.TempDir())
+	tempDir := t.TempDir()
+	t.Setenv(config.EnvHome, tempDir)
+	t.Setenv("OPSPULSE_KNOWN_HOSTS", filepath.Join(tempDir, "known_hosts"))
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "1")
 
 	// 1. Start Target Server
 	targetListener, targetServer := startMockSSHServer(t, false, "")
@@ -34,7 +38,8 @@ func TestSSHExecutor_JumpHostTunnel(t *testing.T) {
 	targetServer.JumpHost = jumpServer.Name
 
 	// 3. Test Execute through Jump Host using ServerResolver
-	exec := NewSSHExecutor()
+	var warnBuf bytes.Buffer
+	exec := NewSSHExecutor().WithWarnWriter(&warnBuf)
 	exec.ConnectTimeout = 3 * time.Second
 	exec.WithServerResolver(func(name string) (*server.Server, error) {
 		if name == jumpServer.Name {
@@ -57,6 +62,9 @@ func TestSSHExecutor_JumpHostTunnel(t *testing.T) {
 	}
 	if !strings.Contains(outputBuf.String(), "mock-target-output") {
 		t.Errorf("expected output to contain 'mock-target-output', got %q", outputBuf.String())
+	}
+	if !strings.Contains(warnBuf.String(), "Permanently added") {
+		t.Errorf("expected warnBuf to capture host key warning, got %q", warnBuf.String())
 	}
 
 	// 4. Test Test() latency probe through Jump Host

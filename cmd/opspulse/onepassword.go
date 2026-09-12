@@ -985,7 +985,7 @@ rm -rf "$tmp_dir"
 		localBin := filepath.Join(home, ".local", "bin")
 		path := os.Getenv("PATH")
 		if !strings.Contains(path, localBin) {
-			os.Setenv("PATH", localBin+string(os.PathListSeparator)+path)
+			_ = os.Setenv("PATH", localBin+string(os.PathListSeparator)+path)
 			fmt.Printf("💡 Added %s to this process's PATH.\n", localBin)
 		}
 		return nil

@@ -42,7 +42,7 @@ Signals SIGINT and SIGTERM trigger a graceful shutdown, waiting for in-flight jo
 
 		backupRepo := storage.NewBackupRepo(db)
 		assetStore := asset.NewDefaultStore()
-		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get).WithWarnWriter(os.Stdout)
 		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
 		dispatcher := notify.NewDispatcher(notifyStore)
 

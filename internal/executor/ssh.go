@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -22,6 +23,7 @@ type SSHExecutor struct {
 	ConnectTimeout time.Duration
 	ExecuteTimeout time.Duration
 	ServerResolver func(name string) (*server.Server, error)
+	WarnWriter     io.Writer
 }
 
 // NewSSHExecutor creates a new SSHExecutor with sensible default timeouts.
@@ -38,16 +40,32 @@ func (e *SSHExecutor) WithServerResolver(resolver func(name string) (*server.Ser
 	return e
 }
 
+// WithWarnWriter sets the warn writer for host key warnings and audit notices.
+func (e *SSHExecutor) WithWarnWriter(w io.Writer) *SSHExecutor {
+	e.WarnWriter = w
+	return e
+}
+
 // DialTarget establishes an SSH client connection to the target server, optionally
 // tunneling through target.JumpServer via SSH direct-tcpip port forwarding.
 // The caller must invoke the returned cleanup function when finished.
 func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Client, func(), error) {
+	var safeWarnWriter io.Writer
+	if e.WarnWriter != nil {
+		safeWarnWriter = NewSyncWriter(e.WarnWriter)
+	}
+	return e.DialTargetWithWriter(ctx, target, safeWarnWriter)
+}
+
+// DialTargetWithWriter establishes an SSH client connection to the target server,
+// routing any host key warnings to the provided warnWriter.
+func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, warnWriter io.Writer) (*ssh.Client, func(), error) {
 	if target.Server == nil {
 		return nil, nil, fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
 	}
 	srv := *target.Server
 
-	targetConfig, err := BuildClientConfig(srv, e.ConnectTimeout)
+	targetConfig, err := BuildClientConfigWithWriter(srv, e.ConnectTimeout, warnWriter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,7 +83,7 @@ func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Clien
 
 	// 1. If Jump Host is configured, establish direct-tcpip tunnel through it
 	if jumpSrv != nil {
-		jumpConfig, err := BuildClientConfig(*jumpSrv, e.ConnectTimeout)
+		jumpConfig, err := BuildClientConfigWithWriter(*jumpSrv, e.ConnectTimeout, warnWriter)
 		if err != nil {
 			return nil, nil, fmt.Errorf("jump host %s config error: %w", jumpSrv.Name, err)
 		}
@@ -125,8 +143,21 @@ func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Clien
 
 // Test checks SSH connectivity and returns latency and system info.
 func (e *SSHExecutor) Test(ctx context.Context, target Target) (time.Duration, string, error) {
+	return e.TestWithWriter(ctx, target, e.WarnWriter)
+}
+
+// TestWithWriter checks SSH connectivity and returns latency and system info,
+// routing any host key warnings to the provided warnWriter.
+func (e *SSHExecutor) TestWithWriter(ctx context.Context, target Target, warnWriter io.Writer) (time.Duration, string, error) {
 	start := time.Now()
-	client, cleanup, err := e.DialTarget(ctx, target)
+	var safeWarnWriter io.Writer
+	if warnWriter != nil {
+		safeWarnWriter = NewSyncWriter(warnWriter)
+	} else if e.WarnWriter != nil {
+		safeWarnWriter = NewSyncWriter(e.WarnWriter)
+	}
+
+	client, cleanup, err := e.DialTargetWithWriter(ctx, target, safeWarnWriter)
 	if err != nil {
 		return 0, "", err
 	}
@@ -184,7 +215,14 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	}
 	srv := *target.Server
 
-	client, cleanup, err := e.DialTarget(ctx, target)
+	var safeWarnWriter io.Writer
+	if e.WarnWriter != nil {
+		safeWarnWriter = NewSyncWriter(e.WarnWriter)
+	} else if outputWriter != nil {
+		safeWarnWriter = NewSyncWriter(outputWriter)
+	}
+
+	client, cleanup, err := e.DialTargetWithWriter(ctx, target, safeWarnWriter)
 	if err != nil {
 		res.Error = err
 		res.EndTime = time.Now()
@@ -205,9 +243,9 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 
 	// Stream stdout and stderr thread-safely (prevent data race on shared bytes.Buffer)
 	if outputWriter != nil {
-		safeWriter := NewSyncWriter(outputWriter)
-		session.Stdout = safeWriter
-		session.Stderr = safeWriter
+		safeOutWriter := NewSyncWriter(outputWriter)
+		session.Stdout = safeOutWriter
+		session.Stderr = safeOutWriter
 	}
 
 	// Normalize script line endings to standard LF before executing remotely
@@ -264,7 +302,7 @@ func remoteShellCommand(scriptContent string) (string, io.Reader) {
 	// with passwordless sudo if the remote session user is non-root.
 	if len(scriptContent) <= 64*1024 {
 		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
-		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then runner=\"sudo -E $shell\"; else runner=\"$shell\"; fi; printf '%%s' '%s' | base64 -d | $runner", encoded), nil
+		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then runner=\"sudo -E $shell\"; else runner=\"$shell\"; fi; printf '%%s' %s | base64 -d | $runner", shellquote.Quote(encoded)), nil
 	}
 	return "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then sudo -E \"$shell\" -s; else \"$shell\" -s; fi", strings.NewReader(scriptContent)
 }

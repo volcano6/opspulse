@@ -48,7 +48,7 @@ var serverSetupKeyCmd = &cobra.Command{
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		var output bytes.Buffer
-		result, err := executor.NewSSHExecutor().WithServerResolver(store.Get).Execute(
+		result, err := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr).Execute(
 			ctx,
 			executor.NewServerTarget(passwordServer),
 			"setup-key",

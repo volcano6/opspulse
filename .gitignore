@@ -28,10 +28,11 @@ dist/
 # Scratch directories used by scripts/verify-onepassword.sh
 .opstub-verify/
 
-# Agent workspace (WorkBuddy). Local notes and scratch builds live here; verify
-# runs drop throwaway keypairs and built stubs into it, so it must never be
-# committed. Keep the directory itself - only version control ignores it.
+# Agent workspace (WorkBuddy / Gemini / Antigravity). Local notes, caches, and scratch builds.
 .workbuddy/
+.workbuddy-ai/
+.gemini/
+docs/*_handoff.md
 
 # env file
 .env

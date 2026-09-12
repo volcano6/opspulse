@@ -179,12 +179,6 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string) []string {
 	args := []string{binary}
 
-	// Compatibility with legacy RSA/DSA host keys and public keys
-	args = append(args,
-		"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
-		"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
-	)
-
 	// Jump Host handling
 	if srv.JumpHost != "" {
 		store := server.NewDefaultStore()
@@ -194,8 +188,6 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyP
 		proxyParts = append(proxyParts,
 			"ssh",
 			"-W", "%h:%p",
-			"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
-			"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
 		)
 
 		if err == nil {

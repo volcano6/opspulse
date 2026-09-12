@@ -172,6 +172,10 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		execToUse := r.executor
 		if target.IsLocal {
 			execToUse = r.localExecutor
+		} else if sshExec, ok := r.executor.(*executor.SSHExecutor); ok {
+			scopedExec := *sshExec
+			scopedExec.WarnWriter = multiWriter
+			execToUse = &scopedExec
 		}
 
 		_, execErr := execToUse.Execute(ctx, target, "restore-dryrun-"+job.Name, script, multiWriter)
@@ -200,6 +204,10 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	execToUse := r.executor
 	if target.IsLocal {
 		execToUse = r.localExecutor
+	} else if sshExec, ok := r.executor.(*executor.SSHExecutor); ok {
+		scopedExec := *sshExec
+		scopedExec.WarnWriter = multiWriter
+		execToUse = &scopedExec
 	}
 
 	execRes, execErr := execToUse.Execute(ctx, target, "restore-"+job.Name, script, multiWriter)

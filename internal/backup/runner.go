@@ -154,6 +154,14 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	execToUse := r.executor
 	if target.IsLocal {
 		execToUse = r.localExecutor
+	} else if sshExec, ok := r.executor.(*executor.SSHExecutor); ok {
+		var jobWarnWriter io.Writer = prefixedConsole
+		if logFile != nil {
+			jobWarnWriter = io.MultiWriter(prefixedConsole, logFile)
+		}
+		scopedExec := *sshExec
+		scopedExec.WarnWriter = jobWarnWriter
+		execToUse = &scopedExec
 	}
 
 	execRes, execErr := execToUse.Execute(ctx, target, "backup-"+job.Name, script, multiWriter)
