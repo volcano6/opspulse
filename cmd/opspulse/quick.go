@@ -62,7 +62,7 @@ Examples:
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 		target := executor.NewServerTarget(*srv)
 
 		var buf bytes.Buffer
@@ -192,7 +192,7 @@ Examples:
 			return err
 		}
 
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 		target := executor.NewServerTarget(*srv)
 
 		res, err := exec.Execute(ctx, target, "docker-logs", script, os.Stdout)

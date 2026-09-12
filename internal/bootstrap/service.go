@@ -241,6 +241,11 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 				privGuard := "if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Elevating privileges for local bootstrap...\" >&2\n  exec sudo -E bash -s << 'EOF_OPSPULSE_BOOTSTRAP'\n"
 				execContent = privGuard + execContent + "\nEOF_OPSPULSE_BOOTSTRAP\nfi\n"
 			} else {
+				if sshExec, ok := s.executor.(*executor.SSHExecutor); ok {
+					scopedExec := *sshExec
+					scopedExec.WarnWriter = multiWriter
+					execToUse = &scopedExec
+				}
 				privGuard := fmt.Sprintf("if [ \"$(id -u)\" -ne 0 ]; then\n  echo \"Error: bootstrap template %s requires root privileges.\" >&2\n  echo \"Current user is not root and lacks passwordless sudo (NOPASSWD). Please switch server user to root or configure sudoers.\" >&2\n  exit 1\nfi\n", shellquote.Quote(targetTmpl.DisplayName))
 				execContent = privGuard + execContent
 			}

@@ -20,11 +20,6 @@ func TestBuildSSHArgs(t *testing.T) {
 	_ = testStore.Save(server.Server{Name: "bastion", Host: "1.1.1.1", User: "root", Port: 22})
 	_ = testStore.Save(server.Server{Name: "bastion-key", Host: "1.1.1.2", User: "root", Port: 2222, KeyPath: "~/.ssh/jump.pem"})
 
-	compatFlags := []string{
-		"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
-		"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
-	}
-
 	tests := []struct {
 		name      string
 		srv       server.Server
@@ -40,7 +35,7 @@ func TestBuildSSHArgs(t *testing.T) {
 				User: "root",
 			},
 			extraArgs: nil,
-			want:      append(append([]string{"ssh"}, compatFlags...), "root@192.168.1.10"),
+			want:      []string{"ssh", "root@192.168.1.10"},
 		},
 		{
 			name: "custom port and key path",
@@ -52,12 +47,12 @@ func TestBuildSSHArgs(t *testing.T) {
 				KeyPath: "~/.ssh/id_ed25519",
 			},
 			extraArgs: nil,
-			want: append(append([]string{"ssh"}, compatFlags...),
+			want: []string{"ssh",
 				"-p", "2222",
 				"-o", "IdentitiesOnly=yes",
 				"-i", filepath.Join(home, ".ssh/id_ed25519"),
 				"ubuntu@10.0.0.1",
-			),
+			},
 		},
 		{
 			name: "with extra passthrough args",
@@ -68,9 +63,9 @@ func TestBuildSSHArgs(t *testing.T) {
 				User: "admin",
 			},
 			extraArgs: []string{"-o", "StrictHostKeyChecking=no", "tmux"},
-			want: append(append([]string{"ssh"}, compatFlags...),
+			want: []string{"ssh",
 				"-o", "StrictHostKeyChecking=no", "tmux", "admin@1.2.3.4",
-			),
+			},
 		},
 		{
 			name: "configured password disables public key attempts",
@@ -81,11 +76,11 @@ func TestBuildSSHArgs(t *testing.T) {
 				User:     "root",
 				Password: "secret",
 			},
-			want: append(append([]string{"ssh"}, compatFlags...),
+			want: []string{"ssh",
 				"-o", "PubkeyAuthentication=no",
 				"-o", "PreferredAuthentications=password,keyboard-interactive",
 				"root@1.2.3.5",
-			),
+			},
 		},
 		{
 			name: "server with jump host",
@@ -96,10 +91,10 @@ func TestBuildSSHArgs(t *testing.T) {
 				User:     "ubuntu",
 				JumpHost: "bastion",
 			},
-			want: append(append([]string{"ssh"}, compatFlags...),
-				"-o", "ProxyCommand=ssh -W %h:%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa root@1.1.1.1",
+			want: []string{"ssh",
+				"-o", "ProxyCommand=ssh -W %h:%p root@1.1.1.1",
 				"ubuntu@vps2",
-			),
+			},
 		},
 		{
 			name: "server with jump host using private key",
@@ -110,10 +105,10 @@ func TestBuildSSHArgs(t *testing.T) {
 				User:     "ubuntu",
 				JumpHost: "bastion-key",
 			},
-			want: append(append([]string{"ssh"}, compatFlags...),
-				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa -o IdentitiesOnly=yes -i %s -p 2222 root@1.1.1.2", filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
+			want: []string{"ssh",
+				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o IdentitiesOnly=yes -i %s -p 2222 root@1.1.1.2", filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
 				"ubuntu@vps2",
-			),
+			},
 		},
 	}
 

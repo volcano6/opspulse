@@ -70,7 +70,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 		return fmt.Errorf("%q is a directory. Use --recursive (-r) to upload directories", localPath)
 	}
 
-	client, err := sftp.NewClient(*srv, cpTimeout)
+	client, err := sftp.NewClientWithWriter(*srv, cpTimeout, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 		return err
 	}
 
-	client, err := sftp.NewClient(*srv, cpTimeout)
+	client, err := sftp.NewClientWithWriter(*srv, cpTimeout, os.Stderr)
 	if err != nil {
 		return err
 	}

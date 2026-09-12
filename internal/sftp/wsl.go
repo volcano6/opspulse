@@ -71,8 +71,7 @@ func BridgeKeyContentToWindows(baseName string, content []byte) (string, error) 
 	}
 
 	if dstContent, err := os.ReadFile(winMirrorWSLPath); err != nil || !bytes.Equal(content, dstContent) { // #nosec G304
-		// #nosec G703 -- winMirrorWSLPath is constructed safely using filepath.Base
-		if err := os.WriteFile(winMirrorWSLPath, content, 0o600); err != nil {
+		if err := os.WriteFile(winMirrorWSLPath, content, 0o600); err != nil { // #nosec G304 G703
 			return "", fmt.Errorf("failed to copy key to Windows mirror: %w", err)
 		}
 		// On WSL, chmod on /mnt/c might not fully mimic POSIX permissions, but we set it anyway.

@@ -14,3 +14,10 @@ linters-settings:
       - G106 # InsecureIgnoreHostKey for automated VPS bootstrapping
       - G204 # Subprocess command execution (script runner core capability)
       - G304 # File paths from user config / CLI args
+
+issues:
+  exclude-rules:
+    # Relax strict gosec checks for test files (e.g. temporary mock file permissions, stub passwords)
+    - path: _test\.go
+      linters:
+        - gosec

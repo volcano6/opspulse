@@ -258,7 +258,7 @@ func handlePublicKeyInjection(in io.Reader, out io.Writer, srv *server.Server, p
 	passwordServer.Password = password
 
 	store := server.NewDefaultStore()
-	exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+	exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 	injectCtx, injectCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer injectCancel()
 
@@ -452,7 +452,7 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 		} else {
 			_, _ = fmt.Fprintf(os.Stdout, "--> Verifying SSH connection to %s (%s)...\n", srv.Name, srv.Address())
 		}
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 

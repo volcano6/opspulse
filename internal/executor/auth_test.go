@@ -106,19 +106,63 @@ func TestPrefixedWriter(t *testing.T) {
 	}
 }
 
-func TestTOFUHostKeyCallbackTrustsFirstKeyAndRejectsChanges(t *testing.T) {
+func TestHostKeyCallback_DefaultStrict_RejectsUnknownHost(t *testing.T) {
 	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
-	callback := tofuHostKeyCallbackFor(knownHostsPath)
+	var warnBuf bytes.Buffer
+	callback := tofuHostKeyCallbackForWithWriter(knownHostsPath, &warnBuf)
+	remote := &net.TCPAddr{IP: net.ParseIP("192.0.2.11"), Port: 22}
+	hostname := "strict.test:22"
+
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "")
+	key := newTestHostKey(t)
+	err := callback(hostname, remote, key)
+	if err == nil {
+		t.Fatal("expected error in default strict host key checking mode for unknown host, got nil")
+	}
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "host key not recorded in") {
+		t.Fatalf("expected host key not recorded error, got: %v", errMsg)
+	}
+	if !strings.Contains(errMsg, "OPSPULSE_TRUST_NEW_HOST_KEY=1") {
+		t.Fatalf("expected instruction to set OPSPULSE_TRUST_NEW_HOST_KEY=1, got: %v", errMsg)
+	}
+	if !strings.Contains(errMsg, ssh.FingerprintSHA256(key)) {
+		t.Fatalf("expected fingerprint %s in error message, got: %v", ssh.FingerprintSHA256(key), errMsg)
+	}
+	if warnBuf.Len() != 0 {
+		t.Fatalf("expected no warnings on rejection, got: %s", warnBuf.String())
+	}
+}
+
+func TestHostKeyCallback_OptInTrustNew_AcceptsAndLogs(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	var warnBuf bytes.Buffer
+	callback := tofuHostKeyCallbackForWithWriter(knownHostsPath, &warnBuf)
 	remote := &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 2222}
 	hostname := "example.test:2222"
 
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "1")
 	firstKey := newTestHostKey(t)
 	if err := callback(hostname, remote, firstKey); err != nil {
-		t.Fatalf("first host key must be trusted: %v", err)
+		t.Fatalf("first host key must be trusted when OPSPULSE_TRUST_NEW_HOST_KEY=1: %v", err)
 	}
+	if !strings.Contains(warnBuf.String(), "Warning: Permanently added 'example.test:2222'") {
+		t.Fatalf("expected warning in warnWriter, got: %s", warnBuf.String())
+	}
+	if !strings.Contains(warnBuf.String(), ssh.FingerprintSHA256(firstKey)) {
+		t.Fatalf("expected fingerprint in warning, got: %s", warnBuf.String())
+	}
+
+	// Second connection with same key succeeds without new warnings
+	warnBuf.Reset()
 	if err := callback(hostname, remote, firstKey); err != nil {
 		t.Fatalf("stored host key must be accepted: %v", err)
 	}
+	if warnBuf.Len() != 0 {
+		t.Fatalf("expected no warning for known host, got: %s", warnBuf.String())
+	}
+
+	// Changed host key must be rejected
 	if err := callback(hostname, remote, newTestHostKey(t)); err == nil {
 		t.Fatal("changed host key must be rejected")
 	}

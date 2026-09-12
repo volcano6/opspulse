@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -147,7 +148,7 @@ func handleRead(args []string) {
 	if keyPath == "" {
 		fatalf("stub: STUB_OP_KEY is not set, cannot serve a private key")
 	}
-	key, err := os.ReadFile(keyPath)
+	key, err := os.ReadFile(filepath.Clean(keyPath)) // #nosec G304 G703
 	if err != nil {
 		fatalf("stub: read key: %v", err)
 	}
@@ -200,7 +201,7 @@ func readStdin() []byte {
 }
 
 func logLine(path string, args []string, stdin []byte) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 G703
 	if err != nil {
 		return
 	}

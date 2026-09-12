@@ -73,7 +73,7 @@ Examples:
 		restoreRepo := storage.NewRestoreRepo(db)
 		serverStore := server.NewDefaultStore()
 		assetStore := asset.NewDefaultStore()
-		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get)
+		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get).WithWarnWriter(os.Stdout)
 
 		runner := backup.NewRestoreRunner(exec, serverStore, restoreRepo, backupStore, assetStore)
 
