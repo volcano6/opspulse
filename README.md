@@ -35,7 +35,7 @@
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🔒 零信任凭证流转与安全边界**：支持在 `backups.yaml` 中使用 `op://` 协议，运行时自动调用 1Password 解析凭证、不落盘；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。私钥绝不主动离机，无任何外部遥测上报。
+- **🔒 零信任凭证流转与安全边界**：支持在 `backups.yaml` 中使用 `op://` 协议，运行时自动调用 1Password 解析凭证、不落盘；`ops 1p push/pull/status` 可将 SSH 私钥整体托管至 1Password 并以 `op://` 引用按需取用，本地无需保留私钥文件；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。私钥绝不主动离机，无任何外部遥测上报。
 
 ---
 
@@ -225,6 +225,10 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
 | `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `ops server remove <name>` | 从清单中删除指定服务器 |
+| `ops 1p push <server>... [--all] [--vault <vault>] [--delete-local]` | 把本地私钥推送到 1Password，并把服务器改绑为 `op://` 引用（保险库只有一个时自动选中） |
+| `ops 1p pull <server>` | 把 1Password 中的私钥取回本地 `~/.ssh/` 并重新绑定 |
+| `ops 1p status [--filter <key=val>]` | 查看每台服务器的私钥当前存放在哪里 |
+| `ops 1p config [--vault <v>] [--account <a>] [--unset]` | 查看/记住默认保险库与账号，之后 `push` 无需重复传参 |
 | `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
 | `ops sftp [server] [--app <app>] [--path <path>] [--cli]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
 | `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
@@ -257,6 +261,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 * [跨端环境备份与无损还原指南 (WSL/1Password)](docs/tutorial/wsl_env_backup.md)
 * [容器备份与跨机无缝迁移实战指南](docs/tutorial/container_migration.md)
 * [日常服务器管理指南](docs/reference/server_ops.md)
+* [1Password 私钥托管指南](docs/reference/onepassword.md)
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
 * [还原管理指南](docs/reference/restore.md)
