@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -114,7 +115,7 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 
 		jobCopy := j
 		entryID, err := s.cron.AddFunc(scheduleSpec, func() {
-			_ = s.executeJob(jobCopy)
+			_ = s.executeJob(s.daemonCtx, jobCopy)
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to schedule job %q with spec %q: %w", j.Name, scheduleSpec, err)
@@ -140,12 +141,11 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 	return registered, nil
 }
 
-func (s *Scheduler) executeJob(job backup.Job) error {
+func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 	startTime := time.Now()
 	_, _ = fmt.Fprintf(s.out, "[scheduler] >>> Triggering scheduled backup job %q (%s) at %s\n",
 		job.Name, job.Server, startTime.Format("2006-01-02 15:04:05"))
 
-	ctx := s.daemonCtx
 	var runRecordErr error
 	var runRecordStatus = "failed"
 	var snapshotID string
@@ -184,7 +184,13 @@ func (s *Scheduler) executeJob(job backup.Job) error {
 			Error:           errMsg,
 			Timestamp:       time.Now(),
 		}
-		if notifyErrs := s.dispatcher.Dispatch(ctx, event); len(notifyErrs) > 0 {
+		notifyCtx := ctx
+		if ctx.Err() != nil {
+			var cancel context.CancelFunc
+			notifyCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+		}
+		if notifyErrs := s.dispatcher.Dispatch(notifyCtx, event); len(notifyErrs) > 0 {
 			for _, ne := range notifyErrs {
 				_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification delivery failed: %v\n", ne)
 			}
@@ -291,24 +297,50 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		}
 	}
 
-	if len(scheduledJobs) == 0 {
+	total := len(scheduledJobs)
+	if total == 0 {
 		_, _ = fmt.Fprintln(s.out, "[scheduler] No scheduled backup jobs found.")
 		return nil
 	}
 
-	_, _ = fmt.Fprintf(s.out, "[scheduler] Executing %d scheduled job(s) sequentially (--once mode)...\n", len(scheduledJobs))
+	_, _ = fmt.Fprintf(s.out, "[scheduler] Executing %d scheduled job(s) sequentially (--once mode)...\n", total)
 
 	var firstErr error
+	var successCount int
+	var failureCount int
+
 	for _, job := range scheduledJobs {
 		select {
 		case <-ctx.Done():
+			_, _ = fmt.Fprintf(s.out, "[scheduler] ⚠️ Execution cancelled (%d/%d jobs processed: %d succeeded, %d failed): %v\n",
+				successCount+failureCount, total, successCount, failureCount, ctx.Err())
+			if firstErr != nil {
+				return fmt.Errorf("run cancelled (%w), earlier error: %v", ctx.Err(), firstErr)
+			}
 			return ctx.Err()
 		default:
-			if err := s.executeJob(job); err != nil && firstErr == nil {
+		}
+
+		if err := s.executeJob(ctx, job); err != nil {
+			failureCount++
+			if firstErr == nil {
 				firstErr = err
 			}
+			if ctx.Err() != nil {
+				_, _ = fmt.Fprintf(s.out, "[scheduler] ⚠️ Execution cancelled during job %q (%d/%d jobs processed: %d succeeded, %d failed): %v\n",
+					job.Name, successCount+failureCount, total, successCount, failureCount, ctx.Err())
+				if firstErr != nil && !errors.Is(firstErr, ctx.Err()) {
+					return fmt.Errorf("run cancelled (%w), job %q error: %v", ctx.Err(), job.Name, firstErr)
+				}
+				return ctx.Err()
+			}
+		} else {
+			successCount++
 		}
 	}
+
+	_, _ = fmt.Fprintf(s.out, "[scheduler] Finished %d scheduled job(s) (%d succeeded, %d failed).\n",
+		total, successCount, failureCount)
 
 	return firstErr
 }

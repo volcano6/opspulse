@@ -142,3 +142,60 @@ func TestPool_ConcurrentExecution(t *testing.T) {
 		t.Errorf("expected SUCCESS summary output, got:\n%s", summaryStr)
 	}
 }
+
+func TestPool_EarlyFailureRecordedInSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	backupRepo := storage.NewBackupRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	// Intentionally do not save any server, so ResolveTarget will fail early!
+
+	exec := &mockExecutor{outputToReturn: ""}
+	runner := NewRunner(exec, serverStore, backupRepo)
+
+	pool := NewPool(runner, 1)
+	jobs := []Job{
+		{
+			Name:    "failing-job",
+			Server:  "nonexistent-server",
+			Paths:   []string{"/var/www"},
+			Backend: "/backup",
+		},
+	}
+
+	var console bytes.Buffer
+	res, err := pool.RunAll(context.Background(), jobs, false, &console)
+	if err != nil {
+		t.Fatalf("pool.RunAll() unexpected error: %v", err)
+	}
+
+	if len(res.Runs) != 1 {
+		t.Fatalf("expected 1 run in Runs slice, got %d", len(res.Runs))
+	}
+	if res.Runs[0] == nil {
+		t.Fatal("expected res.Runs[0] to be non-nil failed record, got nil")
+	}
+	if res.Runs[0].Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", res.Runs[0].Status)
+	}
+	if res.FailureCount != 1 {
+		t.Errorf("expected FailureCount = 1, got %d", res.FailureCount)
+	}
+
+	var summaryBuf bytes.Buffer
+	res.PrintSummary(&summaryBuf)
+	summaryStr := summaryBuf.String()
+
+	if !strings.Contains(summaryStr, "FAILED") || !strings.Contains(summaryStr, "failing-job") {
+		t.Errorf("expected FAILED status and failing-job in summary, got:\n%s", summaryStr)
+	}
+	if !strings.Contains(summaryStr, "Failures:") || !strings.Contains(summaryStr, "nonexistent-server") {
+		t.Errorf("expected failure breakdown in summary, got:\n%s", summaryStr)
+	}
+}
+

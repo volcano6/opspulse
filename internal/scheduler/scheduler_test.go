@@ -223,6 +223,45 @@ func TestScheduler_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestScheduler_RunOnce_ContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupsFile := filepath.Join(tmpDir, "backups.yaml")
+	backupStore := backup.NewStore(backupsFile)
+
+	_ = backupStore.Save(backup.Job{
+		Name:     "job-1",
+		Server:   "local",
+		Paths:    []string{"/tmp/data1"},
+		Backend:  "/tmp/repo",
+		Schedule: "@daily",
+	})
+	_ = backupStore.Save(backup.Job{
+		Name:     "job-2",
+		Server:   "local",
+		Paths:    []string{"/tmp/data2"},
+		Backend:  "/tmp/repo",
+		Schedule: "@daily",
+	})
+
+	var buf bytes.Buffer
+	sched := New(backupStore, nil, nil, &buf)
+
+	// Create an already-canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := sched.RunOnce(ctx)
+	if err == nil {
+		t.Fatal("expected RunOnce() to return error on cancelled context, got nil")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Execution cancelled") {
+		t.Errorf("output missing cancellation notification: %s", output)
+	}
+}
+
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
+
