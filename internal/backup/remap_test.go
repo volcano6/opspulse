@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"strings"
 	"testing"
 )
 

@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 type restoreMockExecutor struct {
 	tasksExecuted []string
+	autostartFail bool
 }
 
 func (m *restoreMockExecutor) Execute(_ context.Context, target executor.Target, taskName string, _ string, output io.Writer) (*executor.Result, error) {
@@ -27,6 +29,16 @@ func (m *restoreMockExecutor) Execute(_ context.Context, target executor.Target,
 		if output != nil {
 			_, _ = io.WriteString(output, snapshotJSON)
 		}
+	}
+
+	if m.autostartFail && strings.HasPrefix(taskName, "autostart-") {
+		return &executor.Result{
+			ServerName: target.Name,
+			Template:   taskName,
+			Success:    false,
+			ExitCode:   127,
+			Duration:   50 * time.Millisecond,
+		}, fmt.Errorf("exit status 127: compose engine not found")
 	}
 
 	return &executor.Result{
@@ -206,5 +218,61 @@ func TestRestoreRunner_Run_WrongSnapshotRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "does not belong to job") {
 		t.Errorf("error message should mention snapshot mismatch: %v", err)
+	}
+}
+
+func TestRestoreRunner_Run_AutoStartExit127_MarksPartialStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	restoreRepo := storage.NewRestoreRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
+
+	job := Job{
+		Name:    "web-app",
+		Server:  "vps-01",
+		Paths:   []string{"/var/lib/opspulse/containers/web-app"},
+		Backend: "/mnt/repo",
+	}
+	_ = backupStore.Save(job)
+
+	mockExec := &restoreMockExecutor{autostartFail: true}
+	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
+
+	opts := RestoreOptions{
+		SnapshotID: "snap-abcdef1234567890",
+	}
+
+	var buf bytes.Buffer
+	record, err := runner.Run(context.Background(), job, opts, &buf)
+	if err == nil {
+		t.Fatal("expected error when autostart fails with exit 127, got nil")
+	}
+
+	if record.Status != "partial" {
+		t.Errorf("record.Status = %q, want 'partial'", record.Status)
+	}
+	if !strings.Contains(record.ErrorMessage, "container auto-start failed") {
+		t.Errorf("expected error message to mention container auto-start failed, got: %s", record.ErrorMessage)
+	}
+
+	// Verify database record is also updated to "partial"
+	runs, repoErr := restoreRepo.ListRuns(context.Background(), "", 10)
+	if repoErr != nil {
+		t.Fatalf("restoreRepo.ListRuns() error: %v", repoErr)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 run in repo, got %d", len(runs))
+	}
+	if runs[0].Status != "partial" {
+		t.Errorf("repo record status = %q, want 'partial'", runs[0].Status)
 	}
 }

@@ -122,10 +122,6 @@ func BuildClientConfigWithWriter(srv server.Server, timeout time.Duration, warnW
 
 var knownHostsMu sync.Mutex
 
-func tofuHostKeyCallback() (ssh.HostKeyCallback, error) {
-	return tofuHostKeyCallbackWithWriter(nil)
-}
-
 func tofuHostKeyCallbackWithWriter(warnWriter io.Writer) (ssh.HostKeyCallback, error) {
 	if custom := os.Getenv("OPSPULSE_KNOWN_HOSTS"); custom != "" {
 		return tofuHostKeyCallbackForWithWriter(custom, warnWriter), nil
@@ -135,10 +131,6 @@ func tofuHostKeyCallbackWithWriter(warnWriter io.Writer) (ssh.HostKeyCallback, e
 		return nil, fmt.Errorf("resolve home directory for SSH host keys: %w", err)
 	}
 	return tofuHostKeyCallbackForWithWriter(filepath.Join(home, ".ssh", "known_hosts"), warnWriter), nil
-}
-
-func tofuHostKeyCallbackFor(knownHostsPath string) ssh.HostKeyCallback {
-	return tofuHostKeyCallbackForWithWriter(knownHostsPath, nil)
 }
 
 func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Writer) ssh.HostKeyCallback {

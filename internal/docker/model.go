@@ -318,25 +318,50 @@ func ParseInspectJSON(data []byte) (*ContainerInfo, error) {
 
 	// Fallback to HostConfig.Binds if Mounts didn't capture them
 	for _, b := range raw.HostConfig.Binds {
-		parts := strings.Split(b, ":")
-		if len(parts) >= 2 {
-			src := parts[0]
-			dst := parts[1]
-			ro := false
-			if len(parts) >= 3 && strings.Contains(parts[2], "ro") {
-				ro = true
-			}
-			if !seenDests[dst] {
-				info.Mounts = append(info.Mounts, VolumeMount{
-					Type:        "bind",
-					Source:      src,
-					Destination: dst,
-					ReadOnly:    ro,
-				})
-				seenDests[dst] = true
-			}
+		src, dst, ro, ok := parseBindString(b)
+		if ok && !seenDests[dst] {
+			info.Mounts = append(info.Mounts, VolumeMount{
+				Type:        "bind",
+				Source:      src,
+				Destination: dst,
+				ReadOnly:    ro,
+			})
+			seenDests[dst] = true
 		}
 	}
 
 	return info, nil
+}
+
+// parseBindString parses a Docker bind mount string into src, dst, and read-only flag.
+// It handles Windows drive letters (e.g. C:\data:/app:ro), Unix paths, and mode flags.
+func parseBindString(b string) (string, string, bool, bool) {
+	raw := strings.TrimSpace(b)
+	if raw == "" {
+		return "", "", false, false
+	}
+
+	var drive string
+	// Check for Windows drive letter: [A-Za-z]:\ or [A-Za-z]:/
+	if len(raw) >= 3 && isDriveLetter(raw[0]) && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/') {
+		drive = raw[:2]
+		raw = raw[2:]
+	}
+
+	parts := strings.Split(raw, ":")
+	if len(parts) < 2 {
+		return "", "", false, false
+	}
+
+	src := drive + parts[0]
+	dst := parts[1]
+	ro := false
+	if len(parts) >= 3 && strings.Contains(parts[2], "ro") {
+		ro = true
+	}
+	return src, dst, ro, true
+}
+
+func isDriveLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }

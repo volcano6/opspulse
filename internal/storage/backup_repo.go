@@ -70,7 +70,7 @@ func (r *BackupRepo) CreateRun(ctx context.Context, run *BackupRun) (int64, erro
 		run.DurationSeconds,
 		run.ErrorMessage,
 		run.LogPath,
-		run.StartedAt.Format(time.RFC3339),
+		run.StartedAt.UTC().Format(time.RFC3339),
 		finishedAtVal,
 	)
 	if err != nil {
@@ -104,7 +104,7 @@ func (r *BackupRepo) UpdateRun(ctx context.Context, run *BackupRun) error {
 
 	var finishedAtVal *string
 	if run.FinishedAt != nil {
-		formatted := run.FinishedAt.Format(time.RFC3339)
+		formatted := run.FinishedAt.UTC().Format(time.RFC3339)
 		finishedAtVal = &formatted
 	}
 

@@ -44,3 +44,16 @@ func TestBuildAutoStartScript_WithDatabase(t *testing.T) {
 		t.Error("script missing database dump import pipeline")
 	}
 }
+
+func TestBuildAutoStartScript_MissingComposeExit127(t *testing.T) {
+	opts := AutoStartOptions{
+		ComposeDirs: []string{"/var/lib/opspulse/containers/app"},
+	}
+	script := BuildAutoStartScript(opts)
+	if !strings.Contains(script, "exit 127") {
+		t.Error("expected autostart script to contain 'exit 127' when neither compose engine is available")
+	}
+	if !strings.Contains(script, "Neither 'docker compose' nor 'docker-compose' found") {
+		t.Error("expected autostart script to output missing compose error message")
+	}
+}

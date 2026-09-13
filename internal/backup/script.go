@@ -169,9 +169,14 @@ fi
 			relPath := strings.TrimPrefix(origClean, "/")
 			
 			sb.WriteString(fmt.Sprintf("if [ -e \"$STAGING\"/%s ]; then\n", shellquote.Quote(relPath)))
-			sb.WriteString(fmt.Sprintf("  mkdir -p %s\n", shellquote.Quote(path.Dir(finalTarget))))
 			sb.WriteString(fmt.Sprintf("  echo \"Moving \"$STAGING\"/%s -> %s\"\n", shellquote.Quote(relPath), shellquote.Quote(finalTarget)))
-			sb.WriteString(fmt.Sprintf("  cp -a \"$STAGING\"/%s %s\n", shellquote.Quote(relPath), shellquote.Quote(path.Dir(finalTarget))))
+			sb.WriteString(fmt.Sprintf("  if [ -d \"$STAGING\"/%s ]; then\n", shellquote.Quote(relPath)))
+			sb.WriteString(fmt.Sprintf("    mkdir -p %s\n", shellquote.Quote(finalTarget)))
+			sb.WriteString(fmt.Sprintf("    cp -a \"$STAGING\"/%s/. %s/\n", shellquote.Quote(relPath), shellquote.Quote(finalTarget)))
+			sb.WriteString("  else\n")
+			sb.WriteString(fmt.Sprintf("    mkdir -p %s\n", shellquote.Quote(path.Dir(finalTarget))))
+			sb.WriteString(fmt.Sprintf("    cp -a \"$STAGING\"/%s %s\n", shellquote.Quote(relPath), shellquote.Quote(finalTarget)))
+			sb.WriteString("  fi\n")
 			sb.WriteString("fi\n")
 		}
 	} else {

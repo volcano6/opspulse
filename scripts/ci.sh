@@ -15,25 +15,37 @@ check_tool() {
 }
 
 echo "========================================="
-echo "   OpsPulse Local CI Verification"
+echo "   OpsPulse Deep CI Verification"
 echo "========================================="
 
 echo ""
-echo "[1/4] Running go vet..."
-go vet ./...
-echo "  -> go vet: PASSED"
+echo "[1/4] Running Multi-OS Cross-Compilation Vet (Linux, Windows, macOS)..."
+echo "  -> Checking GOOS=linux..."
+GOOS=linux go vet ./...
+echo "  -> Checking GOOS=windows..."
+GOOS=windows go vet ./...
+echo "  -> Checking GOOS=darwin..."
+GOOS=darwin go vet ./...
+echo "  -> Multi-OS Vet: PASSED"
 
 echo ""
-echo "[2/4] Running linters (revive, errcheck, ineffassign, gosec)..."
+echo "[2/4] Running Linters (revive, errcheck, ineffassign, gosec, staticcheck)..."
 check_tool "revive" "github.com/mgechev/revive@latest"
 check_tool "errcheck" "github.com/kisielk/errcheck@latest"
 check_tool "ineffassign" "github.com/gordonklaus/ineffassign@latest"
 check_tool "gosec" "github.com/securego/gosec/v2/cmd/gosec@latest"
+check_tool "staticcheck" "honnef.co/go/tools/cmd/staticcheck@latest"
 
+echo "  -> revive..."
 revive -set_exit_status ./...
+echo "  -> errcheck..."
 errcheck ./...
+echo "  -> ineffassign..."
 ineffassign ./...
+echo "  -> gosec..."
 gosec -quiet -exclude=G106,G204,G304,G703 ./...
+echo "  -> staticcheck (unused, style, static analysis)..."
+staticcheck ./...
 echo "  -> Linters: PASSED"
 
 echo ""
@@ -42,14 +54,15 @@ go test -race -coverprofile=coverage.out ./...
 echo "  -> Unit tests: PASSED"
 
 echo ""
-echo "[4/4] Building binary (CGO_ENABLED=0)..."
-CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/ops ./cmd/opspulse
+echo "[4/4] Building static binaries for Linux & Windows..."
+mkdir -p bin
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/ops ./cmd/opspulse
 cp bin/ops bin/opspulse 2>/dev/null || true
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/ops.exe ./cmd/opspulse
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/ops.exe ./cmd/opspulse
 ./bin/ops version
 echo "  -> Build: PASSED"
 
 echo ""
 echo "========================================="
-echo "   ✅ ALL LOCAL CI CHECKS PASSED!"
+echo "   ✅ ALL DEEP CI CHECKS PASSED!"
 echo "========================================="

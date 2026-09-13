@@ -115,7 +115,7 @@ func (d *DB) Migrate(ctx context.Context) error {
 		versionStr := strings.Split(file, "_")[0]
 		version, err := strconv.Atoi(versionStr)
 		if err != nil {
-			continue // Skip non-versioned SQL files
+			return fmt.Errorf("invalid migration filename %q: must start with numeric prefix followed by underscore (e.g. 0001_name.sql)", file)
 		}
 
 		// Check if already applied

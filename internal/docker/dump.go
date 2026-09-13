@@ -78,8 +78,9 @@ func BuildDumpScript(engine, containerName, destPath string) (string, error) {
 	case EngineMySQL:
 		_, _ = fmt.Fprintf(&sb, `# Dump MySQL/MariaDB database container %s
 docker exec %s sh -c '
-  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
-  mysqldump --single-transaction --quick -u root --all-databases
+  user="${MYSQL_USER:-root}"
+  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-${MYSQL_PASSWORD:-}}}"
+  mysqldump --single-transaction --quick -u "$user" --all-databases
 ' | gzip > %s
 chmod 0600 %s
 `, cName, shellquote.Quote(cName), shellquote.Quote(dst), shellquote.Quote(dst))
@@ -135,8 +136,9 @@ echo "Waiting for MySQL in container " %s " to become ready..."
 ready=0
 for i in $(seq 1 60); do
   if docker exec %s sh -c '
-    export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
-    mysqladmin ping -u root --silent
+    user="${MYSQL_USER:-root}"
+    export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-${MYSQL_PASSWORD:-}}}"
+    mysqladmin ping -u "$user" --silent
   ' >/dev/null 2>&1; then
     ready=1
     break
@@ -151,8 +153,9 @@ fi
 
 echo "MySQL is ready. Importing database dump from " %s "..."
 gunzip -c %s | docker exec -i %s sh -c '
-  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-}}"
-  mysql -u root
+  user="${MYSQL_USER:-root}"
+  export MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-${MARIADB_ROOT_PASSWORD:-${MYSQL_PASSWORD:-}}}"
+  mysql -u "$user"
 '
 echo "Database import into " %s " completed successfully."
 `, cName, shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(cName), shellquote.Quote(src), shellquote.Quote(src), shellquote.Quote(cName), shellquote.Quote(cName))

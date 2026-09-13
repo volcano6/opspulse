@@ -1,0 +1,45 @@
+# OpsPulse GolangCI-Lint Configuration
+# Aligns GitHub Actions linting with local verification standards
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - typecheck
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+      - shadow
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-dirs:
+    - docs
+    - bin
+    - dist
+    - scratch
+    - .workbuddy
+    - .workbuddy-ai
+    - .gemini
+  exclude-rules:
+    # Relax error checking in test files
+    - path: _test\.go
+      linters:
+        - errcheck
