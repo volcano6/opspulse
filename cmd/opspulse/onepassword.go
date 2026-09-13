@@ -16,6 +16,7 @@ import (
 	"github.com/volcano6/opspulse/internal/platform"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -120,6 +121,45 @@ var onePasswordStatusCmd = &cobra.Command{
 	Short: "Show where each server's private key currently lives",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runOnePasswordStatus()
+	},
+}
+
+var onePasswordCleanupServer string
+
+var onePasswordCleanupCmd = &cobra.Command{
+	Use:     "cleanup [server]",
+	Aliases: []string{"clean", "purge"},
+	Short:   "Delete temporary materialized 1Password private keys from local disk",
+	Long: `Deletes temporary private key files from ~/.ssh/opspulse-1p that were
+materialized for external GUI SFTP clients (WinSCP, FileZilla, Cyberduck, etc.).
+
+If a server name is specified, only that server's key is removed.
+Otherwise, all materialized keys in ~/.ssh/opspulse-1p are removed.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error {
+		targetServer := onePasswordCleanupServer
+		if len(args) > 0 {
+			targetServer = args[0]
+		}
+		deleted, err := sftp.PurgeMaterialized1PKeys(targetServer)
+		if err != nil {
+			return fmt.Errorf("failed to clean up materialized keys: %w", err)
+		}
+		if len(deleted) == 0 {
+			if targetServer != "" {
+				fmt.Printf("✨ No materialized key found for server %q in ~/.ssh/opspulse-1p.\n", targetServer)
+			} else {
+				fmt.Println("✨ No materialized 1Password keys found on disk (~/.ssh/opspulse-1p is clean).")
+			}
+			return nil
+		}
+		if targetServer != "" {
+			fmt.Printf("🧹 Successfully removed materialized 1Password key for %q.\n", targetServer)
+		} else {
+			fmt.Printf("🧹 Successfully removed %d materialized 1Password private key(s) from ~/.ssh/opspulse-1p: %s\n",
+				len(deleted), strings.Join(deleted, ", "))
+		}
+		return nil
 	},
 }
 
@@ -616,6 +656,13 @@ func runOnePasswordStatus() error {
 	if cli := secret.Detect(); !cli.Available() {
 		fmt.Println("⚠️  1Password CLI was not found on this host, so op:// references cannot be resolved right now.")
 	}
+	if keys, err := sftp.ListMaterialized1PKeys(); err == nil && len(keys) > 0 {
+		fmt.Printf("\n⚠️  Found %d materialized 1Password key(s) in ~/.ssh/opspulse-1p (created for GUI SFTP clients):\n", len(keys))
+		for _, k := range keys {
+			fmt.Printf("   - %s\n", k)
+		}
+		fmt.Println("   Run 'ops 1p cleanup' to purge them from local disk.")
+	}
 	return nil
 }
 
@@ -1036,6 +1083,9 @@ func init() {
 	onePasswordPullCmd.ValidArgsFunction = completeServerNames
 	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
-	onePasswordCmd.AddCommand(onePasswordPushCmd, onePasswordPullCmd, onePasswordStatusCmd, onePasswordConfigCmd)
+	onePasswordCleanupCmd.Flags().StringVarP(&onePasswordCleanupServer, "server", "s", "", "Only remove the materialized key for this specific server")
+	onePasswordCleanupCmd.ValidArgsFunction = completeServerNames
+
+	onePasswordCmd.AddCommand(onePasswordPushCmd, onePasswordPullCmd, onePasswordStatusCmd, onePasswordConfigCmd, onePasswordCleanupCmd)
 	rootCmd.AddCommand(onePasswordCmd)
 }

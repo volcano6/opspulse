@@ -15,7 +15,8 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - typecheck
+    - gosec
+    - revive
 
 linters-settings:
   govet:
@@ -26,6 +27,12 @@ linters-settings:
   errcheck:
     check-type-assertions: false
     check-blank: false
+  gosec:
+    excludes:
+      - G106 # InsecureIgnoreHostKey for automated VPS bootstrapping
+      - G204 # Subprocess command execution (script runner core capability)
+      - G304 # File paths from user config / CLI args
+      - G703 # Path traversal sanitization handled by custom validation
 
 issues:
   max-issues-per-linter: 0
@@ -35,11 +42,12 @@ issues:
     - bin
     - dist
     - scratch
+    - .gemini
     - .workbuddy
     - .workbuddy-ai
-    - .gemini
   exclude-rules:
-    # Relax error checking in test files
+    # Relax error checking and security checks in test files
     - path: _test\.go
       linters:
         - errcheck
+        - gosec

@@ -44,6 +44,78 @@ func TestServer_Validate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "reject path traversal relative parent",
+			srv: Server{
+				Name: "../id_rsa",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject double dot",
+			srv: Server{
+				Name: "..",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject single dot",
+			srv: Server{
+				Name: ".",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject slash in name",
+			srv: Server{
+				Name: "prod/web",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject backslash in name",
+			srv: Server{
+				Name: "prod\\web",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject colon in name",
+			srv: Server{
+				Name: "web:01",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject leading dot",
+			srv: Server{
+				Name: ".hidden_server",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject leading dash",
+			srv: Server{
+				Name: "-badflag",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
+		{
+			name: "reject spaces in name",
+			srv: Server{
+				Name: "web server 01",
+				Host: "1.1.1.1",
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -61,6 +133,46 @@ func TestServer_Validate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateServerName(t *testing.T) {
+	valid := []string{
+		"web",
+		"web-01",
+		"db_master",
+		"vps.prod.backup",
+		"admin@node1",
+		"host123",
+	}
+	for _, name := range valid {
+		if err := ValidateServerName(name); err != nil {
+			t.Errorf("ValidateServerName(%q) unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"   ",
+		" leading-space",
+		"trailing-space ",
+		".",
+		"..",
+		"../id_rsa",
+		"../../etc/passwd",
+		"a/b",
+		"a\\b",
+		"c:drive",
+		".hidden",
+		"-flag",
+		"has space",
+		"invalid*char",
+		"invalid?char",
+	}
+	for _, name := range invalid {
+		if err := ValidateServerName(name); err == nil {
+			t.Errorf("ValidateServerName(%q) expected error, got nil", name)
+		}
 	}
 }
 

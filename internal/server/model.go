@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,7 +15,7 @@ var (
 	// ErrServerNotFound is returned when a requested server does not exist.
 	ErrServerNotFound = errors.New("server not found")
 	// ErrInvalidServerName is returned when the server name is invalid.
-	ErrInvalidServerName = errors.New("server name cannot be empty")
+	ErrInvalidServerName = errors.New("invalid server name")
 	// ErrInvalidHost is returned when the server host is empty.
 	ErrInvalidHost = errors.New("server host cannot be empty")
 	// ErrSelfReferencingJumpHost is returned when a server specifies itself as its jump host.
@@ -22,6 +23,40 @@ var (
 	// ErrJumpHostCycle is returned when a cycle is detected in jump host dependencies.
 	ErrJumpHostCycle = errors.New("cyclic jump host dependency detected")
 )
+
+// ValidateServerName checks if a server name is a safe, valid identifier.
+// It prohibits empty names, leading/trailing whitespace, path traversal characters (/, \, :),
+// names starting with '.' or '-', and names containing characters other than
+// letters, digits, hyphens, underscores, dots, or '@'.
+func ValidateServerName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: cannot be empty", ErrInvalidServerName)
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("%w: cannot have leading or trailing whitespace", ErrInvalidServerName)
+	}
+	if len(name) > 255 {
+		return fmt.Errorf("%w: name exceeds maximum length of 255 characters", ErrInvalidServerName)
+	}
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
+		return fmt.Errorf("%w: cannot start with '.' or '-'", ErrInvalidServerName)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("%w: cannot be '.' or '..'", ErrInvalidServerName)
+	}
+	if strings.ContainsAny(name, "/\\:") {
+		return fmt.Errorf("%w: cannot contain path separators or colons", ErrInvalidServerName)
+	}
+	if filepath.Base(name) != name || filepath.Clean(name) != name {
+		return fmt.Errorf("%w: cannot contain path navigation characters", ErrInvalidServerName)
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' && r != '.' && r != '@' {
+			return fmt.Errorf("%w: %q contains invalid character %q", ErrInvalidServerName, name, r)
+		}
+	}
+	return nil
+}
 
 // Server represents a managed server instance.
 type Server struct {
@@ -45,8 +80,8 @@ type ConfigFile struct {
 
 // Validate checks if the server definition is valid.
 func (s *Server) Validate() error {
-	if strings.TrimSpace(s.Name) == "" {
-		return ErrInvalidServerName
+	if err := ValidateServerName(s.Name); err != nil {
+		return err
 	}
 	if strings.TrimSpace(s.Host) == "" {
 		return ErrInvalidHost

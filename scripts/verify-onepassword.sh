@@ -5,7 +5,7 @@
 #
 # Why a stub instead of the real CLI: `op vault list` needs an interactive
 # Desktop App approval, so a non-interactive harness can never drive the real
-# binary. cmd/opstub answers the handful of subcommands OpsPulse uses, which is
+# binary. scripts/opstub answers the handful of subcommands OpsPulse uses, which is
 # enough to pin the parts that actually break:
 #
 #   * the item JSON travels on stdin (op rejects --template together with a
@@ -18,6 +18,8 @@
 #
 # Usage: scripts/verify-onepassword.sh
 set -euo pipefail
+
+export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
 
 REPO_POSIX="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_NATIVE="$REPO_POSIX"
@@ -41,7 +43,7 @@ echo "==> building ops and the op stub"
 # (MSYS_NO_PATHCONV=1) a /d/... target is handed to go.exe verbatim, which makes
 # it resolve against the current drive and silently build somewhere else.
 (cd "$REPO_POSIX" && go build -o "$WORK_NATIVE/ops$EXE" ./cmd/opspulse)
-(cd "$REPO_POSIX" && go build -o "$WORK_NATIVE/opstub$EXE" ./cmd/opstub)
+(cd "$REPO_POSIX" && go build -o "$WORK_NATIVE/opstub$EXE" ./scripts/opstub)
 ssh-keygen -q -t ed25519 -N '' -f "$WORK_NATIVE/id_web" -C opspulse-verify
 
 export OPSPULSE_HOME="$WORK_NATIVE/home"
