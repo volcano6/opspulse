@@ -116,8 +116,21 @@ func (p *Pool) RunAll(ctx context.Context, jobs []Job, dryRun bool, out io.Write
 			runRecord, err := p.runner.Run(ctx, job, safeOut)
 
 			mu.Lock()
+			if runRecord == nil {
+				errMsg := ""
+				if err != nil {
+					errMsg = err.Error()
+				}
+				runRecord = &storage.BackupRun{
+					JobName:      job.Name,
+					ServerName:   job.Server,
+					Status:       "failed",
+					ErrorMessage: errMsg,
+					StartedAt:    time.Now(),
+				}
+			}
 			res.Runs[index] = runRecord
-			if err == nil && runRecord != nil && runRecord.Status == "success" {
+			if err == nil && runRecord.Status == "success" {
 				res.SuccessCount++
 			} else {
 				res.FailureCount++
@@ -138,6 +151,7 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 	_, _ = fmt.Fprintln(tw, "JOB\tSERVER\tSTATUS\tSNAPSHOT\tADDED\tTOTAL\tDURATION\tLOG FILE")
 	_, _ = fmt.Fprintln(tw, "---\t------\t------\t--------\t-----\t-----\t--------\t--------")
 
+	var failedJobs []*storage.BackupRun
 	for _, r := range p.Runs {
 		if r == nil {
 			continue
@@ -150,6 +164,7 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 			status = "SUCCESS"
 		} else if status == "failed" {
 			status = "FAILED"
+			failedJobs = append(failedJobs, r)
 		}
 
 		snapID := r.SnapshotID
@@ -187,6 +202,17 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 		summaryLine += " (Dry Run)"
 	}
 	_, _ = fmt.Fprintln(w, summaryLine)
+
+	if len(failedJobs) > 0 {
+		_, _ = fmt.Fprintln(w, "\nFailures:")
+		for _, f := range failedJobs {
+			errMsg := f.ErrorMessage
+			if errMsg == "" {
+				errMsg = "unknown error"
+			}
+			_, _ = fmt.Fprintf(w, "  - %s (%s): %s\n", f.JobName, f.ServerName, errMsg)
+		}
+	}
 	_, _ = fmt.Fprintln(w, "==================================================================")
 }
 

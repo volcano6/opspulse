@@ -33,3 +33,28 @@ func TestPathRemapper_Remap(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRestoreScript_WithRemap(t *testing.T) {
+	job := Job{
+		Name:    "app-backup",
+		Server:  "vps-01",
+		Paths:   []string{"/data/oldapp"},
+		Backend: "/backup/repo",
+		Remap: map[string]string{
+			"/data/oldapp": "/data/newapp",
+		},
+	}
+
+	script := BuildRestoreScript(job, "snap123", "", nil)
+
+	if !strings.Contains(script, "STAGING=") {
+		t.Error("script missing STAGING directory definition")
+	}
+	if !strings.Contains(script, `cp -a "$STAGING"/'data/oldapp'/. '/data/newapp'/`) {
+		t.Errorf("script missing expected directory copy to finalTarget:\n%s", script)
+	}
+	if !strings.Contains(script, `Moving "$STAGING"/'data/oldapp' -> '/data/newapp'`) {
+		t.Errorf("script missing expected log message:\n%s", script)
+	}
+}
+
