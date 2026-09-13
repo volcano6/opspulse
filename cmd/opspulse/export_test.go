@@ -75,4 +75,15 @@ func TestExportSSHConfigCmd(t *testing.T) {
 	if !strings.Contains(filteredContent, "Host srv-beta") {
 		t.Errorf("filtered output should contain srv-beta:\n%s", filteredContent)
 	}
+
+	// Test 4: ops export ssh-config --write --file ~/tilde_ssh_config
+	tildeSSHConfig := "~/tilde_ssh_config"
+	rootCmd.SetArgs([]string{"export", "ssh-config", "--write", "--file", tildeSSHConfig})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("export ssh-config with tilde error: %v", err)
+	}
+	expandedPath := filepath.Join(tempHome, "tilde_ssh_config")
+	if _, err := os.Stat(expandedPath); err != nil {
+		t.Fatalf("expected tilde path to expand to %s, but stat error: %v", expandedPath, err)
+	}
 }

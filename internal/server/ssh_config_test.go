@@ -174,3 +174,29 @@ func TestUpdateSSHConfigFile(t *testing.T) {
 		t.Errorf("second run altered content unexpectedly")
 	}
 }
+
+func TestUpdateSSHConfigFile_TildeExpansion(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	servers := []Server{
+		{Name: "srv-tilde", Host: "10.0.0.9", User: "root"},
+	}
+
+	target := "~/test_ssh_config"
+	_, _, err := UpdateSSHConfigFile(target, servers)
+	if err != nil {
+		t.Fatalf("UpdateSSHConfigFile failed: %v", err)
+	}
+
+	expectedFile := filepath.Join(home, "test_ssh_config")
+	if _, statErr := os.Stat(expectedFile); statErr != nil {
+		t.Fatalf("expected file to be created at %s, but stat error: %v", expectedFile, statErr)
+	}
+
+	// Verify literal "~" was not created in current working directory
+	if _, statErr := os.Stat("~"); statErr == nil {
+		t.Errorf("literal ~ directory was created in current directory")
+	}
+}
