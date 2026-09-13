@@ -32,7 +32,16 @@ dist/
 .workbuddy/
 .workbuddy-ai/
 .gemini/
+scratch/
 docs/*_handoff.md
+docs/*_debt.md
+docs/reference/technical_debt.md
+docs/internal/
+
+# Scratch & temporary test scripts
+*.zsh
+/test.*
+
 
 # env file
 .env

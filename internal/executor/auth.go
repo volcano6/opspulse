@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
@@ -26,20 +27,7 @@ const secretResolveTimeout = 90 * time.Second
 
 // ExpandPath expands the tilde (~) prefix in a file path to the current user's home directory.
 func ExpandPath(path string) string {
-	if !strings.HasPrefix(path, "~") {
-		return path
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return path
-	}
-	if path == "~" {
-		return home
-	}
-	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
-		return filepath.Join(home, path[2:])
-	}
-	return path
+	return config.ExpandPath(path)
 }
 
 // BuildClientConfig constructs an ssh.ClientConfig from server configuration.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/secret"
 )
 
@@ -117,6 +118,8 @@ func UpdateSSHConfigFile(filePath string, servers []Server) (string, int, error)
 		if err != nil {
 			return "", 0, err
 		}
+	} else {
+		filePath = config.ExpandPath(filePath)
 	}
 
 	block := RenderSSHConfig(servers)
@@ -165,10 +168,8 @@ func UpdateSSHConfigFile(filePath string, servers []Server) (string, int, error)
 			}
 			_ = os.Remove(backupPath)
 		} else {
-			_ = os.Remove(filePath)
-			if retryErr := os.Rename(tempPath, filePath); retryErr != nil {
-				return "", 0, fmt.Errorf("replace ssh config %s: %w", filePath, retryErr)
-			}
+			// If moving to backupPath fails, do NOT remove filePath to prevent permanent data loss.
+			return "", 0, fmt.Errorf("backup existing ssh config %s before replacing: %w", filePath, renameBackupErr)
 		}
 	}
 	_ = os.Chmod(filePath, 0o600)

@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
@@ -68,6 +69,8 @@ Examples:
 			if pathErr != nil {
 				return pathErr
 			}
+		} else {
+			targetPath = config.ExpandPath(targetPath)
 		}
 
 		_, count, err := server.UpdateSSHConfigFile(targetPath, servers)

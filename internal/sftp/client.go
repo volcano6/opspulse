@@ -285,7 +285,17 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 		}
 
 		localTarget := filepath.Join(localDir, filepath.FromSlash(relPath))
+		cleanTarget := filepath.Clean(localTarget)
+		cleanBase := filepath.Clean(localDir)
+		if cleanTarget != cleanBase && !strings.HasPrefix(cleanTarget, cleanBase+string(os.PathSeparator)) {
+			return filesCount, totalBytes, fmt.Errorf("path traversal detected: remote path %q resolves outside local destination %q", currRemote, localDir)
+		}
+
 		stat := walker.Stat()
+		if stat.Mode()&os.ModeSymlink != 0 {
+			// Skip symlinks to prevent unexpected traversal or dangling links
+			continue
+		}
 
 		if stat.IsDir() {
 			if err := os.MkdirAll(localTarget, 0o750); err != nil {
