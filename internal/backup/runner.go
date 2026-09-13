@@ -97,7 +97,10 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	}
 
 	startTime := time.Now()
-	logFilePath, _ := executor.LogPathFor("backup-"+job.Name, startTime)
+	logFilePath, logErr := executor.LogPathFor("backup-"+job.Name, startTime)
+	if logErr != nil {
+		_, _ = fmt.Fprintf(consoleOut, "Warning: failed to initialize log file path: %v (running without log file)\n", logErr)
+	}
 
 	// 1. Record initial 'running' state in SQLite
 	runRecord := &storage.BackupRun{
@@ -117,8 +120,11 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	// 2. Set up logging (Console with prefix + Log File + In-Memory Buffer for JSON parsing)
 	var logFile *os.File
 	if logFilePath != "" {
-		logFile, _ = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if logFile != nil {
+		var openErr error
+		logFile, openErr = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if openErr != nil {
+			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to open log file %s: %v (running without log file)\n", logFilePath, openErr)
+		} else {
 			defer func() { _ = logFile.Close() }()
 			_, _ = fmt.Fprintf(logFile, "=== Backup Log for Job %q (Server: %s) at %s ===\n\n",
 				job.Name, job.Server, startTime.Format(time.RFC3339))
@@ -276,7 +282,10 @@ func (r *Runner) ListSnapshots(ctx context.Context, job Job) ([]Snapshot, error)
 		return nil, fmt.Errorf("failed to query snapshots: %w", err)
 	}
 	if !res.Success {
-		return nil, fmt.Errorf("snapshots command failed: %v", res.Error)
+		if res.Error != nil {
+			return nil, fmt.Errorf("snapshots command failed: %w", res.Error)
+		}
+		return nil, fmt.Errorf("snapshots command failed: command exited with code %d", res.ExitCode)
 	}
 
 	return ParseSnapshotsJSON(outputBuf.String())

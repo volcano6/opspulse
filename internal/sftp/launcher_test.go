@@ -185,3 +185,137 @@ func TestFindClient(t *testing.T) {
 		t.Errorf("expected guessed type ClientWinSCP, got %v", found.Type)
 	}
 }
+
+func TestMaterialized1PKeyManagement(t *testing.T) {
+	dir, err := Materialized1PKeyDir()
+	if err != nil {
+		t.Fatalf("Materialized1PKeyDir error: %v", err)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(dir), ".ssh/opspulse-1p") {
+		t.Errorf("expected path to end in .ssh/opspulse-1p, got: %s", dir)
+	}
+
+	// Create test directory and dummy keys
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+	dummyFile1 := filepath.Join(dir, "server-a")
+	dummyFile2 := filepath.Join(dir, "server-b")
+	_ = os.WriteFile(dummyFile1, []byte("fake-key-1"), 0o600)
+	_ = os.WriteFile(dummyFile2, []byte("fake-key-2"), 0o600)
+
+	keys, err := ListMaterialized1PKeys()
+	if err != nil {
+		t.Fatalf("ListMaterialized1PKeys error: %v", err)
+	}
+	if len(keys) < 2 {
+		t.Errorf("expected at least 2 keys, got %d (%v)", len(keys), keys)
+	}
+
+	// 1. Purge single server
+	deletedSingle, err := PurgeMaterialized1PKeys("server-a")
+	if err != nil {
+		t.Fatalf("PurgeMaterialized1PKeys(server-a) error: %v", err)
+	}
+	if len(deletedSingle) != 1 || deletedSingle[0] != "server-a" {
+		t.Errorf("expected [server-a] deleted, got %v", deletedSingle)
+	}
+
+	keysMid, err := ListMaterialized1PKeys()
+	if err != nil {
+		t.Fatalf("ListMaterialized1PKeys after single purge error: %v", err)
+	}
+	if len(keysMid) != 1 || keysMid[0] != "server-b" {
+		t.Errorf("expected only server-b remaining, got: %v", keysMid)
+	}
+
+	// 2. Purge nonexistent server
+	deletedNone, err := PurgeMaterialized1PKeys("nonexistent")
+	if err != nil {
+		t.Fatalf("PurgeMaterialized1PKeys(nonexistent) error: %v", err)
+	}
+	if len(deletedNone) != 0 {
+		t.Errorf("expected 0 deleted for nonexistent server, got %v", deletedNone)
+	}
+
+	// 3. Purge all remaining keys
+	deletedAll, err := PurgeMaterialized1PKeys("")
+	if err != nil {
+		t.Fatalf("PurgeMaterialized1PKeys(\"\") error: %v", err)
+	}
+	if len(deletedAll) != 1 || deletedAll[0] != "server-b" {
+		t.Errorf("expected [server-b] deleted in purge all, got: %v", deletedAll)
+	}
+
+	keysAfter, err := ListMaterialized1PKeys()
+	if err != nil {
+		t.Fatalf("ListMaterialized1PKeys after purge error: %v", err)
+	}
+	if len(keysAfter) != 0 {
+		t.Errorf("expected 0 keys after purge, got: %v", keysAfter)
+	}
+
+	// 4. Purge when already clean
+	deletedClean, err := PurgeMaterialized1PKeys("")
+	if err != nil {
+		t.Fatalf("PurgeMaterialized1PKeys on empty dir error: %v", err)
+	}
+	if len(deletedClean) != 0 {
+		t.Errorf("expected 0 deleted on clean dir, got %v", deletedClean)
+	}
+}
+
+func TestPurgeMaterialized1PKeys_PathTraversal(t *testing.T) {
+	dir, err := Materialized1PKeyDir()
+	if err != nil {
+		t.Fatalf("Materialized1PKeyDir error: %v", err)
+	}
+	parentDir := filepath.Dir(dir)
+	if err := os.MkdirAll(parentDir, 0o700); err != nil {
+		t.Fatalf("failed to create parent dir: %v", err)
+	}
+
+	// Create a canary file in the parent directory (~/.ssh)
+	canaryFile := filepath.Join(parentDir, "opspulse_test_canary_rsa")
+	canaryContent := []byte("DO_NOT_DELETE_CANARY")
+	if err := os.WriteFile(canaryFile, canaryContent, 0o600); err != nil {
+		t.Fatalf("failed to write canary file: %v", err)
+	}
+	defer func() { _ = os.Remove(canaryFile) }()
+
+	// Traversal attacks that should be firmly rejected
+	attackVectors := []string{
+		"..",
+		".",
+		"../opspulse_test_canary_rsa",
+		filepath.Join("..", "opspulse_test_canary_rsa"),
+		"../../etc/passwd",
+		"/etc/passwd",
+		"sub/key",
+		"sub\\key",
+		"C:\\Windows\\System32",
+		".hidden",
+		"-flag",
+	}
+
+	for _, attack := range attackVectors {
+		t.Run(attack, func(t *testing.T) {
+			deleted, err := PurgeMaterialized1PKeys(attack)
+			if err == nil {
+				t.Fatalf("expected error for attack vector %q, but got success with deleted=%v", attack, deleted)
+			}
+			if len(deleted) != 0 {
+				t.Errorf("expected no deleted files for attack vector %q, got: %v", attack, deleted)
+			}
+		})
+	}
+
+	// Verify canary file is still safe and intact
+	data, err := os.ReadFile(canaryFile)
+	if err != nil {
+		t.Fatalf("canary file was damaged or removed! error: %v", err)
+	}
+	if string(data) != string(canaryContent) {
+		t.Errorf("canary file content modified, got: %s", string(data))
+	}
+}

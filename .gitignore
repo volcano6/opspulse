@@ -57,7 +57,3 @@ docs/internal/
 # OS files
 .DS_Store
 Thumbs.db
-
-# Frontend (v0.5)
-frontend/node_modules/
-frontend/dist/

@@ -17,12 +17,111 @@ import (
 	"github.com/volcano6/opspulse/internal/server"
 )
 
-// materializeKeyOnDisk resolves a 1Password op:// reference into a real private
-// key file, because no SFTP client understands op:// references.
-//
-// The key is written to ~/.ssh/opspulse-1p/<server> with mode 0600 and kept
-// there rather than in a temp directory: GUI clients open asynchronously and may
-// read the file long after OpsPulse has exited.
+// Materialized1PKeyDir returns the directory where temporary private keys are stored
+// for GUI SFTP clients (~/.ssh/opspulse-1p).
+func Materialized1PKeyDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".ssh", "opspulse-1p"), nil
+}
+
+// ListMaterialized1PKeys returns server names of all materialized keys in ~/.ssh/opspulse-1p.
+func ListMaterialized1PKeys() ([]string, error) {
+	dir, err := Materialized1PKeyDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var keys []string
+	for _, entry := range entries {
+		if !entry.IsDir() && server.ValidateServerName(entry.Name()) == nil {
+			keys = append(keys, entry.Name())
+		}
+	}
+	return keys, nil
+}
+
+func materializedKeyPath(dir, serverName string) (string, error) {
+	if err := server.ValidateServerName(serverName); err != nil {
+		return "", fmt.Errorf("invalid server name %q: %w", serverName, err)
+	}
+	target := filepath.Join(dir, serverName)
+	rel, err := filepath.Rel(dir, target)
+	if err != nil || rel != serverName || strings.HasPrefix(rel, "..") || filepath.IsAbs(serverName) {
+		return "", fmt.Errorf("path traversal detected for %q", serverName)
+	}
+	return target, nil
+}
+
+// PurgeMaterialized1PKeys deletes temporary private keys from ~/.ssh/opspulse-1p.
+// If serverName is non-empty, only that server's key is removed.
+// If serverName is empty, all keys in the directory are removed.
+// Returns the list of deleted server key names and any encountered error.
+func PurgeMaterialized1PKeys(serverName string) ([]string, error) {
+	dir, err := Materialized1PKeyDir()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if serverName != "" {
+			if valErr := server.ValidateServerName(serverName); valErr != nil {
+				return nil, fmt.Errorf("invalid server name %q: %w", serverName, valErr)
+			}
+		}
+		return nil, nil
+	}
+
+	var deleted []string
+	if serverName != "" {
+		target, err := materializedKeyPath(dir, serverName)
+		if err != nil {
+			return nil, err
+		}
+		if fi, err := os.Lstat(target); err == nil {
+			if fi.IsDir() {
+				return nil, fmt.Errorf("refusing to remove directory %s as server key", target)
+			}
+			if removeErr := os.Remove(target); removeErr != nil {
+				return nil, fmt.Errorf("remove key file for %s: %w", serverName, removeErr)
+			}
+			deleted = append(deleted, serverName)
+		}
+	} else {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			return nil, readErr
+		}
+		for _, entry := range entries {
+			target := filepath.Join(dir, entry.Name())
+			if entry.IsDir() {
+				if removeErr := os.RemoveAll(target); removeErr != nil {
+					return deleted, fmt.Errorf("remove directory %s: %w", target, removeErr)
+				}
+			} else {
+				if removeErr := os.Remove(target); removeErr != nil {
+					return deleted, fmt.Errorf("remove key file %s: %w", target, removeErr)
+				}
+				deleted = append(deleted, entry.Name())
+			}
+		}
+	}
+
+	// Clean up parent directory if empty
+	if remaining, err := os.ReadDir(dir); err == nil && len(remaining) == 0 {
+		_ = os.Remove(dir)
+	}
+
+	return deleted, nil
+}
+
 func materializeKeyOnDisk(serverName, ref string) (string, error) {
 	key, err := secret.NewResolver().ResolveSSHKey(context.Background(), ref)
 	if err != nil {
@@ -32,15 +131,17 @@ func materializeKeyOnDisk(serverName, ref string) (string, error) {
 		key += "\n"
 	}
 
-	home, err := os.UserHomeDir()
+	dir, err := Materialized1PKeyDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		return "", err
 	}
-	dir := filepath.Join(home, ".ssh", "opspulse-1p")
+	target, err := materializedKeyPath(dir, serverName)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create %s: %w", dir, err)
 	}
-	target := filepath.Join(dir, serverName)
 	if err := os.WriteFile(target, []byte(key), 0o600); err != nil {
 		return "", fmt.Errorf("write resolved key to %s: %w", target, err)
 	}

@@ -227,10 +227,14 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server remove <name>` | 从清单中删除指定服务器 |
 | `ops 1p push <server>... [--all] [--vault <vault>] [--delete-local]` | 把本地私钥推送到 1Password，并把服务器改绑为 `op://` 引用（保险库只有一个时自动选中） |
 | `ops 1p pull <server>` | 把 1Password 中的私钥取回本地 `~/.ssh/` 并重新绑定 |
-| `ops 1p status [--filter <key=val>]` | 查看每台服务器的私钥当前存放在哪里 |
+| `ops 1p status [--filter <key=val>]` | 查看每台服务器的私钥当前存放在哪里（含本地材质化临时副本告警） |
 | `ops 1p config [--vault <v>] [--account <a>] [--unset]` | 查看/记住默认保险库与账号，之后 `push` 无需重复传参 |
+| `ops 1p cleanup` | 彻底清理本地 `~/.ssh/opspulse-1p` 遗留的材质化 1Password 私钥临时副本 |
 | `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
-| `ops sftp [server] [--app <app>] [--path <path>] [--cli]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
+| `ops sftp [server] [--app <app>] [--path <path>] [--cli] [--cleanup]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
+| `ops ps <server> [-a]` | 快速列出远端主机上的 Docker 容器看板 |
+| `ops logs <server> <container> [-f] [--tail <n>]` | 实时流式追踪远端 Docker 容器运行日志 |
+| `ops doctor` | 一键体检本地运行环境与外部依赖可用性（SSH/restic/1Password/SFTP 等） |
 | `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
 | `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传） |
 | `ops template list` | 列出所有内置及自定义脚本模板 |

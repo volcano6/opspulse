@@ -119,7 +119,10 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	}
 
 	startTime := time.Now()
-	logFilePath, _ := executor.LogPathFor("restore-"+job.Name, startTime)
+	logFilePath, logErr := executor.LogPathFor("restore-"+job.Name, startTime)
+	if logErr != nil {
+		_, _ = fmt.Fprintf(consoleOut, "Warning: failed to initialize log file path: %v (running without log file)\n", logErr)
+	}
 
 	// 6. Record initial 'running' state in SQLite
 	runRecord := &storage.RestoreRun{
@@ -145,8 +148,11 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	// 7. Set up logging
 	var logFile *os.File
 	if logFilePath != "" {
-		logFile, _ = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if logFile != nil {
+		var openErr error
+		logFile, openErr = os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if openErr != nil {
+			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to open log file %s: %v (running without log file)\n", logFilePath, openErr)
+		} else {
 			defer func() { _ = logFile.Close() }()
 			_, _ = fmt.Fprintf(logFile, "=== Restore Log for Job %q (Snapshot: %s, Target: %s) at %s ===\n\n",
 				job.Name, snapshotID, targetServerName, startTime.Format(time.RFC3339))
@@ -431,8 +437,14 @@ $COMPOSE -f %s up -d
 					return fmt.Errorf("failed to build import script: %w", impErr)
 				}
 				impRes, impExecErr := execToUse.Execute(ctx, target, "import-db-"+job.Name, importScript, consoleOut)
-				if impExecErr != nil || (impRes != nil && !impRes.Success) {
-					return fmt.Errorf("database import failed for container %q: %v", targetContainer, impExecErr)
+				if impExecErr != nil {
+					return fmt.Errorf("database import failed for container %q: %w", targetContainer, impExecErr)
+				}
+				if impRes != nil && !impRes.Success {
+					if impRes.Error != nil {
+						return fmt.Errorf("database import failed for container %q: %w", targetContainer, impRes.Error)
+					}
+					return fmt.Errorf("database import failed for container %q: command exited with code %d", targetContainer, impRes.ExitCode)
 				}
 			}
 
@@ -473,8 +485,14 @@ $COMPOSE -f %s up -d
 
 	script := docker.BuildAutoStartScript(autoOpts)
 	startRes, startErr := execToUse.Execute(ctx, target, "autostart-"+job.Name, script, consoleOut)
-	if startErr != nil || (startRes != nil && !startRes.Success) {
-		return fmt.Errorf("container auto-start failed: %v", startErr)
+	if startErr != nil {
+		return fmt.Errorf("container auto-start failed: %w", startErr)
+	}
+	if startRes != nil && !startRes.Success {
+		if startRes.Error != nil {
+			return fmt.Errorf("container auto-start failed: %w", startRes.Error)
+		}
+		return fmt.Errorf("container auto-start failed: command exited with code %d", startRes.ExitCode)
 	}
 	_, _ = fmt.Fprintf(consoleOut, "🚀 Container services are up and running on %s!\n", target.Name)
 	return nil
