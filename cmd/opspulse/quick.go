@@ -71,7 +71,7 @@ Examples:
 		res, err := exec.Execute(ctx, target, "docker-ps", script, &buf)
 		if err != nil {
 			if strings.Contains(buf.String(), "ERR_DOCKER_NOT_FOUND") {
-				return fmt.Errorf("Docker is not installed or not in PATH on server %q", serverName)
+				return fmt.Errorf("docker is not installed or not in PATH on server %q", serverName)
 			}
 			return fmt.Errorf("failed to list containers on %s: %w", serverName, err)
 		}

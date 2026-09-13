@@ -63,7 +63,7 @@ func WindowsUserHome() (string, error) {
 	}
 	winPath := strings.TrimSpace(string(out))
 	if winPath == "" || strings.Contains(winPath, "%USERPROFILE%") {
-		return "", fmt.Errorf("Windows USERPROFILE is empty")
+		return "", fmt.Errorf("windows USERPROFILE is empty")
 	}
 	return ToWSLPath(winPath), nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -32,6 +33,7 @@ var (
 	restoreRunDryRun       bool
 	restoreRunNoStart      bool
 	restoreRunAs           string
+	restoreRunYes          bool
 )
 
 var restoreRunCmd = &cobra.Command{
@@ -85,6 +87,14 @@ Examples:
 			DryRun:       restoreRunDryRun,
 			NoStart:      restoreRunNoStart,
 			AliasName:    restoreRunAs,
+		}
+
+		targetHost := job.Server
+		if restoreRunTargetServer != "" {
+			targetHost = restoreRunTargetServer
+		}
+		if err := checkRestoreConfirmation(os.Stdin, os.Stdout, jobName, targetHost, restoreRunTargetPath, restoreRunDryRun, restoreRunYes); err != nil {
+			return err
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -172,6 +182,7 @@ func init() {
 	restoreRunCmd.Flags().BoolVar(&restoreRunDryRun, "dry-run", false, "Preview files without actually restoring")
 	restoreRunCmd.Flags().BoolVar(&restoreRunNoStart, "no-start", false, "Do not automatically start containers or import database after restore")
 	restoreRunCmd.Flags().StringVar(&restoreRunAs, "as", "", "Rename container/service project name on target server")
+	restoreRunCmd.Flags().BoolVarP(&restoreRunYes, "yes", "y", false, "Confirm restore execution without interactive confirmation prompt")
 
 	restoreHistoryCmd.Flags().IntVarP(&restoreHistoryLimit, "limit", "n", 20, "Maximum number of history records to show")
 
@@ -209,4 +220,19 @@ func completeRestoreAssetIDs(_ *cobra.Command, _ []string, _ string) ([]string, 
 		comps = append(comps, fmt.Sprintf("%s\t%s @ %s", a.ID, a.Type, a.Source))
 	}
 	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+func checkRestoreConfirmation(in io.Reader, out io.Writer, jobName, targetServer, targetPath string, dryRun, yes bool) error {
+	if dryRun || yes {
+		return nil
+	}
+	targetDir := targetPath
+	if targetDir == "" {
+		targetDir = "original backup paths"
+	}
+	prompt := fmt.Sprintf("⚠️  Warning: Restoring job %q to %s (%s) may overwrite existing files.\nAre you sure you want to proceed? [y/N]: ", jobName, targetServer, targetDir)
+	if !promptConfirm(in, out, prompt, false) {
+		return fmt.Errorf("restore cancelled by user")
+	}
+	return nil
 }

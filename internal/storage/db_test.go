@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -192,3 +193,52 @@ func TestBackupRepo_Concurrency(t *testing.T) {
 		t.Errorf("expected %d runs, got %d", expectedTotal, len(runs))
 	}
 }
+
+func TestBackupRepo_TimestampsInUTC(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := Open(filepath.Join(tmpDir, "test_utc.db"))
+	if err != nil {
+		t.Fatalf("Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	repo := NewBackupRepo(db)
+	ctx := context.Background()
+
+	// Use a non-UTC time with timezone offset (+8h)
+	loc := time.FixedZone("CST", 8*3600)
+	localTime := time.Date(2026, 9, 13, 15, 30, 0, 0, loc)
+	finishedLocal := localTime.Add(10 * time.Minute)
+
+	run := &BackupRun{
+		JobName:    "utc-job",
+		ServerName: "vps-utc",
+		Status:     "success",
+		StartedAt:  localTime,
+		FinishedAt: &finishedLocal,
+	}
+
+	id, err := repo.CreateRun(ctx, run)
+	if err != nil {
+		t.Fatalf("CreateRun() error: %v", err)
+	}
+
+	if err := repo.UpdateRun(ctx, run); err != nil {
+		t.Fatalf("UpdateRun() error: %v", err)
+	}
+
+	// Query raw string from DB to verify it was stored in UTC (ending with Z)
+	var rawStartedAt, rawFinishedAt string
+	err = db.Conn().QueryRowContext(ctx, "SELECT started_at, finished_at FROM backup_runs WHERE id = ?", id).Scan(&rawStartedAt, &rawFinishedAt)
+	if err != nil {
+		t.Fatalf("QueryRowContext error: %v", err)
+	}
+
+	if !strings.HasSuffix(rawStartedAt, "Z") {
+		t.Errorf("raw started_at should be formatted in UTC (ending in Z), got %q", rawStartedAt)
+	}
+	if !strings.HasSuffix(rawFinishedAt, "Z") {
+		t.Errorf("raw finished_at should be formatted in UTC (ending in Z), got %q", rawFinishedAt)
+	}
+}
+

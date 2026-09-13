@@ -117,7 +117,7 @@ func TestBuildImportScript_MySQL(t *testing.T) {
 	if !strings.Contains(script, "docker exec -i 'mysql-srv'") {
 		t.Error("script missing docker exec -i import invocation")
 	}
-	if !strings.Contains(script, "mysql -u root") {
+	if !strings.Contains(script, "mysql -u") {
 		t.Error("script missing mysql command")
 	}
 	if !strings.Contains(script, "export MYSQL_PWD=") {

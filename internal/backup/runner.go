@@ -263,6 +263,12 @@ func (r *Runner) ListSnapshots(ctx context.Context, job Job) ([]Snapshot, error)
 	execToUse := r.executor
 	if target.IsLocal {
 		execToUse = r.localExecutor
+	} else if sshExec, ok := r.executor.(*executor.SSHExecutor); ok {
+		scopedExec := *sshExec
+		if scopedExec.WarnWriter == nil {
+			scopedExec.WarnWriter = os.Stderr
+		}
+		execToUse = &scopedExec
 	}
 
 	res, err := execToUse.Execute(ctx, target, "snapshots-"+job.Name, script, &outputBuf)

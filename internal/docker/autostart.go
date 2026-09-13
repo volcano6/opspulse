@@ -27,8 +27,8 @@ if docker compose version >/dev/null 2>&1; then
 elif command -v docker-compose >/dev/null 2>&1; then
   COMPOSE="docker-compose"
 else
-  echo "Warning: Neither 'docker compose' nor 'docker-compose' found on target system. Skipping container startup." >&2
-  exit 0
+  echo "Error: Neither 'docker compose' nor 'docker-compose' found on target system. Cannot start container services." >&2
+  exit 127
 fi
 
 echo "Using Compose engine: $COMPOSE"
@@ -60,8 +60,17 @@ fi
 		importScript, err := BuildImportScript(opts.DatabaseEngine, opts.DatabaseContainer, opts.DatabaseDump)
 		if err == nil && importScript != "" {
 			sb.WriteString("\n# 3. Database auto-import hook\n")
-			// Strip the shebang from the sub-script
-			cleanScript := strings.TrimPrefix(importScript, "#!/usr/bin/env bash\nset -euo pipefail\n\n")
+			// Strip the shebang and set directive line by line to avoid rigid formatting coupling
+			lines := strings.Split(importScript, "\n")
+			var bodyLines []string
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "#!") || strings.HasPrefix(trimmed, "set -") {
+					continue
+				}
+				bodyLines = append(bodyLines, line)
+			}
+			cleanScript := strings.TrimLeft(strings.Join(bodyLines, "\n"), "\n")
 			sb.WriteString(cleanScript)
 		}
 	}
