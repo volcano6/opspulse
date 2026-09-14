@@ -48,7 +48,7 @@ type webhookPayload struct {
 	Content         string    `json:"content"`
 }
 
-// Send serializes the event into JSON and performs an HTTP POST request to the webhook URL.
+// Send serializes the event into JSON and performs an HTTP POST request to the webhook URL with retries.
 func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 	summaryText := formatSummaryText(event)
 
@@ -70,30 +70,63 @@ func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 		return fmt.Errorf("failed to marshal webhook payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.channel.URL, bytes.NewReader(bodyData))
-	if err != nil {
-		return fmt.Errorf("failed to create webhook request for %q: %w", w.channel.Name, err)
-	}
+	const maxAttempts = 3
+	backoffs := []time.Duration{100 * time.Millisecond, 300 * time.Millisecond}
 
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("User-Agent", "OpsPulse-Notifier/1.0")
-
-	resp, err := w.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("webhook delivery to %q (%s) failed: %w", w.channel.Name, w.channel.URL, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		trimmed := strings.TrimSpace(string(bodySnippet))
-		if trimmed == "" {
-			trimmed = "(empty response)"
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		return fmt.Errorf("webhook %q returned non-2xx status %d: %s", w.channel.Name, resp.StatusCode, trimmed)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.channel.URL, bytes.NewReader(bodyData))
+		if err != nil {
+			return fmt.Errorf("failed to create webhook request for %q: %w", w.channel.Name, err)
+		}
+
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		req.Header.Set("User-Agent", "OpsPulse-Notifier/1.0")
+
+		resp, err := w.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("webhook delivery to %q (%s) failed: %w", w.channel.Name, w.channel.URL, err)
+		} else {
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				_ = resp.Body.Close()
+				return nil
+			}
+
+			bodySnippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			_ = resp.Body.Close()
+			trimmed := strings.TrimSpace(string(bodySnippet))
+			if trimmed == "" {
+				trimmed = "(empty response)"
+			}
+			lastErr = fmt.Errorf("webhook %q returned non-2xx status %d: %s", w.channel.Name, resp.StatusCode, trimmed)
+
+			// Client errors (4xx) should not be retried
+			if resp.StatusCode < 500 {
+				return lastErr
+			}
+		}
+
+		if attempt == maxAttempts-1 {
+			break
+		}
+
+		delay := 300 * time.Millisecond
+		if attempt < len(backoffs) {
+			delay = backoffs[attempt]
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 
-	return nil
+	return lastErr
 }
 
 func formatSummaryText(event Event) string {

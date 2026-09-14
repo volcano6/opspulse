@@ -302,6 +302,75 @@ func TestWebhookNotifier_Send_ErrorStatus(t *testing.T) {
 	}
 }
 
+func TestWebhookNotifier_Send_RetryOn500(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		att := atomic.AddInt32(&attempts, 1)
+		if att == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`internal server error`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer server.Close()
+
+	ch := Channel{
+		Name: "retry-webhook",
+		Type: "webhook",
+		URL:  server.URL,
+	}
+
+	notifier := NewWebhookNotifier(ch, server.Client())
+	event := Event{
+		JobName:   "blog-backup",
+		Status:    "success",
+		Server:    "vps-01",
+		Timestamp: time.Now(),
+	}
+
+	err := notifier.Send(context.Background(), event)
+	if err != nil {
+		t.Fatalf("expected successful send after retry, got: %v", err)
+	}
+	if atomic.LoadInt32(&attempts) != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestWebhookNotifier_Send_NoRetryOn400(t *testing.T) {
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`bad request`))
+	}))
+	defer server.Close()
+
+	ch := Channel{
+		Name: "no-retry-webhook",
+		Type: "webhook",
+		URL:  server.URL,
+	}
+
+	notifier := NewWebhookNotifier(ch, server.Client())
+	event := Event{
+		JobName:   "blog-backup",
+		Status:    "failed",
+		Server:    "vps-01",
+		Timestamp: time.Now(),
+	}
+
+	err := notifier.Send(context.Background(), event)
+	if err == nil {
+		t.Fatal("expected error on 400, got nil")
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Errorf("expected exactly 1 attempt for 400 (no retry), got %d", attempts)
+	}
+}
+
 func TestDispatcher_Filtering(t *testing.T) {
 	var (
 		failureCount int32

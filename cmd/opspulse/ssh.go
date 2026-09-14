@@ -8,10 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -69,7 +71,7 @@ If no server name is provided, an interactive menu allows selecting a server to 
 		}
 		defer cleanupKeys()
 
-		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, jumpKeyPath)
+		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, jumpKeyPath, store)
 
 		if srv.JumpHost != "" {
 			fmt.Printf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
@@ -159,14 +161,14 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 	}
 
 	// Try matching server name or prefix
-	for _, s := range servers {
-		if strings.EqualFold(s.Name, choice) {
-			return &s, nil
+	for i := range servers {
+		if strings.EqualFold(servers[i].Name, choice) {
+			return &servers[i], nil
 		}
 	}
-	for _, s := range servers {
-		if strings.HasPrefix(strings.ToLower(s.Name), strings.ToLower(choice)) {
-			return &s, nil
+	for i := range servers {
+		if strings.HasPrefix(strings.ToLower(servers[i].Name), strings.ToLower(choice)) {
+			return &servers[i], nil
 		}
 	}
 
@@ -176,13 +178,19 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 // buildSSHArgs builds the argv for the system ssh client. jumpKeyPath, when
 // non-empty, overrides the jump host's identity file; it is how a 1Password
 // op:// key of the jump host gets injected after being materialised on disk.
-func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string) []string {
+func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string, store *server.Store) []string {
 	args := []string{binary}
 
 	// Jump Host handling
 	if srv.JumpHost != "" {
-		store := server.NewDefaultStore()
-		jumpSrv, err := store.Get(srv.JumpHost)
+		var jumpSrv *server.Server
+		var err error
+		if store != nil {
+			jumpSrv, err = store.Get(srv.JumpHost)
+		} else {
+			jumpStore := server.NewDefaultStore()
+			jumpSrv, err = jumpStore.Get(srv.JumpHost)
+		}
 
 		var proxyParts []string
 		proxyParts = append(proxyParts,
@@ -442,8 +450,32 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 	if err != nil {
 		return fmt.Errorf("create SSH password directory: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(passwordDir) }()
 	passwordPath := filepath.Join(passwordDir, "password")
+
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			if fi, err := os.Stat(passwordPath); err == nil {
+				// Securely overwrite password bytes with zeros before unlinking
+				zeroes := make([]byte, fi.Size())
+				_ = os.WriteFile(passwordPath, zeroes, 0o600)
+			}
+			_ = os.RemoveAll(passwordDir)
+		})
+	}
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer func() {
+		signal.Stop(sigChan)
+		cleanup()
+	}()
+
+	go func() {
+		if _, ok := <-sigChan; ok {
+			cleanup()
+		}
+	}()
 
 	cfg := askpassConfig{
 		DefaultPass: srv.Password,

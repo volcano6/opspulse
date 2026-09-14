@@ -656,10 +656,14 @@ func runOnePasswordStatus() error {
 	if cli := secret.Detect(); !cli.Available() {
 		fmt.Println("⚠️  1Password CLI was not found on this host, so op:// references cannot be resolved right now.")
 	}
-	if keys, err := sftp.ListMaterialized1PKeys(); err == nil && len(keys) > 0 {
-		fmt.Printf("\n⚠️  Found %d materialized 1Password key(s) in ~/.ssh/opspulse-1p (created for GUI SFTP clients):\n", len(keys))
-		for _, k := range keys {
-			fmt.Printf("   - %s\n", k)
+	if details, err := sftp.ListMaterialized1PKeyDetails(); err == nil && len(details) > 0 {
+		fmt.Printf("\n⚠️  Found %d materialized 1Password key(s) in ~/.ssh/opspulse-1p (created for GUI SFTP clients):\n", len(details))
+		for _, d := range details {
+			if d.IsStale {
+				fmt.Printf("   - %s (stale: >24h old, please run ops 1p cleanup)\n", d.Name)
+			} else {
+				fmt.Printf("   - %s\n", d.Name)
+			}
 		}
 		fmt.Println("   Run 'ops 1p cleanup' to purge them from local disk.")
 	}

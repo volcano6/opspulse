@@ -14,6 +14,11 @@ func JobTag(jobName string) string {
 	return "job:" + jobName
 }
 
+// HostTag returns the canonical restic tag for isolating snapshots by server host.
+func HostTag(serverName string) string {
+	return "host:" + serverName
+}
+
 // BuildBackupScript generates a self-contained shell script that checks, initializes,
 // executes a restic backup, and optionally prunes old snapshots according to the retention policy.
 func BuildBackupScript(job Job) (string, error) {
@@ -50,8 +55,12 @@ fi
 	for _, tag := range job.Tags {
 		sb.WriteString(" --tag " + shellquote.Quote(tag))
 	}
-	// Add job name tag by default for strict snapshot isolation
+	// Add job name tag and server host tag for strict snapshot isolation
 	sb.WriteString(" --tag " + shellquote.Quote(JobTag(job.Name)))
+	if strings.TrimSpace(job.Server) != "" {
+		sb.WriteString(" --tag " + shellquote.Quote(HostTag(job.Server)))
+		sb.WriteString(" --host " + shellquote.Quote(job.Server))
+	}
 
 	for _, excl := range job.Excludes {
 		sb.WriteString(" --exclude " + shellquote.Quote(excl))
@@ -67,9 +76,14 @@ fi
 		ret := job.Retention
 		var forgetArgs []string
 
-		// Isolate retention strictly to this job's snapshots
+		// Isolate retention strictly to this job's and host's snapshots
 		forgetArgs = append(forgetArgs, "--tag "+shellquote.Quote(JobTag(job.Name)))
+		if strings.TrimSpace(job.Server) != "" {
+			forgetArgs = append(forgetArgs, "--tag "+shellquote.Quote(HostTag(job.Server)))
+			forgetArgs = append(forgetArgs, "--host "+shellquote.Quote(job.Server))
+		}
 
+		hasKeepRule := ret.KeepLast > 0 || ret.KeepDaily > 0 || ret.KeepWeekly > 0 || ret.KeepMonthly > 0 || ret.KeepYearly > 0 || len(ret.KeepTags) > 0
 		if ret.KeepLast > 0 {
 			forgetArgs = append(forgetArgs, fmt.Sprintf("--keep-last %d", ret.KeepLast))
 		}
@@ -89,7 +103,7 @@ fi
 			forgetArgs = append(forgetArgs, "--keep-tag "+shellquote.Quote(tag))
 		}
 
-		if len(forgetArgs) > 1 {
+		if hasKeepRule {
 			sb.WriteString("echo \"Applying retention policy (restic forget --prune)...\"\n")
 			sb.WriteString("restic forget --retry-lock 5m --prune " + strings.Join(forgetArgs, " ") + "\n")
 		}
@@ -99,7 +113,7 @@ fi
 }
 
 // BuildSnapshotsScript generates a shell script to list all snapshots in JSON format,
-// filtered strictly to the current job's tag for shared repository isolation.
+// filtered strictly to the current job's tag and host for shared repository isolation.
 func BuildSnapshotsScript(job Job) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -107,7 +121,11 @@ func BuildSnapshotsScript(job Job) string {
 
 	writeEnvBlock(&sb, job)
 
-	sb.WriteString("restic snapshots --retry-lock 30s --json --tag " + shellquote.Quote(JobTag(job.Name)) + "\n")
+	cmd := "restic snapshots --retry-lock 30s --json --tag " + shellquote.Quote(JobTag(job.Name))
+	if strings.TrimSpace(job.Server) != "" {
+		cmd += " --tag " + shellquote.Quote(HostTag(job.Server)) + " --host " + shellquote.Quote(job.Server)
+	}
+	sb.WriteString(cmd + "\n")
 	return sb.String()
 }
 
@@ -128,13 +146,18 @@ fi
 `)
 	sb.WriteString("\n")
 
+	hostIsolationFlags := ""
+	if strings.TrimSpace(job.Server) != "" {
+		hostIsolationFlags = " --tag " + shellquote.Quote(JobTag(job.Name)) + " --tag " + shellquote.Quote(HostTag(job.Server)) + " --host " + shellquote.Quote(job.Server)
+	}
+
 	if len(job.Remap) > 0 {
 		// Use staging directory for remapping
 		sb.WriteString("echo \"Starting restic restore with path remapping (snapshot: \" " + shellquote.Quote(snapshotID) + " \")...\"\n")
 		sb.WriteString("STAGING=$(mktemp -d -t opspulse-restore-XXXXXX)\n")
 		sb.WriteString("trap 'rm -rf \"$STAGING\"' EXIT\n\n")
 		
-		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target \"$STAGING\"")
+		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target \"$STAGING\"")
 		for _, pattern := range includePatterns {
 			sb.WriteString(" --include " + shellquote.Quote(pattern))
 		}
@@ -182,7 +205,7 @@ fi
 	} else {
 		// Standard restore
 		sb.WriteString("echo \"Starting restic restore (snapshot: \" " + shellquote.Quote(snapshotID) + " \", target: \" " + shellquote.Quote(targetPath) + " \")...\"\n")
-		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + " --target " + shellquote.Quote(targetPath))
+		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target " + shellquote.Quote(targetPath))
 
 		for _, pattern := range includePatterns {
 			sb.WriteString(" --include " + shellquote.Quote(pattern))

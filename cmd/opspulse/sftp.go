@@ -114,6 +114,13 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 				fmt.Printf("   💡 Note: 1Password key temporarily materialized at ~/.ssh/opspulse-1p/%s for GUI client.\n", targetServer.Name)
 				fmt.Println("      Run 'ops 1p cleanup' or 'ops sftp --cleanup' to purge from disk when done.")
 			}
+			if details, err := sftp.ListMaterialized1PKeyDetails(); err == nil {
+				for _, d := range details {
+					if d.IsStale && d.Name != targetServer.Name {
+						fmt.Printf("   ⚠️  Stale key on disk: %s (>24h old, please run 'ops 1p cleanup')\n", d.Name)
+					}
+				}
+			}
 			return nil
 		}
 

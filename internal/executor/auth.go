@@ -203,7 +203,7 @@ func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Write
 
 		// Security audit log: route notice through the injected writer (thread-safe and logfile-aware)
 		fingerprint := ssh.FingerprintSHA256(key)
-		msg := fmt.Sprintf("Warning: Permanently added '%s' (%s, %s) to the list of known hosts (%s).\n",
+		msg := fmt.Sprintf("Warning: Permanently added '%s' (%s, %s) to the list of known hosts (%s).\nHint: Remember to unset OPSPULSE_TRUST_NEW_HOST_KEY once initial host enrollment is complete to enforce strict verification.\n",
 			hostname, key.Type(), fingerprint, knownHostsPath)
 		if warnWriter != nil {
 			_, _ = fmt.Fprint(warnWriter, msg)

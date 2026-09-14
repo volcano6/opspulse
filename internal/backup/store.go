@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
+	"github.com/volcano6/opspulse/internal/filelock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -81,6 +82,12 @@ func (s *Store) Save(job Job) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
+
 	cfg, err := s.readConfig()
 	if err != nil {
 		return err
@@ -106,6 +113,12 @@ func (s *Store) Save(job Job) error {
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
 
 	cfg, err := s.readConfig()
 	if err != nil {
