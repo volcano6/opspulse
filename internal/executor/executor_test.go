@@ -139,10 +139,18 @@ func TestRemoteShellCommandPreservesScriptExitStatus(t *testing.T) {
 }
 
 func TestRemoteShellCommandStreamsLargeScript(t *testing.T) {
-	script := strings.Repeat("#", 64*1024+1)
+	// 48KB exactly should still be embedded in remote command
+	smallScript := strings.Repeat("#", 48*1024)
+	_, smallStdin := remoteShellCommand(smallScript)
+	if smallStdin != nil {
+		t.Fatal("48KB script should be embedded inline, not streamed")
+	}
+
+	// 48KB + 1 byte must be streamed via stdin
+	script := strings.Repeat("#", 48*1024+1)
 	command, stdin := remoteShellCommand(script)
 	if stdin == nil {
-		t.Fatal("large script must be streamed to the remote shell")
+		t.Fatal("large script (>48KB) must be streamed to the remote shell")
 	}
 	if strings.Contains(command, "bash -s || sh -s") {
 		t.Fatalf("remote shell fallback can mask script failures: %q", command)

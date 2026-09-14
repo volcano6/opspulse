@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -114,7 +115,7 @@ func TestBuildSSHArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, "")
+			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, "", testStore)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildSSHArgs() =\n%v\nwant:\n%v", got, tt.want)
 			}
@@ -361,5 +362,32 @@ func TestTitleFilterWriter(t *testing.T) {
 				t.Errorf("got %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestSelectServerInteractively_PointerIntegrity(t *testing.T) {
+	servers := []server.Server{
+		{Name: "server-a", Host: "1.1.1.1"},
+		{Name: "server-b", Host: "2.2.2.2"},
+	}
+
+	// Match server-a by exact name
+	inA := strings.NewReader("server-a\n")
+	resA, err := selectServerInteractively(inA, io.Discard, servers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resA != &servers[0] {
+		t.Errorf("expected pointer to servers[0], got %p vs %p", resA, &servers[0])
+	}
+
+	// Match server-b by prefix
+	inB := strings.NewReader("server-b\n")
+	resB, err := selectServerInteractively(inB, io.Discard, servers)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resB != &servers[1] {
+		t.Errorf("expected pointer to servers[1], got %p vs %p", resB, &servers[1])
 	}
 }

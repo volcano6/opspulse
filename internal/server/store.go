@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
+	"github.com/volcano6/opspulse/internal/filelock"
 	"gopkg.in/yaml.v3"
 )
 
@@ -74,6 +75,12 @@ func (s *Store) Save(srv Server) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
+
 	cf, err := s.read()
 	if err != nil {
 		return err
@@ -102,6 +109,12 @@ func (s *Store) Save(srv Server) error {
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
 
 	cf, err := s.read()
 	if err != nil {
@@ -159,6 +172,13 @@ func (s *Store) Replace(data []byte) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
+
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)

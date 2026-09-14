@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/term"
 )
@@ -482,6 +483,12 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	_, _ = fmt.Fprintf(os.Stdout, "✅ Server %q (%s) saved successfully to %s\n", srv.Name, srv.Address(), store.FilePath())
+
+	if srv.Password != "" && !secret.Is1PRef(srv.Password) {
+		_, _ = fmt.Fprintf(os.Stdout, "\n⚠️  [Security Warning] Plaintext password is stored in %s.\n", store.FilePath())
+		_, _ = fmt.Fprintf(os.Stdout, "   Consider using SSH key pairs or migrating to 1Password:\n")
+		_, _ = fmt.Fprintf(os.Stdout, "   Run: ops 1p push %s\n", srv.Name)
+	}
 	return nil
 }
 

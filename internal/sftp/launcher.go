@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
@@ -27,8 +28,15 @@ func Materialized1PKeyDir() (string, error) {
 	return filepath.Join(home, ".ssh", "opspulse-1p"), nil
 }
 
-// ListMaterialized1PKeys returns server names of all materialized keys in ~/.ssh/opspulse-1p.
-func ListMaterialized1PKeys() ([]string, error) {
+// MaterializedKeyInfo describes a temporary private key file in ~/.ssh/opspulse-1p.
+type MaterializedKeyInfo struct {
+	Name    string
+	ModTime time.Time
+	IsStale bool // True if older than 24 hours
+}
+
+// ListMaterialized1PKeyDetails returns detailed metadata for all materialized keys in ~/.ssh/opspulse-1p.
+func ListMaterialized1PKeyDetails() ([]MaterializedKeyInfo, error) {
 	dir, err := Materialized1PKeyDir()
 	if err != nil {
 		return nil, err
@@ -40,11 +48,34 @@ func ListMaterialized1PKeys() ([]string, error) {
 		}
 		return nil, err
 	}
-	var keys []string
+	var details []MaterializedKeyInfo
+	now := time.Now()
 	for _, entry := range entries {
 		if !entry.IsDir() && server.ValidateServerName(entry.Name()) == nil {
-			keys = append(keys, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			stale := now.Sub(info.ModTime()) > 24*time.Hour
+			details = append(details, MaterializedKeyInfo{
+				Name:    entry.Name(),
+				ModTime: info.ModTime(),
+				IsStale: stale,
+			})
 		}
+	}
+	return details, nil
+}
+
+// ListMaterialized1PKeys returns server names of all materialized keys in ~/.ssh/opspulse-1p.
+func ListMaterialized1PKeys() ([]string, error) {
+	details, err := ListMaterialized1PKeyDetails()
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(details))
+	for _, d := range details {
+		keys = append(keys, d.Name)
 	}
 	return keys, nil
 }

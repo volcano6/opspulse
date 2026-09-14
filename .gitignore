@@ -41,6 +41,7 @@ docs/internal/
 # Scratch & temporary test scripts
 *.zsh
 /test.*
+*.lock
 
 
 # env file

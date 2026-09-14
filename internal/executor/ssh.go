@@ -300,7 +300,9 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 func remoteShellCommand(scriptContent string) (string, io.Reader) {
 	// Select one available shell before execution and automatically elevate
 	// with passwordless sudo if the remote session user is non-root.
-	if len(scriptContent) <= 64*1024 {
+	// For scripts <= 48KB (base64 ~64KB), inline command to avoid pipe overhead;
+	// larger scripts stream through session.Stdin to avoid shell arg limits.
+	if len(scriptContent) <= 48*1024 {
 		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
 		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then runner=\"sudo -E $shell\"; else runner=\"$shell\"; fi; printf '%%s' %s | base64 -d | $runner", shellquote.Quote(encoded)), nil
 	}

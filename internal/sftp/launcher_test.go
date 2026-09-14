@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/server"
 )
@@ -203,6 +204,26 @@ func TestMaterialized1PKeyManagement(t *testing.T) {
 	dummyFile2 := filepath.Join(dir, "server-b")
 	_ = os.WriteFile(dummyFile1, []byte("fake-key-1"), 0o600)
 	_ = os.WriteFile(dummyFile2, []byte("fake-key-2"), 0o600)
+
+	// Set server-a to 25 hours ago to test staleness detection
+	oldTime := time.Now().Add(-25 * time.Hour)
+	_ = os.Chtimes(dummyFile1, oldTime, oldTime)
+
+	details, err := ListMaterialized1PKeyDetails()
+	if err != nil {
+		t.Fatalf("ListMaterialized1PKeyDetails error: %v", err)
+	}
+	if len(details) < 2 {
+		t.Errorf("expected at least 2 key details, got %d", len(details))
+	}
+	for _, d := range details {
+		if d.Name == "server-a" && !d.IsStale {
+			t.Errorf("expected server-a to be detected as stale (>24h)")
+		}
+		if d.Name == "server-b" && d.IsStale {
+			t.Errorf("expected server-b not to be stale")
+		}
+	}
 
 	keys, err := ListMaterialized1PKeys()
 	if err != nil {
