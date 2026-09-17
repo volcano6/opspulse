@@ -447,7 +447,7 @@ type stubResolver struct {
 	err      error
 }
 
-func (s *stubResolver) ResolvePassword(ctx context.Context, ref string) (string, error) {
+func (s *stubResolver) ResolvePassword(_ context.Context, _ string) (string, error) {
 	return s.resolved, s.err
 }
 

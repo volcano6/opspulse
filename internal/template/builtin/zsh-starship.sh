@@ -236,8 +236,8 @@ fi
 # WSL Windows Node.js bridge fallback (prevent permission denied when Linux node is not installed)
 if ! command -v node >/dev/null 2>&1 && command -v node.exe >/dev/null 2>&1; then
     alias node='node.exe'
-    alias npm='npm.cmd'
-    alias npx='npx.cmd'
+    if command -v npm.cmd >/dev/null 2>&1; then alias npm='npm.cmd'; fi
+    if command -v npx.cmd >/dev/null 2>&1; then alias npx='npx.cmd'; fi
 fi
 
 # Source user customizations (proxy, API keys, PATH, aliases)

@@ -62,3 +62,29 @@ func TestFileExists(t *testing.T) {
 		t.Error("FileExists should report directories as absent")
 	}
 }
+
+func TestWSLFMaskPattern(t *testing.T) {
+	matches := []string{
+		`options = "metadata,umask=22,fmask=011"`,
+		`options = "metadata,umask=22,fmask=11"`,
+		"fmask = 011",
+		"fmask=011",
+		"FMASK=011",
+	}
+	for _, content := range matches {
+		if !wslFMaskPattern.MatchString(content) {
+			t.Errorf("expected fmask pattern to match %q", content)
+		}
+	}
+
+	nonMatches := []string{
+		`options = "metadata,umask=022,fmask=000"`,
+		`options = "metadata,umask=022,fmask=0110"`,
+		"[automount]\nenabled = true",
+	}
+	for _, content := range nonMatches {
+		if wslFMaskPattern.MatchString(content) {
+			t.Errorf("expected fmask pattern NOT to match %q", content)
+		}
+	}
+}
