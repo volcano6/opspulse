@@ -359,9 +359,7 @@ func (r *RestoreRunner) autoStartContainers(
 	}
 
 	candidateDirs := []string{fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)}
-	for _, p := range job.Paths {
-		candidateDirs = append(candidateDirs, p)
-	}
+	candidateDirs = append(candidateDirs, job.Paths...)
 
 	var (
 		manifest           *docker.ContainerManifest

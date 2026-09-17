@@ -3,15 +3,15 @@
 # name: nodejs
 # version: 1
 # os: [ubuntu, debian]
-# description: Install Node.js LTS (or specified major version e.g. -t nodejs:22) with npm and corepack
+# description: Install Node.js LTS (or specified major version e.g. -t nodejs:24) with npm and corepack
 # ---
 set -euo pipefail
 
-SPEC_VERSION="${1:-${SCRIPT_ARG:-22}}"
-# Extract digits only (e.g. "22", "v22", "22.x" -> "22")
+SPEC_VERSION="${1:-${SCRIPT_ARG:-24}}"
+# Extract digits only (e.g. "24", "v24", "24.x" -> "24")
 NODE_MAJOR=$(echo "$SPEC_VERSION" | tr -dc '0-9')
 if [ -z "$NODE_MAJOR" ]; then
-    NODE_MAJOR="22"
+    NODE_MAJOR="24"
 fi
 
 if command -v node >/dev/null 2>&1; then

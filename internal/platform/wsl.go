@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -94,14 +95,17 @@ func WindowsUserHome() (string, error) {
 		for _, entry := range entries {
 			if entry.IsDir() && !isSystemWindowsUser(entry.Name()) {
 				candidate := filepath.Join("/mnt/c/Users", entry.Name())
-				if FileExists(filepath.Join(candidate, "AppData", "Local")) || !os.IsNotExist(err) {
+				if info, statErr := os.Stat(filepath.Join(candidate, "AppData", "Local")); statErr == nil && info.IsDir() {
 					return candidate, nil
 				}
 			}
 		}
 	}
 
-	return "", fmt.Errorf("failed to get Windows USERPROFILE: %w", err)
+	if err != nil {
+		return "", fmt.Errorf("failed to get Windows USERPROFILE: %w", err)
+	}
+	return "", fmt.Errorf("failed to get Windows USERPROFILE: no user profile found under /mnt/c/Users")
 }
 
 // WindowsLocalAppData returns the Windows %LOCALAPPDATA% directory in the form
@@ -141,4 +145,20 @@ func WindowsLocalAppData() (string, error) {
 func FileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// wslFMaskPattern matches the automount fmask values that strip the execute bit
+// from Windows binaries (011 / 11, with or without surrounding whitespace).
+var wslFMaskPattern = regexp.MustCompile(`(?i)fmask\s*=\s*0*11\b`)
+
+// WSLFMaskHint returns a warning when /etc/wsl.conf configures an automount
+// fmask that removes the execute permission from Windows binaries, which makes
+// WSL unable to run op.exe. It returns "" when no such setting is present.
+func WSLFMaskHint() string {
+	data, err := os.ReadFile("/etc/wsl.conf")
+	if err != nil || !wslFMaskPattern.Match(data) {
+		return ""
+	}
+	return "⚠️  /etc/wsl.conf sets an automount 'fmask' that strips the execute permission from Windows binaries.\n" +
+		"💡 If 1Password is already installed on Windows, change it to 'fmask=000' (or remove it) in /etc/wsl.conf and run 'wsl --shutdown'."
 }

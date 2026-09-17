@@ -19,7 +19,7 @@ OpsPulse 直接通过 `go:embed` 将以下经过充分验证的官方模板嵌�
 | `nginx` | Ubuntu, Debian | Nginx Web 服务器 | 配置官方源安装最新稳定版 Nginx，开机自启并放行 80/443 端口 |
 | `caddy` | Ubuntu, Debian | Caddy Web 服务器 | 安装官方 Caddy 并设置开机自启，自动申请 HTTPS 证书 |
 | `golang` | Ubuntu, Debian | Go 语言开发环境 | 从官方/国内镜像下载安装指定或最新稳定版 Go，自动配置 PATH 与软链接 |
-| `nodejs` | Ubuntu, Debian | Node.js 开发环境与工具链 | 配置 NodeSource 源安装 Node.js LTS（支持传参如 `-t nodejs:22` 或 `nodejs:20`），安装 npm 并启用 corepack |
+| `nodejs` | Ubuntu, Debian | Node.js 开发环境与工具链 | 配置 NodeSource 源安装 Node.js LTS（默认 24，支持传参如 `-t nodejs:22` 或 `nodejs:20`），安装 npm 并启用 corepack |
 | `uv` | Ubuntu, Debian | Astral uv Python 工具链 | 安装极速 Python 包与项目管理工具 uv/uvx 至 `/usr/local/bin` |
 | `restic` | Ubuntu, Debian | 备份工具链 | 安装 `restic` 与 `rclone` 二进制包，为 `ops backup` 提供执行基础 |
 | `swap` | Ubuntu, Debian | 零停机 Swap 扩容/调整 | 默认创建 2GB（可传参调整，如 `-t swap:4`），双文件热切换，优化 swappiness |

@@ -66,18 +66,25 @@ else
         cp /etc/apt/sources.list "/etc/apt/sources.list.${BACKUP_SUFFIX}"
     fi
 
-    # Handle Ubuntu 24.04+ deb822 format (/etc/apt/sources.list.d/ubuntu.sources)
+    # Handle Ubuntu 24.04+ deb822 format (/etc/apt/sources.list.d/ubuntu.sources).
+    # When this file exists it is the authoritative source list, so the legacy
+    # /etc/apt/sources.list must not be regenerated on top of it: otherwise every
+    # repository is defined twice and apt reports "configured multiple times".
+    DEB822_HANDLED=false
     if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
         echo "--> Backing up /etc/apt/sources.list.d/ubuntu.sources..."
         cp /etc/apt/sources.list.d/ubuntu.sources "/etc/apt/sources.list.d/ubuntu.sources.${BACKUP_SUFFIX}"
-        sed -i -E "s|https?://(archive\|security)\.ubuntu\.com/ubuntu/?|${CHOSEN_MIRROR}/ubuntu/|g" /etc/apt/sources.list.d/ubuntu.sources
+        sed -i -E "s|https?://(archive|security)\.ubuntu\.com/ubuntu/?|${CHOSEN_MIRROR}/ubuntu/|g" /etc/apt/sources.list.d/ubuntu.sources
         echo "✅ Updated /etc/apt/sources.list.d/ubuntu.sources"
+        DEB822_HANDLED=true
     fi
 
-    # Generate standard sources.list for Ubuntu or Debian
+    # Generate standard sources.list for Ubuntu or Debian (skipped on deb822 systems)
     case "$OS_ID" in
         ubuntu)
-            if [ -n "$OS_CODENAME" ]; then
+            if [ "$DEB822_HANDLED" = true ]; then
+                echo "ℹ️ /etc/apt/sources.list.d/ubuntu.sources (deb822) is in use; skipping legacy /etc/apt/sources.list generation."
+            elif [ -n "$OS_CODENAME" ]; then
                 cat << EOF > /etc/apt/sources.list
 deb ${CHOSEN_MIRROR}/ubuntu/ ${OS_CODENAME} main restricted universe multiverse
 deb ${CHOSEN_MIRROR}/ubuntu/ ${OS_CODENAME}-updates main restricted universe multiverse
@@ -131,41 +138,61 @@ echo "==> 2. Configuring global Git & GitHub acceleration..."
 
 GH_PROXY_URL="${GIT_PROXY_URL:-https://ghfast.top/https://github.com/}"
 
-# Clean up stale/duplicate insteadOf rules matching https://github.com/
-clean_git_rules() {
-    local scope="$1"
-    git config "$scope" --get-regexp '^url\..*\.insteadof' 2>/dev/null | while read -r key val; do
-        if [ "$val" = "https://github.com/" ]; then
-            local sec
+# Proxies this template owns. Only insteadOf rules that route github.com through
+# one of these hosts are cleaned up, so a user's own mirror rule stays intact.
+MANAGED_PROXY_HOSTS="ghfast.top"
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "⚠️ git is not installed; skipping Git acceleration (run the 'base' template first)."
+else
+    # Clean up stale/duplicate insteadOf rules previously written by this template
+    clean_git_rules() {
+        local scope="$1"
+        git config "$scope" --get-regexp '^url\..*\.insteadof' 2>/dev/null | while read -r key val; do
+            [ "$val" = "https://github.com/" ] || continue
+            local sec host
             sec=$(echo "$key" | sed -E 's/^url\.(.*)\.insteadof/\1/')
-            git config "$scope" --remove-section "url.${sec}" 2>/dev/null || true
-        fi
-    done || true
-}
-
-clean_git_rules "--system"
-clean_git_rules "--global"
-
-echo "--> Setting Git insteadOf rule to: ${GH_PROXY_URL}"
-git config --system url."${GH_PROXY_URL}".insteadOf "https://github.com/" 2>/dev/null || true
-git config --global url."${GH_PROXY_URL}".insteadOf "https://github.com/"
-
-# Also configure for non-root sudo user if present
-if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
-    if id -u "$SUDO_USER" >/dev/null 2>&1; then
-        echo "--> Applying Git insteadOf rule for user: ${SUDO_USER}"
-        sudo -u "${SUDO_USER}" bash -c "
-            git config --global --get-regexp '^url\..*\.insteadof' 2>/dev/null | while read -r k v; do
-                if [ \"\$v\" = 'https://github.com/' ]; then
-                    sec=\$(echo \"\$k\" | sed -E 's/^url\.(.*)\.insteadof/\1/')
-                    git config --global --remove-section \"url.\${sec}\" 2>/dev/null || true
-                fi
+            for host in $MANAGED_PROXY_HOSTS; do
+                case "$sec" in
+                    *"$host"*)
+                        git config "$scope" --remove-section "url.${sec}" 2>/dev/null || true
+                        break
+                        ;;
+                esac
             done
-            git config --global url.'${GH_PROXY_URL}'.insteadOf 'https://github.com/'
-        " 2>/dev/null || true
+        done || true
+    }
+
+    clean_git_rules "--system"
+    clean_git_rules "--global"
+
+    echo "--> Setting Git insteadOf rule to: ${GH_PROXY_URL}"
+    git config --system url."${GH_PROXY_URL}".insteadOf "https://github.com/" 2>/dev/null || true
+    git config --global url."${GH_PROXY_URL}".insteadOf "https://github.com/"
+
+    # Also configure for non-root sudo user if present
+    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ] && id -u "$SUDO_USER" >/dev/null 2>&1; then
+        echo "--> Applying Git insteadOf rule for user: ${SUDO_USER}"
+        sudo -u "${SUDO_USER}" bash -c '
+            gh_proxy="$1"
+            managed="'"$MANAGED_PROXY_HOSTS"'"
+            git config --global --get-regexp "^url\..*\.insteadof" 2>/dev/null | while read -r k v; do
+                [ "$v" = "https://github.com/" ] || continue
+                sec=$(echo "$k" | sed -E "s/^url\.(.*)\.insteadof/\1/")
+                for host in $managed; do
+                    case "$sec" in
+                        *"$host"*)
+                            git config --global --remove-section "url.${sec}" 2>/dev/null || true
+                            break
+                            ;;
+                    esac
+                done
+            done
+            git config --global url."$gh_proxy".insteadOf "https://github.com/"
+        ' _ "${GH_PROXY_URL}" 2>/dev/null || true
     fi
+    echo "✅ Git GitHub acceleration configured (system & user wide)."
 fi
-echo "✅ Git GitHub acceleration configured (system & user wide)."
 
 # -----------------------------------------------------------------------------
 # 3. Docker Registry Mirrors (Including verified private & public mirrors)

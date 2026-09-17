@@ -237,7 +237,7 @@ func findWingetCLIIn(localAppData string) (string, bool) {
 	for _, candidate := range candidates {
 		if platform.FileExists(candidate) {
 			if platform.IsWSL() {
-				_ = os.Chmod(candidate, 0o755)
+				_ = os.Chmod(candidate, 0o755) // #nosec G302 -- the Windows op.exe shim must stay executable across the WSL boundary
 			}
 			return candidate, true
 		}
