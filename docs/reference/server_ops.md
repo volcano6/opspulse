@@ -165,7 +165,8 @@ ops export ssh-config --write --filter env=prod
 
 > **设计优势**：
 > - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。
-> - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件向 OpenSSH `SSH_ASKPASS` 传递密码；密码不出现在命令参数或环境变量值中。
+> - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件（0700 临时目录 + 0600 文件，连接退出后自动写零并删除）向 OpenSSH `SSH_ASKPASS` 传递密码；支持 1Password `op://` 动态解密；密码不出现在命令参数、环境变量或进程列表中。
+> - **老旧主机兼容（`legacy-ssh`）**：针对仅提供 `ssh-rsa` / `ssh-dss` 的老旧主机，在 `servers.yaml` 中为其添加 `legacy-ssh` / `legacy_ssh` / `legacy-rsa` 标签或 `legacy-ssh: "true"` label 即可受控开启算法向下兼容（现代主机不受影响）。对于 `ops exec` / `ops cp` 等基于 Go `x/crypto/ssh` 的底层非交互调用，已默认支持 `ssh-rsa` 主机密钥协商；若主机仅提供 `ssh-dss`（DSA 算法已被 Go 官方库废弃），建议使用系统 OpenSSH 交互命令 `ops ssh` 登录维护。
 
 ---
 

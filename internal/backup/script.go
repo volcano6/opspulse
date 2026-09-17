@@ -33,10 +33,15 @@ func BuildBackupScript(job Job) (string, error) {
 	// 1. Export environment variables
 	writeEnvBlock(&sb, job)
 
-	// 2. Check restic installation
+	// 2. Check restic installation and ensure modern version support (e.g. --retry-lock >= 0.16.0)
 	sb.WriteString(`if ! command -v restic >/dev/null 2>&1; then
   echo "Error: restic is not installed on target host. Please install it first or run: opspulse bootstrap <server> -t restic" >&2
   exit 127
+fi
+
+if ! restic backup --help 2>&1 | grep -q -- '--retry-lock'; then
+  echo "Notice: detected older restic version, updating via restic self-update..." >&2
+  restic self-update >/dev/null 2>&1 || true
 fi
 ` + "\n")
 
@@ -125,6 +130,10 @@ func BuildSnapshotsScript(job Job) string {
 	if strings.TrimSpace(job.Server) != "" {
 		cmd += " --tag " + shellquote.Quote(HostTag(job.Server)) + " --host " + shellquote.Quote(job.Server)
 	}
+	sb.WriteString(`if command -v restic >/dev/null 2>&1 && ! restic snapshots --help 2>&1 | grep -q -- '--retry-lock'; then
+  restic self-update >/dev/null 2>&1 || true
+fi
+`)
 	sb.WriteString(cmd + "\n")
 	return sb.String()
 }
@@ -143,6 +152,11 @@ func BuildRestoreScript(job Job, snapshotID string, targetPath string, includePa
   echo "Error: restic is not installed on target host." >&2
   exit 127
 fi
+
+if ! restic restore --help 2>&1 | grep -q -- '--retry-lock'; then
+  echo "Notice: detected older restic version, updating via restic self-update..." >&2
+  restic self-update >/dev/null 2>&1 || true
+fi
 `)
 	sb.WriteString("\n")
 
@@ -156,7 +170,7 @@ fi
 		sb.WriteString("echo \"Starting restic restore with path remapping (snapshot: \" " + shellquote.Quote(snapshotID) + " \")...\"\n")
 		sb.WriteString("STAGING=$(mktemp -d -t opspulse-restore-XXXXXX)\n")
 		sb.WriteString("trap 'rm -rf \"$STAGING\"' EXIT\n\n")
-		
+
 		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target \"$STAGING\"")
 		for _, pattern := range includePatterns {
 			sb.WriteString(" --include " + shellquote.Quote(pattern))
@@ -165,32 +179,32 @@ fi
 
 		remapper := NewPathRemapper(job.Remap)
 		sb.WriteString("echo \"Applying path remapping...\"\n")
-		
+
 		// If includePatterns are specified, only remap those. Otherwise remap job.Paths
 		pathsToRemap := job.Paths
 		if len(includePatterns) > 0 {
 			pathsToRemap = includePatterns
 		}
-		
+
 		for _, p := range pathsToRemap {
 			origClean := path.Clean(p)
 			if !strings.HasPrefix(origClean, "/") {
 				origClean = "/" + origClean
 			}
 			targetRemap := remapper.Remap(origClean)
-			
+
 			// Adjust target if it's absolute
 			targetPathAbs := targetPath
 			if targetPathAbs == "" {
 				targetPathAbs = "/"
 			}
-			
+
 			finalTarget := path.Join(targetPathAbs, strings.TrimPrefix(targetRemap, "/"))
-			
+
 			// We cannot shellquote $STAGING entirely because we need the shell to expand it
 			// We shellquote the relative path and concatenate.
 			relPath := strings.TrimPrefix(origClean, "/")
-			
+
 			sb.WriteString(fmt.Sprintf("if [ -e \"$STAGING\"/%s ]; then\n", shellquote.Quote(relPath)))
 			sb.WriteString(fmt.Sprintf("  echo \"Moving \"$STAGING\"/%s -> %s\"\n", shellquote.Quote(relPath), shellquote.Quote(finalTarget)))
 			sb.WriteString(fmt.Sprintf("  if [ -d \"$STAGING\"/%s ]; then\n", shellquote.Quote(relPath)))

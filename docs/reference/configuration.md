@@ -66,9 +66,9 @@ servers:
 | `port` | 整数 | 否 | `22` | SSH 端口号 |
 | `user` | 字符串 | 否 | `root` | SSH 登录用户名 |
 | `key_path` | 字符串 | 否 | `""` | 私钥文件路径（支持 `~` 自动展开）。配置后 OpenSSH 强制启用 `IdentitiesOnly=yes`，只提交该密钥；若密钥和密码均为空，则自动扫描默认密钥 |
-| `password` | 字符串 | 否 | `""` | SSH 密码，以明文保存在权限为 `0600` 的 `servers.yaml` 中。未绑定私钥时用于自动认证；`server setup-key` 使用它安装公钥但不修改远端密码 |
-| `tags` | 字符串列表 | 否 | `[]` | 标签分组列表（便于按标签批量执行） |
-| `labels` | 键值映射 | 否 | `{}` | 结构化元数据标签（如 `provider: oracle`, `region: sg`），支持 `ops ls --filter` 筛选 |
+| `password` | 字符串 | 否 | `""` | SSH 密码，以明文或 1Password 引用格式（如 `op://vault/item/password`）保存在权限为 `0600` 的 `servers.yaml` 中。未绑定私钥时用于自动认证；`server setup-key` 使用它安装公钥但不修改远端密码 |
+| `tags` | 字符串列表 | 否 | `[]` | 标签分组列表（便于按标签批量执行；包含 `legacy-ssh` / `legacy_ssh` / `legacy-rsa` 时为该主机受控开启老旧算法向下兼容） |
+| `labels` | 键值映射 | 否 | `{}` | 结构化元数据标签（如 `provider: oracle`, `region: sg`；配置 `legacy-ssh: "true"` 或 `legacy-rsa: "true"` 亦可开启老旧算法向下兼容），支持 `ops ls --filter` 筛选 |
 | `description` | 字符串 | 否 | `""` | 备注描述信息 |
 
 ---

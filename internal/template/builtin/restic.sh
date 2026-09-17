@@ -12,6 +12,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y restic rclone
 
+echo "==> Upgrading restic to latest official release..."
+restic self-update || true
+
 echo "==> Verifying restic and rclone installation..."
 restic version
 rclone version

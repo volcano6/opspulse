@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ func TestBuildSSHArgs(t *testing.T) {
 	testStore := server.NewDefaultStore()
 	_ = testStore.Save(server.Server{Name: "bastion", Host: "1.1.1.1", User: "root", Port: 22})
 	_ = testStore.Save(server.Server{Name: "bastion-key", Host: "1.1.1.2", User: "root", Port: 2222, KeyPath: "~/.ssh/jump.pem"})
+	_ = testStore.Save(server.Server{Name: "bastion-legacy", Host: "1.1.1.3", User: "root", Port: 22, Tags: []string{"legacy-ssh"}})
 
 	tests := []struct {
 		name      string
@@ -109,6 +111,35 @@ func TestBuildSSHArgs(t *testing.T) {
 			want: []string{"ssh",
 				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o IdentitiesOnly=yes -i %s -p 2222 root@1.1.1.2", filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
 				"ubuntu@vps2",
+			},
+		},
+		{
+			name: "server with legacy-ssh tag enables legacy algorithms",
+			srv: server.Server{
+				Name: "vps-legacy",
+				Host: "192.168.1.50",
+				Port: 22,
+				User: "root",
+				Tags: []string{"legacy-ssh"},
+			},
+			want: []string{"ssh",
+				"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+				"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+				"root@192.168.1.50",
+			},
+		},
+		{
+			name: "server with legacy jump host enables legacy algorithms in proxy command",
+			srv: server.Server{
+				Name:     "vps-internal-via-legacy",
+				Host:     "vps3",
+				Port:     22,
+				User:     "ubuntu",
+				JumpHost: "bastion-legacy",
+			},
+			want: []string{"ssh",
+				"-o", "ProxyCommand=ssh -W %h:%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa root@1.1.1.3",
+				"ubuntu@vps3",
 			},
 		},
 	}
@@ -389,5 +420,187 @@ func TestSelectServerInteractively_PointerIntegrity(t *testing.T) {
 	}
 	if resB != &servers[1] {
 		t.Errorf("expected pointer to servers[1], got %p vs %p", resB, &servers[1])
+	}
+}
+
+func TestResolvePasswordIf1P_Plaintext(t *testing.T) {
+	ctx := context.Background()
+	got, err := resolvePasswordIf1P(ctx, nil, "mypassword", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "mypassword" {
+		t.Errorf("got %q, want 'mypassword'", got)
+	}
+
+	gotEmpty, err := resolvePasswordIf1P(ctx, nil, "", "test empty")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotEmpty != "" {
+		t.Errorf("got %q, want ''", gotEmpty)
+	}
+}
+
+type stubResolver struct {
+	resolved string
+	err      error
+}
+
+func (s *stubResolver) ResolvePassword(ctx context.Context, ref string) (string, error) {
+	return s.resolved, s.err
+}
+
+func TestResolvePasswordIf1P_Stub(t *testing.T) {
+	ctx := context.Background()
+	stub := &stubResolver{resolved: "secret-123"}
+	got, err := resolvePasswordIf1P(ctx, stub, "op://vault/item/password", "test-server")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "secret-123" {
+		t.Errorf("got %q, want 'secret-123'", got)
+	}
+
+	stubErr := &stubResolver{err: fmt.Errorf("item locked")}
+	_, err = resolvePasswordIf1P(ctx, stubErr, "op://vault/item/password", "test-server")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "item locked") {
+		t.Errorf("expected error message to contain 'item locked', got %v", err)
+	}
+}
+
+func TestBuildAskpassConfig_Security(t *testing.T) {
+	target := server.Server{Name: "web", Host: "192.168.1.10"}
+	jump := &server.Server{Name: "bastion", Host: "10.0.0.1"}
+
+	// Scenario 1: Target uses key auth (no password), jump host uses password.
+	// CRITICAL: DefaultPass MUST be empty so jump password never leaks to target!
+	cfgKeyTarget := buildAskpassConfig(target, jump, "", "jump-secret")
+	if cfgKeyTarget.DefaultPass != "" {
+		t.Errorf("expected DefaultPass to be empty for key-auth target, got %q", cfgKeyTarget.DefaultPass)
+	}
+	if cfgKeyTarget.HostPass["10.0.0.1"] != "jump-secret" || cfgKeyTarget.HostPass["bastion"] != "jump-secret" {
+		t.Errorf("jump host password missing in HostPass: %+v", cfgKeyTarget.HostPass)
+	}
+	if _, exists := cfgKeyTarget.HostPass["192.168.1.10"]; exists {
+		t.Error("target host should not be in HostPass when targetPassword is empty")
+	}
+
+	// Scenario 2: Both target and jump host use passwords.
+	cfgBoth := buildAskpassConfig(target, jump, "target-secret", "jump-secret")
+	if cfgBoth.DefaultPass != "target-secret" {
+		t.Errorf("expected DefaultPass to be 'target-secret', got %q", cfgBoth.DefaultPass)
+	}
+	if cfgBoth.HostPass["192.168.1.10"] != "target-secret" || cfgBoth.HostPass["web"] != "target-secret" {
+		t.Errorf("target host password missing in HostPass: %+v", cfgBoth.HostPass)
+	}
+	if cfgBoth.HostPass["10.0.0.1"] != "jump-secret" || cfgBoth.HostPass["bastion"] != "jump-secret" {
+		t.Errorf("jump host password missing in HostPass: %+v", cfgBoth.HostPass)
+	}
+}
+
+func TestMatchHostPassword_DeterministicLongestMatch(t *testing.T) {
+	hostPass := map[string]string{
+		"bastion":        "pass-short",
+		"bastion-legacy": "pass-long",
+		"web":            "pass-web",
+		"web.corp.local": "pass-web-fqdn",
+	}
+
+	// Should match the longer, more specific key first
+	if got := matchHostPassword(hostPass, "root@bastion-legacy's password:"); got != "pass-long" {
+		t.Errorf("expected 'pass-long', got %q", got)
+	}
+
+	// Should match the shorter key when only it matches
+	if got := matchHostPassword(hostPass, "root@bastion's password:"); got != "pass-short" {
+		t.Errorf("expected 'pass-short', got %q", got)
+	}
+
+	// FQDN longest prefix match
+	if got := matchHostPassword(hostPass, "ubuntu@web.corp.local's password:"); got != "pass-web-fqdn" {
+		t.Errorf("expected 'pass-web-fqdn', got %q", got)
+	}
+
+	// Unknown host
+	if got := matchHostPassword(hostPass, "root@unknown's password:"); got != "" {
+		t.Errorf("expected empty string for unknown host, got %q", got)
+	}
+}
+
+func TestResolveTargetPassword(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		srv      server.Server
+		resolver *stubResolver
+		wantPass string
+		wantErr  bool
+	}{
+		{
+			name:     "empty password returns empty string without calling resolver",
+			srv:      server.Server{Name: "web", Password: ""},
+			resolver: &stubResolver{err: fmt.Errorf("should not be called")},
+			wantPass: "",
+			wantErr:  false,
+		},
+		{
+			name:     "plaintext password with empty KeyPath returns plaintext directly",
+			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: ""},
+			resolver: &stubResolver{err: fmt.Errorf("should not be called for non-1p")},
+			wantPass: "plain-secret",
+			wantErr:  false,
+		},
+		{
+			name:     "plaintext password with KeyPath set returns plaintext directly",
+			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: "/id_rsa"},
+			resolver: &stubResolver{err: fmt.Errorf("should not be called for non-1p")},
+			wantPass: "plain-secret",
+			wantErr:  false,
+		},
+		{
+			name:     "1P password resolution failure with empty KeyPath returns error",
+			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: ""},
+			resolver: &stubResolver{err: fmt.Errorf("item locked")},
+			wantPass: "",
+			wantErr:  true,
+		},
+		{
+			name:     "1P password resolution failure with KeyPath set downgrades to warning and returns empty string",
+			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: "/id_rsa"},
+			resolver: &stubResolver{err: fmt.Errorf("item locked")},
+			wantPass: "",
+			wantErr:  false,
+		},
+		{
+			name:     "1P password resolution success with KeyPath set returns resolved password",
+			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: "/id_rsa"},
+			resolver: &stubResolver{resolved: "resolved-1p-pass"},
+			wantPass: "resolved-1p-pass",
+			wantErr:  false,
+		},
+		{
+			name:     "1P password resolution success with empty KeyPath returns resolved password",
+			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: ""},
+			resolver: &stubResolver{resolved: "resolved-1p-pass"},
+			wantPass: "resolved-1p-pass",
+			wantErr:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveTargetPassword(ctx, tt.resolver, tt.srv)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolveTargetPassword() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.wantPass {
+				t.Errorf("resolveTargetPassword() got = %q, want %q", got, tt.wantPass)
+			}
+		})
 	}
 }

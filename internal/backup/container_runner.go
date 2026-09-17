@@ -83,7 +83,7 @@ func (r *Runner) RunContainerBackup(
 
 	// 1. Inspect container via docker inspect
 	var inspectBuf bytes.Buffer
-	inspectScript := fmt.Sprintf("docker inspect %s", shellquote.Quote(containerName))
+	inspectScript := fmt.Sprintf("docker inspect --type container %s", shellquote.Quote(containerName))
 	inspectRes, inspectErr := execToUse.Execute(ctx, target, "inspect-"+containerName, inspectScript, &inspectBuf)
 	if inspectErr != nil {
 		return nil, fmt.Errorf("failed to inspect container %q on %s: %w", containerName, serverName, inspectErr)
@@ -127,16 +127,23 @@ func (r *Runner) RunContainerBackup(
 	}()
 
 	// 2. Resolve Service Configuration and Project Layout
+	composeFileName := "compose.yaml"
 	if isCompose {
 		projectDir = info.ComposeWorkingDir()
 		if projectDir == "" {
 			projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
 		}
+		if cfgFiles := info.Labels[docker.LabelComposeConfigFiles]; cfgFiles != "" {
+			firstFile := strings.Split(cfgFiles, ",")[0]
+			if base := path.Base(strings.TrimSpace(firstFile)); base != "" && base != "." {
+				composeFileName = base
+			}
+		}
 		_, _ = fmt.Fprintf(consoleOut, "  -> Detected Docker Compose project at %q\n", projectDir)
-		composePath = path.Join(projectDir, "compose.yaml")
+		composePath = path.Join(projectDir, composeFileName)
 	} else {
 		projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
-		composePath = path.Join(projectDir, "compose.yaml")
+		composePath = path.Join(projectDir, composeFileName)
 	}
 
 	// Pre-run sanitization: remove stale dumps and volume archives from prior aborted runs
@@ -149,7 +156,7 @@ func (r *Runner) RunContainerBackup(
 	manifest := &docker.ContainerManifest{
 		FormatVersion: 1,
 		App:           finalName,
-		ComposeFile:   "compose.yaml",
+		ComposeFile:   composeFileName,
 	}
 
 	// 3. Process Mounts: Named Volumes and Bind Mounts
