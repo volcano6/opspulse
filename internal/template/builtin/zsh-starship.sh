@@ -1,7 +1,7 @@
 #!/bin/bash
 # ---
 # name: zsh-starship
-# version: 2
+# version: 3
 # os: [ubuntu, debian]
 # description: Install Zsh + Starship with double-line rounded theme, auto-suggestions and syntax highlighting
 # ---
@@ -48,7 +48,16 @@ else
 fi
 
 echo "==> 3. Installing high-frequency plugins (autosuggestions + syntax-highlighting)..."
-ZSH_PLUGIN_DIR="$HOME/.zsh"
+TARGET_USER="${SUDO_USER:-$(whoami)}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6 || echo "$HOME")"
+[ -d "$TARGET_HOME" ] || TARGET_HOME="$HOME"
+
+if [ "$TARGET_USER" != "root" ] && [ "$HOME" != "$TARGET_HOME" ]; then
+    echo "⚠️  Warning: Current HOME ($HOME) differs from target user's home ($TARGET_HOME). Using $TARGET_HOME for user configuration."
+fi
+USER_HOME="$TARGET_HOME"
+
+ZSH_PLUGIN_DIR="$USER_HOME/.zsh"
 mkdir -p "$ZSH_PLUGIN_DIR"
 
 clone_or_mirror() {
@@ -66,12 +75,12 @@ clone_or_mirror "$ZSH_PLUGIN_DIR/zsh-autosuggestions" "https://github.com/zsh-us
 clone_or_mirror "$ZSH_PLUGIN_DIR/zsh-syntax-highlighting" "https://github.com/zsh-users/zsh-syntax-highlighting"
 
 echo "==> 4. Generating Starship theme config (~/.config/starship.toml)..."
-mkdir -p "$HOME/.config"
-if [ -f "$HOME/.config/starship.toml" ]; then
+mkdir -p "$USER_HOME/.config"
+if [ -f "$USER_HOME/.config/starship.toml" ]; then
     echo "==> Backing up existing ~/.config/starship.toml..."
-    cp "$HOME/.config/starship.toml" "$HOME/.config/starship.toml.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$USER_HOME/.config/starship.toml" "$USER_HOME/.config/starship.toml.bak.$(date +%Y%m%d%H%M%S)"
 fi
-cat << 'EOF' > "$HOME/.config/starship.toml"
+cat << 'EOF' > "$USER_HOME/.config/starship.toml"
 format = """
 $username\
 $hostname\
@@ -117,53 +126,83 @@ disabled = true
 EOF
 
 echo "==> 4.5. Extracting user customizations from .bashrc to ~/.zshrc.local..."
-if [ ! -f "$HOME/.zshrc.local" ] && [ -f "$HOME/.bashrc" ]; then
+should_extract=false
+if [ ! -f "$USER_HOME/.zshrc.local" ] && [ -f "$USER_HOME/.bashrc" ]; then
+    should_extract=true
+elif [ -f "$USER_HOME/.zshrc.local" ]; then
+    if command -v zsh >/dev/null 2>&1 && ! zsh -n "$USER_HOME/.zshrc.local" >/dev/null 2>&1; then
+        echo "⚠️  Existing ~/.zshrc.local has syntax errors, repairing..."
+        cp "$USER_HOME/.zshrc.local" "$USER_HOME/.zshrc.local.bak.$(date +%Y%m%d%H%M%S)"
+        should_extract=true
+    else
+        echo "ℹ️  ~/.zshrc.local already exists and is valid, skipping extraction."
+    fi
+fi
+
+if [ "$should_extract" = true ]; then
+    TMP_EXTRACT=$(mktemp)
     {
         echo "# Auto-extracted from .bashrc by OpsPulse zsh-starship template"
         echo "# $(date -Iseconds)"
         echo ""
-        
-        # Extract export statements, avoiding boilerplate
-        grep -E '^export\s+' "$HOME/.bashrc" \
-            | grep -v -E '(HISTSIZE|HISTFILESIZE|HISTCONTROL|LESSOPEN|LESSCLOSE)' \
-            || true
-        
-        # Extract alias statements, avoiding basic ones
-        grep -E '^\s*alias\s+' "$HOME/.bashrc" \
-            | grep -v -E "alias\s+(ls|grep|fgrep|egrep|ll|la|l)=" \
-            || true
-        
-        # Extract PATH additions
-        grep -E 'PATH=.*\$PATH|PATH=.*\$HOME|path\+=' "$HOME/.bashrc" || true
-        
-        # Extract sourcing and eval
-        grep -E '^\s*(eval|source|\.)(\s+|$)' "$HOME/.bashrc" \
-            | grep -v -E '(bash_completion|bashrc)' \
-            || true
-    } > "$HOME/.zshrc.local"
-    
-    if [ "$(grep -c -v '^#\|^$' "$HOME/.zshrc.local")" -eq 0 ]; then
-        rm -f "$HOME/.zshrc.local"
+
+        # 1. Standalone exports (exclude case/if fragments with ';;' and bash internal vars)
+        grep -E '^\s*export\s+[A-Za-z_][A-Za-z0-9_]*=' "$USER_HOME/.bashrc" 2>/dev/null \
+            | grep -v -E ';;|HISTSIZE|HISTFILESIZE|HISTCONTROL|LESSOPEN|LESSCLOSE|PROMPT_COMMAND|PS1' \
+            | sed 's/^\s*//' \
+            | sort -u || true
+
+        # 2. Standalone aliases (exclude default ls/grep aliases and case fragments)
+        grep -E '^\s*alias\s+[A-Za-z0-9_.-]+=' "$USER_HOME/.bashrc" 2>/dev/null \
+            | grep -v -E ';;|alias\s+(ls|grep|fgrep|egrep|ll|la|l)=' \
+            | sed 's/^\s*//' \
+            | sort -u || true
+
+        # 3. Environment loaders (nvm, cargo, env scripts; avoid bash completion and bashrc loops)
+        grep -E '^\s*(\[\s*-[sf]\s+[^]]+\]\s*&&\s*(\\\.|source|\.)|source\s+|\.\s+)' "$USER_HOME/.bashrc" 2>/dev/null \
+            | grep -v -E ';;|bash_completion|bashrc|completion\.bash|completion\s+bash|\.bash_aliases' \
+            | sed 's/^\s*//' \
+            | sort -u || true
+    } > "$TMP_EXTRACT"
+
+    # Validate extracted syntax before replacing ~/.zshrc.local
+    if command -v zsh >/dev/null 2>&1 && ! zsh -n "$TMP_EXTRACT" >/dev/null 2>&1; then
+        echo "⚠️  Extracted customizations failed zsh syntax check, discarding to protect shell..."
+        rm -f "$TMP_EXTRACT"
+        # If repairing an existing corrupted file, replace with safe placeholder
+        if [ -f "$USER_HOME/.zshrc.local" ]; then
+            echo "# Cleaned invalid customizations by OpsPulse" > "$USER_HOME/.zshrc.local"
+        fi
+    elif [ "$(grep -c -v '^[[:space:]]*#\|^[[:space:]]*$' "$TMP_EXTRACT")" -eq 0 ]; then
+        rm -f "$TMP_EXTRACT"
         echo "ℹ️  No user customizations found in .bashrc."
+        # If repairing an existing corrupted file, ensure the broken file is cleared
+        if [ -f "$USER_HOME/.zshrc.local" ]; then
+            echo "# No customizations extracted from .bashrc" > "$USER_HOME/.zshrc.local"
+        fi
     else
+        mv "$TMP_EXTRACT" "$USER_HOME/.zshrc.local"
         echo "✅ User customizations saved to ~/.zshrc.local"
-    fi
-else
-    if [ -f "$HOME/.zshrc.local" ]; then
-        echo "ℹ️  ~/.zshrc.local already exists, skipping extraction."
     fi
 fi
 
 echo "==> 5. Generating ~/.zshrc..."
-if [ -f "$HOME/.zshrc" ]; then
+if [ -f "$USER_HOME/.zshrc" ]; then
     echo "==> Backing up existing ~/.zshrc..."
-    cp "$HOME/.zshrc" "$HOME/.zshrc.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$USER_HOME/.zshrc" "$USER_HOME/.zshrc.bak.$(date +%Y%m%d%H%M%S)"
 fi
-cat << 'EOF' > "$HOME/.zshrc"
+cat << 'EOF' > "$USER_HOME/.zshrc"
 HISTFILE=$HOME/.zsh_history
 HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory sharehistory incappendhistory
+
+# Ensure standard user binary directories are in PATH
+for dir in "$HOME/.local/bin" "$HOME/bin" "$HOME/go/bin" "/usr/local/go/bin" "$HOME/.cargo/bin"; do
+    if [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]]; then
+        export PATH="$dir:$PATH"
+    fi
+done
 
 alias ll='ls -alF --color=auto'
 alias la='ls -A --color=auto'
@@ -179,6 +218,11 @@ eval "$(starship init zsh)"
 # Source user customizations (proxy, API keys, PATH, aliases)
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 
+# Enable OpsPulse completion if available
+if command -v ops >/dev/null 2>&1; then
+    eval "$(ops completion zsh)"
+fi
+
 echo "┌─────────────────────────────────────────────────────────────┐"
 echo "│ 🚀 Starship + Zsh modern terminal is ready                  │"
 echo "│ • Aliases: ll, la, df, free                                 │"
@@ -187,8 +231,22 @@ echo "└───────────────────────�
 EOF
 
 echo "==> 6. Changing default login shell to Zsh..."
-ZSH_PATH=$(which zsh)
+ZSH_PATH=$(command -v zsh || which zsh)
 chsh -s "$ZSH_PATH" "${SUDO_USER:-$(whoami)}" 2>/dev/null || true
+
+# Ensure correct ownership if executed under sudo
+if [ "$TARGET_USER" != "root" ] && [ "$USER_HOME" != "/root" ] && id "$TARGET_USER" &>/dev/null; then
+    TARGET_GROUP=$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")
+    chown "$TARGET_USER:$TARGET_GROUP" "$USER_HOME/.zshrc" "$USER_HOME/.zshrc.local" 2>/dev/null || true
+    if [ -f "$USER_HOME/.config/starship.toml" ]; then
+        chown "$TARGET_USER:$TARGET_GROUP" "$USER_HOME/.config/starship.toml" 2>/dev/null || true
+    fi
+    case "$USER_HOME/.zsh" in
+        "$USER_HOME"/*)
+            [ -d "$USER_HOME/.zsh" ] && chown -R "$TARGET_USER:$TARGET_GROUP" "$USER_HOME/.zsh" 2>/dev/null || true
+            ;;
+    esac
+fi
 
 echo "=========================================================="
 echo "🎉 Zsh + Starship installation and configuration completed!"

@@ -169,3 +169,48 @@ func (s *Server) MatchBatchFilter(filter string, includeSkipped bool) bool {
 	}
 	return s.MatchFilter(filter)
 }
+
+var legacySSHKeys = []string{"legacy-ssh", "legacy_ssh", "legacy-rsa"}
+
+// HasTag reports whether the server has the specified tag (case-insensitive).
+func (s *Server) HasTag(tag string) bool {
+	if s == nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(tag)
+	if trimmed == "" {
+		return false
+	}
+	for _, t := range s.Tags {
+		if strings.EqualFold(strings.TrimSpace(t), trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsLegacySSH reports whether this server requires compatibility options
+// for legacy SSH daemons (e.g. ssh-rsa/ssh-dss host key negotiation).
+// This is opt-in via the "legacy-ssh", "legacy_ssh", or "legacy-rsa" tag,
+// or via label "legacy-ssh=true", "legacy-rsa=true", etc.
+func (s *Server) IsLegacySSH() bool {
+	if s == nil {
+		return false
+	}
+	for _, k := range legacySSHKeys {
+		if s.HasTag(k) {
+			return true
+		}
+	}
+	for k, v := range s.Labels {
+		for _, want := range legacySSHKeys {
+			if strings.EqualFold(k, want) {
+				lower := strings.ToLower(strings.TrimSpace(v))
+				if lower == "true" || lower == "yes" || lower == "1" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

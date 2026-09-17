@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,10 +12,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
@@ -181,6 +184,18 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string, store *server.Store) []string {
 	args := []string{binary}
 
+	// Compatibility with legacy RSA/DSA host keys and public keys when explicitly tagged.
+	// SECURITY NOTE: This is intentional, opt-in backwards compatibility for legacy hosts
+	// (such as older CentOS/Debian distributions where sshd only offers ssh-rsa/ssh-dss).
+	// Modern hosts do NOT get weak algorithms injected. Do NOT remove this without consulting
+	// the legacy host compatibility requirements.
+	if srv.IsLegacySSH() {
+		args = append(args,
+			"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+			"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+		)
+	}
+
 	// Jump Host handling
 	if srv.JumpHost != "" {
 		var jumpSrv *server.Server
@@ -199,6 +214,12 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyP
 		)
 
 		if err == nil {
+			if jumpSrv.IsLegacySSH() {
+				proxyParts = append(proxyParts,
+					"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+					"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+				)
+			}
 			identity := jumpSrv.KeyPath
 			if jumpKeyPath != "" {
 				identity = jumpKeyPath
@@ -441,6 +462,80 @@ type askpassConfig struct {
 	HostPass    map[string]string `json:"host_pass"`
 }
 
+type passwordResolver interface {
+	ResolvePassword(ctx context.Context, ref string) (string, error)
+}
+
+func resolvePasswordIf1P(ctx context.Context, r passwordResolver, pass, desc string) (string, error) {
+	if !secret.Is1PRef(pass) {
+		return pass, nil
+	}
+	if r == nil {
+		r = secret.NewResolver()
+	}
+	p, err := r.ResolvePassword(ctx, pass)
+	if err != nil {
+		return "", fmt.Errorf("resolve 1Password password for %s: %w", desc, err)
+	}
+	return p, nil
+}
+
+func buildAskpassConfig(srv server.Server, jumpSrv *server.Server, targetPassword, jumpPassword string) askpassConfig {
+	cfg := askpassConfig{
+		DefaultPass: targetPassword, // DefaultPass is ONLY targetPassword; NEVER fallback to jumpPassword to prevent cross-host leakage
+		HostPass:    make(map[string]string),
+	}
+	if targetPassword != "" {
+		cfg.HostPass[srv.Host] = targetPassword
+		cfg.HostPass[srv.Name] = targetPassword
+	}
+	if jumpPassword != "" && jumpSrv != nil {
+		cfg.HostPass[jumpSrv.Host] = jumpPassword
+		cfg.HostPass[jumpSrv.Name] = jumpPassword
+	}
+	return cfg
+}
+
+func matchHostPassword(hostPass map[string]string, prompt string) string {
+	if len(hostPass) == 0 || prompt == "" {
+		return ""
+	}
+	lowerPrompt := strings.ToLower(prompt)
+	// Sort keys by length descending (longest first) to ensure deterministic matching without prefix collision
+	keys := make([]string, 0, len(hostPass))
+	for k := range hostPass {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+
+	for _, k := range keys {
+		if strings.Contains(lowerPrompt, strings.ToLower(k)) {
+			return hostPass[k]
+		}
+	}
+	return ""
+}
+
+func resolveTargetPassword(ctx context.Context, r passwordResolver, srv server.Server) (string, error) {
+	if srv.Password == "" {
+		return "", nil
+	}
+	tp, err := resolvePasswordIf1P(ctx, r, srv.Password, fmt.Sprintf("server %q", srv.Name))
+	if err != nil {
+		if srv.KeyPath == "" {
+			// Password is the primary authentication method; failure must block the connection.
+			return "", err
+		}
+		// Primary authentication is KeyPath; srv.Password is a fallback or for setup-key.
+		// Downgrade 1P resolution failure to a warning so private key login is not blocked.
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not resolve fallback password for %s: %v\n", srv.Name, err)
+		return "", nil
+	}
+	return tp, nil
+}
+
 func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store, shouldFilter bool) error {
 	askpassPath, err := os.Executable()
 	if err != nil {
@@ -463,34 +558,38 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 			_ = os.RemoveAll(passwordDir)
 		})
 	}
+	defer cleanup()
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	defer func() {
-		signal.Stop(sigChan)
-		cleanup()
-	}()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
-	go func() {
-		if _, ok := <-sigChan; ok {
-			cleanup()
-		}
-	}()
+	resolver := secret.NewResolver()
 
-	cfg := askpassConfig{
-		DefaultPass: srv.Password,
-		HostPass:    make(map[string]string),
+	resolveCtx, resolveCancel := context.WithTimeout(ctx, 20*time.Second)
+	targetPassword, err := resolveTargetPassword(resolveCtx, resolver, srv)
+	resolveCancel()
+	if err != nil {
+		return err
 	}
-	if srv.Password != "" {
-		cfg.HostPass[srv.Host] = srv.Password
-		cfg.HostPass[srv.Name] = srv.Password
-	}
+
+	var jumpPassword string
+	var jumpSrv *server.Server
 	if srv.JumpHost != "" {
-		if jumpSrv, err := store.Get(srv.JumpHost); err == nil && jumpSrv.Password != "" {
-			cfg.HostPass[jumpSrv.Host] = jumpSrv.Password
-			cfg.HostPass[jumpSrv.Name] = jumpSrv.Password
+		if js, err := store.Get(srv.JumpHost); err == nil {
+			jumpSrv = js
+			if jumpSrv.Password != "" {
+				resolveJumpCtx, resolveJumpCancel := context.WithTimeout(ctx, 20*time.Second)
+				jp, err := resolvePasswordIf1P(resolveJumpCtx, resolver, jumpSrv.Password, fmt.Sprintf("jump host %q", jumpSrv.Name))
+				resolveJumpCancel()
+				if err != nil {
+					return err
+				}
+				jumpPassword = jp
+			}
 		}
 	}
+
+	cfg := buildAskpassConfig(srv, jumpSrv, targetPassword, jumpPassword)
 
 	payload, err := json.Marshal(cfg)
 	if err != nil {
@@ -500,12 +599,18 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 	if err := os.WriteFile(passwordPath, payload, 0o600); err != nil {
 		return fmt.Errorf("write SSH password helper file: %w", err)
 	}
+	// Immediately wipe in-memory payload bytes to avoid lingering in memory during long SSH sessions
+	for i := range payload {
+		payload[i] = 0
+	}
 
 	cmdArgs := args[1:]
 	if shouldFilter {
 		cmdArgs = append([]string{"-tt"}, cmdArgs...)
 	}
 
+	// Run child ssh process without cancelling on parent SIGINT,
+	// allowing child ssh to gracefully capture interrupt and restore terminal raw mode
 	cmd := exec.Command(binary, cmdArgs...)
 	cmd.Stdin = os.Stdin
 	if shouldFilter {
@@ -547,13 +652,8 @@ func readSSHAskpassPassword(prompt string) (string, error) {
 			return "", fmt.Errorf("parse SSH password helper file: %w", err)
 		}
 
-		if prompt != "" && len(cfg.HostPass) > 0 {
-			lowerPrompt := strings.ToLower(prompt)
-			for hostOrName, pass := range cfg.HostPass {
-				if strings.Contains(lowerPrompt, strings.ToLower(hostOrName)) {
-					return pass, nil
-				}
-			}
+		if pass := matchHostPassword(cfg.HostPass, prompt); pass != "" {
+			return pass, nil
 		}
 		if cfg.DefaultPass != "" {
 			return cfg.DefaultPass, nil

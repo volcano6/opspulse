@@ -358,54 +358,70 @@ func (r *RestoreRunner) autoStartContainers(
 		execToUse = r.localExecutor
 	}
 
-	origProjectDir := fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)
-	restoredProjectDir := RestoredPath(opts.TargetPath, origProjectDir)
+	candidateDirs := []string{fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)}
+	for _, p := range job.Paths {
+		candidateDirs = append(candidateDirs, p)
+	}
 
-	// Check if manifest.yaml is present in the restored project
-	manifestPath := path.Join(restoredProjectDir, docker.ManifestFileName)
-	readManifestScript := fmt.Sprintf("cat %s 2>/dev/null || true", shellquote.Quote(manifestPath))
-	var manifestBuf bytes.Buffer
-	res, err := execToUse.Execute(ctx, target, "read-manifest-"+job.Name, readManifestScript, &manifestBuf)
-	if err == nil && res != nil && res.Success && len(bytes.TrimSpace(manifestBuf.Bytes())) > 0 {
-		manifest, parseErr := docker.UnmarshalManifest(manifestBuf.Bytes())
-		if parseErr == nil && manifest != nil {
-			_, _ = fmt.Fprintf(consoleOut, "  -> Detected package manifest for app %q. Running manifest-driven restore...\n", manifest.App)
+	var (
+		manifest           *docker.ContainerManifest
+		restoredProjectDir string
+	)
 
-			// A. Check external mounts
-			for _, em := range manifest.ExternalMounts {
-				if em.Reason == "system_mount" || strings.HasPrefix(em.Source, "/var/run") || strings.HasPrefix(em.Source, "/dev") {
-					checkScript := fmt.Sprintf("test -e %s || echo 'MISSING'", shellquote.Quote(em.Source))
-					var checkBuf bytes.Buffer
-					_, _ = execToUse.Execute(ctx, target, "check-mount", checkScript, &checkBuf)
-					if strings.Contains(checkBuf.String(), "MISSING") {
-						_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: external host mount %s is missing on target %s\n", em.Source, target.Name)
-					}
+	for _, cand := range candidateDirs {
+		rDir := RestoredPath(opts.TargetPath, cand)
+		mPath := path.Join(rDir, docker.ManifestFileName)
+		readManifestScript := fmt.Sprintf("cat %s 2>/dev/null || true", shellquote.Quote(mPath))
+		var mBuf bytes.Buffer
+		res, err := execToUse.Execute(ctx, target, "read-manifest-"+job.Name, readManifestScript, &mBuf)
+		if err == nil && res != nil && res.Success && len(bytes.TrimSpace(mBuf.Bytes())) > 0 {
+			m, parseErr := docker.UnmarshalManifest(mBuf.Bytes())
+			if parseErr == nil && m != nil {
+				manifest = m
+				restoredProjectDir = rDir
+				break
+			}
+		}
+	}
+
+	if manifest != nil {
+		_, _ = fmt.Fprintf(consoleOut, "  -> Detected package manifest for app %q. Running manifest-driven restore...\n", manifest.App)
+
+		// A. Check external mounts
+		for _, em := range manifest.ExternalMounts {
+			if em.Reason == "system_mount" || strings.HasPrefix(em.Source, "/var/run") || strings.HasPrefix(em.Source, "/dev") {
+				checkScript := fmt.Sprintf("test -e %s || echo 'MISSING'", shellquote.Quote(em.Source))
+				var checkBuf bytes.Buffer
+				_, _ = execToUse.Execute(ctx, target, "check-mount", checkScript, &checkBuf)
+				if strings.Contains(checkBuf.String(), "MISSING") {
+					_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: external host mount %s is missing on target %s\n", em.Source, target.Name)
 				}
 			}
+		}
 
-			// B. Restore named volumes
-			for _, v := range manifest.Volumes {
-				if v.Archive != "" {
-					archivePath := path.Join(restoredProjectDir, v.Archive)
-					_, _ = fmt.Fprintf(consoleOut, "  -> Restoring volume %q from %s...\n", v.OriginalName, v.Archive)
-					volScript := docker.BuildVolumeImportScript(v.OriginalName, archivePath)
-					vRes, vErr := execToUse.Execute(ctx, target, "restore-vol-"+v.OriginalName, volScript, consoleOut)
-					if vErr != nil || (vRes != nil && !vRes.Success) {
-						return fmt.Errorf("failed to restore volume %q: %v", v.OriginalName, vErr)
-					}
+		// B. Restore named volumes
+		for _, v := range manifest.Volumes {
+			if v.Archive != "" {
+				archivePath := path.Join(restoredProjectDir, v.Archive)
+				_, _ = fmt.Fprintf(consoleOut, "  -> Restoring volume %q from %s...\n", v.OriginalName, v.Archive)
+				volScript := docker.BuildVolumeImportScript(v.OriginalName, archivePath)
+				vRes, vErr := execToUse.Execute(ctx, target, "restore-vol-"+v.OriginalName, volScript, consoleOut)
+				if vErr != nil || (vRes != nil && !vRes.Success) {
+					return fmt.Errorf("failed to restore volume %q: %v", v.OriginalName, vErr)
 				}
 			}
+		}
 
-			// C. Start Compose
-			projectName := manifest.App
-			if opts.AliasName != "" {
-				projectName = opts.AliasName
-			}
-			composeFile := manifest.ComposeFile
-			if composeFile == "" {
-				composeFile = "compose.yaml"
-			}
-			startComposeScript := fmt.Sprintf(`if docker compose version >/dev/null 2>&1; then
+		// C. Start Compose
+		projectName := manifest.App
+		if opts.AliasName != "" {
+			projectName = opts.AliasName
+		}
+		composeFile := manifest.ComposeFile
+		if composeFile == "" {
+			composeFile = "compose.yaml"
+		}
+		startComposeScript := fmt.Sprintf(`if docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
   COMPOSE="docker-compose"
@@ -415,56 +431,58 @@ else
 fi
 cd %s
 export COMPOSE_PROJECT_NAME=%s
-$COMPOSE -f %s up -d
-`, shellquote.Quote(restoredProjectDir), shellquote.Quote(projectName), shellquote.Quote(composeFile))
+if [ -f %s ]; then
+  $COMPOSE -f %s up -d
+else
+  $COMPOSE up -d
+fi
+`, shellquote.Quote(restoredProjectDir), shellquote.Quote(projectName), shellquote.Quote(composeFile), shellquote.Quote(composeFile))
 
-			cRes, cErr := execToUse.Execute(ctx, target, "compose-up-"+job.Name, startComposeScript, consoleOut)
-			if cErr != nil || (cRes != nil && !cRes.Success) {
-				return fmt.Errorf("compose up failed for %q: %v", projectName, cErr)
-			}
-
-			// D. Import Database
-			if manifest.Database != nil && manifest.Database.Dump != "" {
-				dumpPath := path.Join(restoredProjectDir, manifest.Database.Dump)
-				targetContainer := manifest.Database.Container
-				if opts.AliasName != "" && targetContainer == manifest.App {
-					targetContainer = opts.AliasName
-				}
-				_, _ = fmt.Fprintf(consoleOut, "  -> Importing database dump from %s into %s (%s)...\n",
-					dumpPath, targetContainer, manifest.Database.Engine)
-				importScript, impErr := docker.BuildImportScript(manifest.Database.Engine, targetContainer, dumpPath)
-				if impErr != nil {
-					return fmt.Errorf("failed to build import script: %w", impErr)
-				}
-				impRes, impExecErr := execToUse.Execute(ctx, target, "import-db-"+job.Name, importScript, consoleOut)
-				if impExecErr != nil {
-					return fmt.Errorf("database import failed for container %q: %w", targetContainer, impExecErr)
-				}
-				if impRes != nil && !impRes.Success {
-					if impRes.Error != nil {
-						return fmt.Errorf("database import failed for container %q: %w", targetContainer, impRes.Error)
-					}
-					return fmt.Errorf("database import failed for container %q: command exited with code %d", targetContainer, impRes.ExitCode)
-				}
-			}
-
-			_, _ = fmt.Fprintf(consoleOut, "🚀 Container app %q successfully restored and running on %s!\n", projectName, target.Name)
-			return nil
+		cRes, cErr := execToUse.Execute(ctx, target, "compose-up-"+job.Name, startComposeScript, consoleOut)
+		if cErr != nil || (cRes != nil && !cRes.Success) {
+			return fmt.Errorf("compose up failed for %q: %v", projectName, cErr)
 		}
+		// D. Import Database
+		if manifest.Database != nil && manifest.Database.Dump != "" {
+			dumpPath := path.Join(restoredProjectDir, manifest.Database.Dump)
+			targetContainer := manifest.Database.Container
+			if opts.AliasName != "" && targetContainer == manifest.App {
+				targetContainer = opts.AliasName
+			}
+			_, _ = fmt.Fprintf(consoleOut, "  -> Importing database dump from %s into %s (%s)...\n",
+				dumpPath, targetContainer, manifest.Database.Engine)
+			importScript, impErr := docker.BuildImportScript(manifest.Database.Engine, targetContainer, dumpPath)
+			if impErr != nil {
+				return fmt.Errorf("failed to build import script: %w", impErr)
+			}
+			impRes, impExecErr := execToUse.Execute(ctx, target, "import-db-"+job.Name, importScript, consoleOut)
+			if impExecErr != nil {
+				return fmt.Errorf("database import failed for container %q: %w", targetContainer, impExecErr)
+			}
+			if impRes != nil && !impRes.Success {
+				if impRes.Error != nil {
+					return fmt.Errorf("database import failed for container %q: %w", targetContainer, impRes.Error)
+				}
+				return fmt.Errorf("database import failed for container %q: command exited with code %d", targetContainer, impRes.ExitCode)
+			}
+		}
+
+		_, _ = fmt.Fprintf(consoleOut, "🚀 Container app %q successfully restored and running on %s!\n", projectName, target.Name)
+		return nil
 	}
 
 	// Fallback to auto-start script for non-manifest backups
-	var candidateDirs []string
+	var fallbackCandidateDirs []string
 	if opts.TargetPath != "" && opts.TargetPath != "/" {
-		candidateDirs = append(candidateDirs, opts.TargetPath)
+		fallbackCandidateDirs = append(fallbackCandidateDirs, opts.TargetPath)
 	}
-	candidateDirs = append(candidateDirs, restoredProjectDir)
+	fallbackCandidateDirs = append(fallbackCandidateDirs, restoredProjectDir)
 	for _, p := range job.Paths {
-		candidateDirs = append(candidateDirs, RestoredPath(opts.TargetPath, p))
+		fallbackCandidateDirs = append(fallbackCandidateDirs, RestoredPath(opts.TargetPath, p))
 	}
 
 	autoOpts := docker.AutoStartOptions{
-		ComposeDirs: dedupPaths(candidateDirs),
+		ComposeDirs: dedupPaths(fallbackCandidateDirs),
 		AliasName:   opts.AliasName,
 	}
 
