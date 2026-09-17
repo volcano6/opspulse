@@ -379,7 +379,9 @@ func (r *RestoreRunner) autoStartContainers(
 			if parseErr == nil && m != nil {
 				manifest = m
 				restoredProjectDir = rDir
-				break
+				if strings.EqualFold(m.App, job.Name) || (opts.AliasName != "" && strings.EqualFold(m.App, opts.AliasName)) {
+					break
+				}
 			}
 		}
 	}
