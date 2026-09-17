@@ -10,6 +10,7 @@ OpsPulse 直接通过 `go:embed` 将以下经过充分验证的官方模板嵌�
 
 | 模板名称 | 操作系统支持 | 功能描述 | 主要执行动作 |
 |----------|------------|---------|-------------|
+| `cn` | Ubuntu, Debian | 国内 VPS 网络与镜像加速 | 自动切换 APT 国内源（内网/公网自适应）、Git GitHub 全局代理、Docker 镜像源、Go/Pip 生态源 |
 | `base` | Ubuntu, Debian | 系统基础工具集 | 自动更新 apt 缓存，安装常用工具与排障套件，开启 TCP BBR 拥塞控制 |
 | `bbr` | Ubuntu, Debian | 开启 TCP BBR 拥塞控制 | 独立开启 Linux TCP BBR 与 fq 排队规则（写入 `/etc/sysctl.d/99-bbr.conf`） |
 | `security` | Ubuntu, Debian | 安全与防火墙加固 | 智能识别当前活跃 SSH 端口并自动放行，放行 Web 80/443，开启 UFW 与 fail2ban 防暴破 |
@@ -18,12 +19,13 @@ OpsPulse 直接通过 `go:embed` 将以下经过充分验证的官方模板嵌�
 | `nginx` | Ubuntu, Debian | Nginx Web 服务器 | 配置官方源安装最新稳定版 Nginx，开机自启并放行 80/443 端口 |
 | `caddy` | Ubuntu, Debian | Caddy Web 服务器 | 安装官方 Caddy 并设置开机自启，自动申请 HTTPS 证书 |
 | `golang` | Ubuntu, Debian | Go 语言开发环境 | 从官方/国内镜像下载安装指定或最新稳定版 Go，自动配置 PATH 与软链接 |
+| `nodejs` | Ubuntu, Debian | Node.js 开发环境与工具链 | 配置 NodeSource 源安装 Node.js LTS（支持传参如 `-t nodejs:22` 或 `nodejs:20`），安装 npm 并启用 corepack |
 | `uv` | Ubuntu, Debian | Astral uv Python 工具链 | 安装极速 Python 包与项目管理工具 uv/uvx 至 `/usr/local/bin` |
 | `restic` | Ubuntu, Debian | 备份工具链 | 安装 `restic` 与 `rclone` 二进制包，为 `ops backup` 提供执行基础 |
 | `swap` | Ubuntu, Debian | 零停机 Swap 扩容/调整 | 默认创建 2GB（可传参调整，如 `-t swap:4`），双文件热切换，优化 swappiness |
 | `timezone` | Ubuntu, Debian | 系统时区与时间同步 | 默认设置 `Asia/Shanghai`（支持传参如 `-t timezone:UTC`），开启 NTP 自动授时 |
 | `tmux` | Ubuntu, Debian | 终端复用与精巧配置 | 安装 tmux，配置鼠标滚动支持、10000 行历史回滚与 Dracula 主题状态栏 |
-| `zsh-starship` | Ubuntu, Debian | 现代终端与美化 | 安装 Zsh + Starship 提示符，配置命令自动补全与语法高亮插件 |
+| `zsh-starship` | Ubuntu, Debian | 现代终端与美化 | 安装 Zsh + Starship 提示符，内置 Node/Go/Rust 工具链自探测与高亮补全插件（支持传参 `-t zsh-starship:force` 强制刷新提取） |
 | `clean` | Ubuntu, Debian | 磁盘与资源清理 | 清理 apt 缓存、7天前 journalctl 日志与无用 Docker 资源 |
 | `upgrade` | Ubuntu, Debian | 系统包安全更新 | 无人值守升级系统软件包与安全补丁，检测内核更新并提示重启 |
 | `cluster-check` | Ubuntu, Debian | 节点指标快捷巡检 | 单框直观输出节点主机名、IP、负载、内存使用与根分区磁盘空间 |

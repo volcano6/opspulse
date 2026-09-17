@@ -86,13 +86,14 @@ func TestLoader_BuiltinTemplates(t *testing.T) {
 		t.Fatalf("List() error: %v", err)
 	}
 
-	if len(list) < 17 {
-		t.Fatalf("expected at least 17 built-in templates, got %d", len(list))
+	if len(list) < 19 {
+		t.Fatalf("expected at least 19 built-in templates, got %d", len(list))
 	}
 
 	expectedNames := map[string]bool{
 		"base":           false,
 		"bbr":            false,
+		"cn":             false,
 		"security":       false,
 		"timezone":       false,
 		"swap":           false,
@@ -107,6 +108,7 @@ func TestLoader_BuiltinTemplates(t *testing.T) {
 		"firewall-ports": false,
 		"uv":             false,
 		"golang":         false,
+		"nodejs":         false,
 		"cluster-check":  false,
 	}
 
@@ -161,15 +163,15 @@ echo "my custom docker"
 
 	customNew := `#!/bin/bash
 # ---
-# name: nodejs
+# name: custom-app
 # version: 1
-# description: Install Node.js
+# description: Custom App
 # ---
-echo "installing node"
+echo "installing custom app"
 `
-	err = os.WriteFile(filepath.Join(tmpDir, "nodejs.sh"), []byte(customNew), 0o600)
+	err = os.WriteFile(filepath.Join(tmpDir, "custom-app.sh"), []byte(customNew), 0o600)
 	if err != nil {
-		t.Fatalf("failed to write custom nodejs template: %v", err)
+		t.Fatalf("failed to write custom template: %v", err)
 	}
 
 	loader := NewLoader(tmpDir)
@@ -187,31 +189,31 @@ echo "installing node"
 	}
 
 	// Get custom new template
-	nodeTmpl, err := loader.Get("nodejs")
+	customTmpl, err := loader.Get("custom-app")
 	if err != nil {
-		t.Fatalf("Get('nodejs') error: %v", err)
+		t.Fatalf("Get('custom-app') error: %v", err)
 	}
-	if nodeTmpl.Metadata.Name != "nodejs" {
-		t.Errorf("expected name 'nodejs', got %q", nodeTmpl.Metadata.Name)
+	if customTmpl.Metadata.Name != "custom-app" {
+		t.Errorf("expected name 'custom-app', got %q", customTmpl.Metadata.Name)
 	}
 
-	// List should include nodejs and overridden docker
+	// List should include custom-app and overridden docker
 	list, err := loader.List()
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
 
-	foundNode := false
+	foundCustom := false
 	for _, item := range list {
-		if item.Metadata.Name == "nodejs" {
-			foundNode = true
+		if item.Metadata.Name == "custom-app" {
+			foundCustom = true
 		}
 		if item.Metadata.Name == "docker" && item.Metadata.Version != 99 {
 			t.Errorf("expected listed docker template to be custom version 99, got %d", item.Metadata.Version)
 		}
 	}
-	if !foundNode {
-		t.Error("expected 'nodejs' template in List()")
+	if !foundCustom {
+		t.Error("expected 'custom-app' template in List()")
 	}
 }
 

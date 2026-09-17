@@ -125,9 +125,15 @@ disabled = true
 disabled = true
 EOF
 
+FORCE_EXTRACT="${1:-${SCRIPT_ARG:-}}"
+
 echo "==> 4.5. Extracting user customizations from .bashrc to ~/.zshrc.local..."
 should_extract=false
-if [ ! -f "$USER_HOME/.zshrc.local" ] && [ -f "$USER_HOME/.bashrc" ]; then
+if [ "$FORCE_EXTRACT" = "force" ] || [ "$FORCE_EXTRACT" = "refresh" ]; then
+    echo "==> Force extract requested, backing up existing ~/.zshrc.local..."
+    [ -f "$USER_HOME/.zshrc.local" ] && cp "$USER_HOME/.zshrc.local" "$USER_HOME/.zshrc.local.bak.$(date +%Y%m%d%H%M%S)"
+    should_extract=true
+elif [ ! -f "$USER_HOME/.zshrc.local" ] && [ -f "$USER_HOME/.bashrc" ]; then
     should_extract=true
 elif [ -f "$USER_HOME/.zshrc.local" ]; then
     if command -v zsh >/dev/null 2>&1 && ! zsh -n "$USER_HOME/.zshrc.local" >/dev/null 2>&1; then
@@ -135,7 +141,7 @@ elif [ -f "$USER_HOME/.zshrc.local" ]; then
         cp "$USER_HOME/.zshrc.local" "$USER_HOME/.zshrc.local.bak.$(date +%Y%m%d%H%M%S)"
         should_extract=true
     else
-        echo "ℹ️  ~/.zshrc.local already exists and is valid, skipping extraction."
+        echo "ℹ️  ~/.zshrc.local already exists and is valid, skipping extraction (use -t zsh-starship:force to override)."
     fi
 fi
 
@@ -146,23 +152,23 @@ if [ "$should_extract" = true ]; then
         echo "# $(date -Iseconds)"
         echo ""
 
-        # 1. Standalone exports (exclude case/if fragments with ';;' and bash internal vars)
+        # 1. Standalone exports (exclude case/if fragments with ';;', broken continuation '\', and bash internal vars)
         grep -E '^\s*export\s+[A-Za-z_][A-Za-z0-9_]*=' "$USER_HOME/.bashrc" 2>/dev/null \
-            | grep -v -E ';;|HISTSIZE|HISTFILESIZE|HISTCONTROL|LESSOPEN|LESSCLOSE|PROMPT_COMMAND|PS1' \
+            | grep -v -E ';;|\\$|HISTSIZE|HISTFILESIZE|HISTCONTROL|LESSOPEN|LESSCLOSE|PROMPT_COMMAND|PS1' \
             | sed 's/^\s*//' \
-            | sort -u || true
+            | awk '!seen[$0]++' || true
 
-        # 2. Standalone aliases (exclude default ls/grep aliases and case fragments)
+        # 2. Standalone aliases (exclude default ls/grep aliases, broken continuation, and case fragments)
         grep -E '^\s*alias\s+[A-Za-z0-9_.-]+=' "$USER_HOME/.bashrc" 2>/dev/null \
-            | grep -v -E ';;|alias\s+(ls|grep|fgrep|egrep|ll|la|l)=' \
+            | grep -v -E ';;|\\$|alias\s+(ls|grep|fgrep|egrep|ll|la|l)=' \
             | sed 's/^\s*//' \
-            | sort -u || true
+            | awk '!seen[$0]++' || true
 
         # 3. Environment loaders (nvm, cargo, env scripts; avoid bash completion and bashrc loops)
         grep -E '^\s*(\[\s*-[sf]\s+[^]]+\]\s*&&\s*(\\\.|source|\.)|source\s+|\.\s+)' "$USER_HOME/.bashrc" 2>/dev/null \
-            | grep -v -E ';;|bash_completion|bashrc|completion\.bash|completion\s+bash|\.bash_aliases' \
+            | grep -v -E ';;|\\$|bash_completion|bashrc|completion\.bash|completion\s+bash|\.bash_aliases' \
             | sed 's/^\s*//' \
-            | sort -u || true
+            | awk '!seen[$0]++' || true
     } > "$TMP_EXTRACT"
 
     # Validate extracted syntax before replacing ~/.zshrc.local
@@ -198,7 +204,7 @@ SAVEHIST=10000
 setopt appendhistory sharehistory incappendhistory
 
 # Ensure standard user binary directories are in PATH
-for dir in "$HOME/.local/bin" "$HOME/bin" "$HOME/go/bin" "/usr/local/go/bin" "$HOME/.cargo/bin"; do
+for dir in "$HOME/.npm-global/bin" "$HOME/.local/bin" "$HOME/bin" "$HOME/go/bin" "/usr/local/go/bin" "$HOME/.cargo/bin"; do
     if [ -d "$dir" ] && [[ ":$PATH:" != *":$dir:"* ]]; then
         export PATH="$dir:$PATH"
     fi
@@ -214,6 +220,25 @@ source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh 2>/dev/null || true
 source ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh 2>/dev/null || true
 
 eval "$(starship init zsh)"
+
+# Node.js toolchains & package managers auto-detection
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    \. "$NVM_DIR/nvm.sh"
+elif [ -d "$HOME/.local/share/fnm" ] || command -v fnm >/dev/null 2>&1; then
+    [ -d "$HOME/.local/share/fnm" ] && export PATH="$HOME/.local/share/fnm:$PATH"
+    eval "$(fnm env 2>/dev/null)"
+elif [ -d "$HOME/.volta/bin" ]; then
+    export PATH="$HOME/.volta/bin:$PATH"
+fi
+[ -d "$HOME/.local/share/pnpm" ] && export PATH="$HOME/.local/share/pnpm:$PATH"
+
+# WSL Windows Node.js bridge fallback (prevent permission denied when Linux node is not installed)
+if ! command -v node >/dev/null 2>&1 && command -v node.exe >/dev/null 2>&1; then
+    alias node='node.exe'
+    alias npm='npm.cmd'
+    alias npx='npx.cmd'
+fi
 
 # Source user customizations (proxy, API keys, PATH, aliases)
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"

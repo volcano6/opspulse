@@ -53,19 +53,55 @@ func ToWindowsPath(wslPath string) string {
 	return wslPath
 }
 
+func isSystemWindowsUser(name string) bool {
+	switch strings.ToLower(name) {
+	case "all users", "default", "default user", "public", "desktop.ini":
+		return true
+	default:
+		return false
+	}
+}
+
 // WindowsUserHome returns the WSL path to the Windows user's home directory
 // (e.g. /mnt/c/Users/username). It only makes sense inside WSL.
 func WindowsUserHome() (string, error) {
 	cmd := exec.Command("cmd.exe", "/c", "echo %USERPROFILE%")
 	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to get Windows USERPROFILE: %w", err)
+	if err == nil {
+		winPath := strings.TrimSpace(string(out))
+		if winPath != "" && !strings.Contains(winPath, "%USERPROFILE%") {
+			return ToWSLPath(winPath), nil
+		}
 	}
-	winPath := strings.TrimSpace(string(out))
-	if winPath == "" || strings.Contains(winPath, "%USERPROFILE%") {
-		return "", fmt.Errorf("windows USERPROFILE is empty")
+
+	// Fallback 1: check USERPROFILE env var if passed via WSLENV
+	if winPath := strings.TrimSpace(os.Getenv("USERPROFILE")); winPath != "" {
+		return ToWSLPath(winPath), nil
 	}
-	return ToWSLPath(winPath), nil
+
+	// Fallback 2: Direct filesystem scan of /mnt/c/Users (works even if cmd.exe has no execute permission)
+	if entries, readErr := os.ReadDir("/mnt/c/Users"); readErr == nil {
+		currUser := strings.ToLower(os.Getenv("USER"))
+		if currUser != "" {
+			for _, entry := range entries {
+				if entry.IsDir() && !isSystemWindowsUser(entry.Name()) {
+					if strings.HasPrefix(strings.ToLower(entry.Name()), currUser) {
+						return filepath.Join("/mnt/c/Users", entry.Name()), nil
+					}
+				}
+			}
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !isSystemWindowsUser(entry.Name()) {
+				candidate := filepath.Join("/mnt/c/Users", entry.Name())
+				if FileExists(filepath.Join(candidate, "AppData", "Local")) || !os.IsNotExist(err) {
+					return candidate, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("failed to get Windows USERPROFILE: %w", err)
 }
 
 // WindowsLocalAppData returns the Windows %LOCALAPPDATA% directory in the form
@@ -84,7 +120,15 @@ func WindowsLocalAppData() (string, error) {
 		return ToWSLPath(winLocal), nil
 	}
 
-	// Fallback: derive it from the user profile when cmd.exe interop is not
+	// Fallback 1: check LOCALAPPDATA env var if passed via WSLENV
+	if winLocal := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); winLocal != "" {
+		if !IsWSL() {
+			return winLocal, nil
+		}
+		return ToWSLPath(winLocal), nil
+	}
+
+	// Fallback 2: derive it from the user profile when cmd.exe interop is not
 	// available or did not expand the variable.
 	home, homeErr := WindowsUserHome()
 	if homeErr != nil {

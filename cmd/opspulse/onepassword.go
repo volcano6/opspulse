@@ -932,6 +932,13 @@ func ensure1PCLI() (secret.CLI, error) {
 	fmt.Println("⚠️  1Password CLI ('op') was not found on this host.")
 	fmt.Printf("💡 %s\n", secret.InstallHint())
 
+	if platform.IsWSL() {
+		if data, err := os.ReadFile("/etc/wsl.conf"); err == nil && strings.Contains(string(data), "fmask=011") {
+			fmt.Println("⚠️  Notice: Detected 'fmask=011' in /etc/wsl.conf, which strips execute permissions from Windows binaries in WSL.")
+			fmt.Println("💡 If you already installed 1Password on Windows, change 'fmask=011' to 'fmask=000' in /etc/wsl.conf and run 'wsl --shutdown'.")
+		}
+	}
+
 	if !stdinIsInteractive() {
 		return cli, fmt.Errorf("1Password CLI is required (install it, then re-run this command in an interactive terminal)")
 	}
@@ -1057,20 +1064,42 @@ func installWindows1PCLIFromWSL() error {
 			winget = candidate
 		}
 	}
-	if winget == "" {
-		fmt.Println("OpsPulse could not reach winget.exe from WSL.")
-		fmt.Println("Install the Windows build from Windows PowerShell instead:")
-		fmt.Println("  winget install AgileBits.1Password.CLI")
-		return fmt.Errorf("winget.exe is not reachable from WSL")
+	if winget != "" {
+		fmt.Println("Running (Windows build): winget.exe install AgileBits.1Password.CLI")
+		cmd := exec.Command(winget, // #nosec G204 -- fixed command, no user input
+			"install", "--id", "AgileBits.1Password.CLI", "-e",
+			"--accept-source-agreements", "--accept-package-agreements")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
 	}
 
-	fmt.Println("Running (Windows build): winget.exe install AgileBits.1Password.CLI")
-	cmd := exec.Command(winget, // #nosec G204 -- fixed command, no user input
-		"install", "--id", "AgileBits.1Password.CLI", "-e",
-		"--accept-source-agreements", "--accept-package-agreements")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// Fallback to driving winget via powershell.exe or cmd.exe across interop
+	for _, runner := range []string{"powershell.exe", "cmd.exe"} {
+		if p, err := exec.LookPath(runner); err == nil {
+			fmt.Printf("Running (Windows build via %s): winget install AgileBits.1Password.CLI\n", runner)
+			var cmd *exec.Cmd
+			if runner == "powershell.exe" {
+				cmd = exec.Command(p, "-NoProfile", "-Command", "winget install AgileBits.1Password.CLI -e --accept-source-agreements --accept-package-agreements")
+			} else {
+				cmd = exec.Command(p, "/c", "winget install AgileBits.1Password.CLI -e --accept-source-agreements --accept-package-agreements")
+			}
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if runErr := cmd.Run(); runErr == nil {
+				return nil
+			}
+		}
+	}
+
+	fmt.Println("OpsPulse could not reach winget from WSL.")
+	fmt.Println("Install the Windows build from Windows PowerShell instead:")
+	fmt.Println("  winget install AgileBits.1Password.CLI")
+	if data, err := os.ReadFile("/etc/wsl.conf"); err == nil && strings.Contains(string(data), "fmask=011") {
+		fmt.Println("💡 Notice: Found 'fmask=011' in /etc/wsl.conf which blocks execution of Windows binaries.")
+		fmt.Println("   To fix, change 'fmask=011' to 'fmask=000' in /etc/wsl.conf and run 'wsl --shutdown'.")
+	}
+	return fmt.Errorf("winget is not reachable from WSL")
 }
 
 func init() {
