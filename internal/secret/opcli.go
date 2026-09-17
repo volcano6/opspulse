@@ -116,6 +116,9 @@ func (c CLI) RunWithStdin(ctx context.Context, stdin []byte, args ...string) ([]
 		if msg == "" {
 			msg = strings.TrimSpace(stdout.String())
 		}
+		if platform.IsWSL() && (errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "permission denied")) {
+			return nil, fmt.Errorf("1Password CLI at %s cannot be executed (permission denied).\n💡 Fix: Run 'sudo chmod +x %s' or change 'fmask=011' to 'fmask=000' in /etc/wsl.conf: %w", c.Path, c.Path, err)
+		}
 		return stdout.Bytes(), fmt.Errorf("op %s: %w (stderr: %s)", strings.Join(args, " "), err, msg)
 	}
 	return stdout.Bytes(), nil
@@ -168,6 +171,22 @@ func Detect() CLI {
 		if p, err := exec.LookPath("op.exe"); err == nil {
 			return CLI{Path: p, IsWindowsBinary: true}
 		}
+		if p, err := exec.LookPath("op"); err == nil {
+			return CLI{Path: p, IsWindowsBinary: looksLikeWindowsBinary(p)}
+		}
+		// Probe common WSL system and user bin locations where op / op.exe might be installed or symlinked
+		for _, candidate := range []string{"/usr/local/bin/op.exe", "/usr/local/bin/op"} {
+			if platform.FileExists(candidate) {
+				return CLI{Path: candidate, IsWindowsBinary: looksLikeWindowsBinary(candidate)}
+			}
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			for _, candidate := range []string{filepath.Join(home, ".local", "bin", "op.exe"), filepath.Join(home, ".local", "bin", "op")} {
+				if platform.FileExists(candidate) {
+					return CLI{Path: candidate, IsWindowsBinary: looksLikeWindowsBinary(candidate)}
+				}
+			}
+		}
 		if p, ok := locateWindowsExecutable("op.exe"); ok {
 			return CLI{Path: p, IsWindowsBinary: true}
 		}
@@ -217,6 +236,9 @@ func findWingetCLIIn(localAppData string) (string, bool) {
 	}
 	for _, candidate := range candidates {
 		if platform.FileExists(candidate) {
+			if platform.IsWSL() {
+				_ = os.Chmod(candidate, 0o755)
+			}
 			return candidate, true
 		}
 	}
