@@ -31,10 +31,52 @@ ops 1p push web vps-01             # 推送指定服务器
 ops 1p push --all                  # 推送所有使用本地私钥的服务器
 ops 1p push web --delete-local     # 推送成功后顺带删掉本地托管副本
 ops 1p pull web                    # 取回本地，写回 ~/.ssh/opspulse_web
+ops 1p pull web db-01              # 一次取回多台
+ops 1p pull --all                  # 取回全部（脱困通道，见下节）
+ops 1p pull --all --yes            # 同上，跳过明文密码确认
 ops 1p config                      # 查看当前生效的账号/保险库，并列出可选项
 ops 1p config --vault Employee     # 记住默认保险库，以后不用再传 --vault
 ops 1p config --unset              # 忘掉记住的默认值
 ```
+
+### 从 1Password 撤离（脱困通道）
+
+不再续费 1Password、或者要把凭据收回本地时，一条命令就能整体脱离：
+
+```bash
+ops 1p pull --all
+```
+
+它会把每台服务器托管在 1Password 里的凭据**完整**还原：私钥写回 `~/.ssh/opspulse_<server>`，
+密码写回 `servers.yaml`。一个条目同时有私钥和密码时（`ops server setup-key` 会留下这种状态），
+两者都会被取回——只取一个会留下一条永远解析不了的 `op://` 引用。
+
+密码只能以明文形式回到 `servers.yaml`，所以只要本次拉取涉及密码，OpsPulse 会先要求确认：
+
+```
+⚠️  Warning: pulling will write 2 plaintext password(s) into servers.yaml.
+Are you sure you want to proceed? [y/N]:
+```
+
+- `--yes`（`-y`）跳过确认，适合脚本；
+- 非交互环境（管道、CI）**不给 `--yes` 就直接拒绝退出**，不会挂住，也不会偷偷落盘；
+- 结束后会再汇总一次"写入了 N 条明文密码"，提醒你用完删除。
+
+几个细节：
+
+| 参数 | 作用 |
+|------|------|
+| `--all` | 拉取全部服务器；默认跳过带 `skip_batch` 的服务器并列出它们 |
+| `--include-skipped` | 配合 `--all`，把 `skip_batch` 的服务器也一起拉 |
+| `--force` | 本地已有**另一把**私钥时强制覆盖 |
+| `--yes` / `-y` | 跳过明文密码确认 |
+
+单台失败（1Password 不可达、条目被删）不会中断整批，收尾会打印
+`N restored, M skipped, K failed`，只要有失败就以非 0 退出。
+
+> 私钥覆盖判断按**公钥**比对，不是按字节。1Password 取回时会把密钥规范化
+> （例如以传统 PEM 上传的 RSA 密钥会以 OpenSSH 格式返回），按字节比会误判成冲突，
+> 让人白白去加 `--force`。只有本地那把确实是**另一把**密钥时才会拦下来。
 
 ### 不用每次都传 --vault / --account
 
@@ -108,6 +150,7 @@ servers:
 | `ops ssh` / `ops exec` 等 | 私钥在连接时解析，`ops ssh` 会写成 0600 临时文件，会话结束立即删除 |
 | GUI SFTP（`ops sftp --app winscp`） | GUI 客户端只认文件，私钥会落到 `~/.ssh/opspulse-1p/<server>`（0600）并保留 |
 | `ops export ssh-config` | 系统 `ssh` 读不了 `op://`，因此该主机不会写出 `IdentityFile`，只留注释指引 |
+| `ops 1p pull` | 私钥写回 `~/.ssh/opspulse_<server>`（0600）并**保留**；密码以**明文**写回 `servers.yaml`，需确认或 `--yes` |
 
 ## 常见问题
 
@@ -131,4 +174,13 @@ Linux 版连不上 Windows 桌面端，按「前提」装 Windows 版即可；Op
 
 **想退回本地私钥**
 `ops 1p pull <server>` 会把私钥写回 `~/.ssh/opspulse_<server>` 并重新绑定到本地路径，
-1Password 里的条目不会被删除。
+1Password 里的条目不会被删除。要整体脱离 1Password 用 `ops 1p pull --all`，见
+「从 1Password 撤离（脱困通道）」。
+
+**`pull` 说本地有一把不同的密钥**
+说明 `~/.ssh/opspulse_<server>` 里已经躺着**另一把**密钥，OpsPulse 不会替你覆盖它。
+确认那把密钥不再需要之后再跑 `ops 1p pull <server> --force`。
+
+**`pull` 报 "refusing to write ... without confirmation"**
+说明当前是非交互环境，OpsPulse 拒绝在没人确认的情况下把明文密码写进 `servers.yaml`。
+确认无误后加 `--yes` 即可。

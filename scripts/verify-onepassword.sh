@@ -13,6 +13,11 @@
 #   * an existing item goes through `item get` + `item edit`, not a re-create
 #   * a pushed password stops being stored as plaintext in servers.yaml
 #   * a pulled key lands on disk as a usable 0600 key with its .pub sibling
+#   * a pull that would write a plaintext password refuses in a pipe without
+#     --yes, and a key-only pull never asks
+#   * `pull --all` restores everything, leaves skip_batch servers alone unless
+#     --include-skipped is given, and restores a dual-credential server in full
+#   * a foreign key on disk blocks the restore until --force says otherwise
 #
 # Only structural facts are printed - no key material, no plaintext password.
 #
@@ -68,6 +73,14 @@ check() { # check <what> <want> <got>
 		echo "  FAIL  $1: want $2, got $3"
 		FAILURES=$((FAILURES + 1))
 	fi
+}
+
+# key_fpr fingerprints the key *derived from the private key itself*.
+# `ssh-keygen -l -f <private>` is not usable here: it prefers a sibling .pub
+# file, so after swapping only the private key it would keep reporting the old
+# key and every comparison below would pass vacuously.
+key_fpr() {
+	ssh-keygen -y -f "$1" 2>/dev/null | ssh-keygen -lf - 2>/dev/null | awk '{print $2}'
 }
 
 write_config() { # write_config <web-key-path>
@@ -136,22 +149,119 @@ check "item read before update" 1 "$(grep -c 'item get item-existing --vault Per
 check "update receives a non-empty stdin" 1 "$(grep -c 'item edit item-existing --vault Personal | stdin=[1-9]' "$STUB_OP_LOG")"
 
 echo
-echo "==> pull a password back into servers.yaml"
-"$OPS" 1p pull vps_01
+echo "==> a piped pull refuses instead of hanging on a prompt"
+PIPED="$(printf '' | "$OPS" 1p pull vps_01 2>&1 || true)"
+check "piped pull points at --yes" 1 "$(printf '%s' "$PIPED" | grep -c -- '--yes')"
+check "piped pull wrote nothing" 0 "$(grep -c "$STUB_PW" "$YAML")"
+
+echo
+echo "==> pull a password back into servers.yaml (--yes)"
+"$OPS" 1p pull vps_01 --yes
 check "plaintext password restored" 1 "$(grep -c "password: $STUB_PW" "$YAML")"
 check "password reference gone" 0 "$(grep -c 'op://Personal/opspulse_vps_01_password' "$YAML")"
 
 echo
-echo "==> pull a private key back onto disk"
-"$OPS" 1p pull web
+echo "==> pull a private key back onto disk (key only, so no confirmation)"
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: op://Personal/opspulse_web/private key
+YAML
 KEY="$WORK_POSIX/fakehome/.ssh/opspulse_web"
+KEY_WANT="$(key_fpr "$WORK_NATIVE/id_web")"
+"$OPS" 1p pull web
 check "private key written" 1 "$([ -f "$KEY" ] && echo 1 || echo 0)"
 check ".pub sibling derived" 1 "$([ -f "$KEY.pub" ] && echo 1 || echo 0)"
 check "key is parseable" 0 "$(ssh-keygen -l -f "$KEY" >/dev/null 2>&1; echo $?)"
+check "the key on disk is the 1Password copy" "$KEY_WANT" "$(key_fpr "$KEY")"
 check "key_path rebound to the file" 1 "$(grep -c 'key_path: ~/.ssh/opspulse_web' "$YAML")"
 
 echo
+echo "==> a different key already on disk is not overwritten without --force"
+ssh-keygen -q -t ed25519 -N '' -f "$WORK_NATIVE/id_other" -C opspulse-other
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: op://Personal/opspulse_web/private key
+YAML
+# Only the private key is swapped; the stale .pub from the previous pull stays
+# behind on purpose, so that a check which consults it would be caught.
+cp "$WORK_NATIVE/id_other" "$KEY"
+FPR_OTHER="$(key_fpr "$KEY")"
+if [ "$FPR_OTHER" = "$KEY_WANT" ]; then
+	echo "  FAIL  the conflict fixture is not a distinct key"
+	FAILURES=$((FAILURES + 1))
+fi
+CONFLICT="$("$OPS" 1p pull web 2>&1 || true)"
+CONFLICT_RC=0
+"$OPS" 1p pull web >/dev/null 2>&1 || CONFLICT_RC=$?
+check "the conflict is reported with a way out" 1 "$(printf '%s' "$CONFLICT" | grep -c -- '--force')"
+check "a blocked restore exits non-zero" 1 "$CONFLICT_RC"
+check "the foreign key survived untouched" "$FPR_OTHER" "$(key_fpr "$KEY")"
+
+"$OPS" 1p pull web --force >/dev/null
+check "--force replaces it with the 1Password copy" "$KEY_WANT" "$(key_fpr "$KEY")"
+
+echo
+echo "==> pull --all restores everything, but honours skip_batch"
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: op://Personal/opspulse_web/private key
+  - name: vps_01
+    host: 10.0.0.11
+    user: root
+    password: op://Personal/opspulse_vps_01_password/password
+  - name: guarded
+    host: 10.0.0.13
+    user: root
+    skip_batch: true
+    key_path: op://Personal/opspulse_guarded/private key
+  - name: bare
+    host: 10.0.0.12
+    user: root
+YAML
+rm -f "$KEY"
+ALL_OUT="$("$OPS" 1p pull --all --yes 2>&1 || true)"
+check "summary counts restores and skips" 1 \
+	"$(printf '%s' "$ALL_OUT" | grep -c 'Pull finished: 2 restored, 1 skipped, 0 blocked, 0 failed')"
+check "the skip_batch server is named" 1 "$(printf '%s' "$ALL_OUT" | grep -c 'skip_batch')"
+check "the skip_batch server stays in 1Password" 1 "$(grep -c 'op://Personal/opspulse_guarded' "$YAML")"
+
+echo
+echo "==> --include-skipped pulls the guarded server too"
+"$OPS" 1p pull --all --include-skipped --yes >/dev/null
+check "guarded key restored" 1 "$(grep -c 'key_path: ~/.ssh/opspulse_guarded' "$YAML")"
+
+echo
+echo "==> a server holding both a key and a password is restored in full"
+cat > "$YAML" <<YAML
+servers:
+  - name: dual
+    host: 10.0.0.14
+    user: root
+    key_path: op://Personal/opspulse_dual/private key
+    password: op://Personal/opspulse_dual_password/password
+YAML
+"$OPS" 1p pull dual --yes >/dev/null
+check "the key came back" 1 "$(grep -c 'key_path: ~/.ssh/opspulse_dual' "$YAML")"
+check "the password came back too" 1 "$(grep -c "password: $STUB_PW" "$YAML")"
+check "no op:// reference is stranded" 0 "$(grep -c 'op://' "$YAML")"
+
+echo
 echo "==> a server with no credentials is skipped"
+cat > "$YAML" <<YAML
+servers:
+  - name: bare
+    host: 10.0.0.12
+    user: root
+YAML
 "$OPS" 1p push bare | tail -n 3
 
 echo
