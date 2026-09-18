@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +72,16 @@ var (
 	onePasswordAccount     string
 )
 
+// Pull keeps its own flags rather than sharing push's. The two commands mean
+// different things by "all" and by "yes", and a shared variable would quietly
+// couple them the first time either grows a default.
+var (
+	onePasswordPullAll      bool
+	onePasswordPullYes      bool
+	onePasswordPullForce    bool
+	onePasswordPullInclSkip bool
+)
+
 var onePasswordCmd = &cobra.Command{
 	Use:     "1p",
 	Aliases: []string{"1password", "onepassword"},
@@ -76,7 +89,7 @@ var onePasswordCmd = &cobra.Command{
 	Long: `Push local credentials into 1Password, or pull them back onto local disk.
 
   ops 1p push <server>...   Upload local keys/passwords and rebind the servers to op:// references
-  ops 1p pull <server>      Write a 1Password-hosted credential back into servers.yaml
+  ops 1p pull <server>...   Write 1Password-hosted credentials back onto local disk
   ops 1p status             Show where each server's credentials currently live
   ops 1p config             Show or change the remembered vault and account
 
@@ -108,11 +121,27 @@ plaintext next to an op:// reference would defeat the point.`,
 }
 
 var onePasswordPullCmd = &cobra.Command{
-	Use:   "pull <server>",
-	Short: "Copy a 1Password-hosted key back onto local disk and rebind the server",
-	Args:  cobra.ExactArgs(1),
+	Use:   "pull [server...]",
+	Short: "Copy 1Password-hosted credentials back onto local disk",
+	Long: `Write 1Password-hosted credentials back to local disk and rebind the servers.
+
+This is the way out of 1Password. Every credential a server keeps in 1Password is
+brought back - a private key to ~/.ssh/opspulse_<server>, a password into
+servers.yaml - so the configuration keeps working after the account is gone. A
+server that carries both is restored in full; the old single-credential
+behaviour would have left a dangling op:// reference behind.
+
+Because a password can only come back as plaintext, OpsPulse asks for
+confirmation whenever the pull would write one. In a non-interactive shell the
+command refuses instead of hanging, unless --yes says the answer up front.
+
+  ops 1p pull web              # restore one server
+  ops 1p pull web db-01        # restore several
+  ops 1p pull --all            # restore everything (the off-ramp)
+  ops 1p pull --all --yes      # same, unattended`,
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPullFromOnePassword(cmd.Context(), args[0])
+		return runPullFromOnePassword(cmd.Context(), args)
 	},
 }
 
@@ -375,67 +404,317 @@ func writeOnePasswordItem(ctx context.Context, cli secret.CLI, vault, title, cat
 	return nil
 }
 
-func runPullFromOnePassword(ctx context.Context, name string) error {
+// pullOutcome summarises what happened to one server, so that a batch can carry
+// on past a failure and still print an honest summary at the end.
+type pullOutcome struct {
+	name       string
+	keyPulled  bool
+	passPulled bool
+	// reason explains a partial, blocked or skipped result. It is never a
+	// failure: an error is reported through err, which is what decides the exit
+	// code.
+	reason string
+	// blocked marks a credential that could not be restored without a human
+	// decision (currently: --force). It is kept apart from a plain skip because
+	// a skip is benign while a block means the off-ramp is incomplete.
+	blocked bool
+	err     error
+}
+
+// restored reports whether anything actually came back to local disk.
+func (o pullOutcome) restored() bool { return o.keyPulled || o.passPulled }
+
+func runPullFromOnePassword(ctx context.Context, args []string) error {
 	if _, err := ensure1PCLI(); err != nil {
 		return err
 	}
 
 	store := server.NewDefaultStore()
-	srv, err := store.Get(name)
+	targets, explicit, skippedByBatch, err := selectOnePasswordPullTargets(store, args)
 	if err != nil {
 		return err
 	}
-	switch {
-	case secret.Is1PRef(srv.KeyPath):
-		return pullKeyFromOnePassword(ctx, store, srv)
-	case secret.Is1PRef(srv.Password):
-		return pullPasswordFromOnePassword(ctx, store, srv)
-	case strings.TrimSpace(srv.KeyPath) == "" && strings.TrimSpace(srv.Password) == "":
-		return fmt.Errorf("server %q has no credential configured; nothing to pull", name)
-	default:
-		return fmt.Errorf("server %q keeps its credentials in servers.yaml, not in 1Password; run 'ops 1p push %s' to upload them first", name, name)
+	if len(skippedByBatch) > 0 {
+		fmt.Printf("ℹ️  Skipped %d server(s) marked skip_batch: %s\n", len(skippedByBatch), strings.Join(skippedByBatch, ", "))
+		fmt.Println("   Pass --include-skipped to pull them as well.")
 	}
+	if len(targets) == 0 {
+		fmt.Println("Nothing to pull.")
+		return nil
+	}
+
+	// Ask up front rather than halfway through, so a declined confirmation
+	// cannot leave the batch half-applied.
+	if passwords := countPullablePasswords(targets); passwords > 0 {
+		if err := confirmPlaintextPull(os.Stdin, os.Stdout, passwords, stdinIsInteractive(), onePasswordPullYes); err != nil {
+			return err
+		}
+	}
+
+	outcomes := make([]pullOutcome, 0, len(targets))
+	for _, srv := range targets {
+		outcomes = append(outcomes, pullOneServer(ctx, store, srv, explicit))
+	}
+	return reportPullOutcomes(os.Stdout, outcomes)
+}
+
+// selectOnePasswordPullTargets decides which servers a pull covers.
+//
+// Naming a server is an instruction, so an explicit name is honoured even when
+// the server carries skip_batch: dropping it silently would look like the
+// argument was ignored. The bulk form follows the project's convention for
+// implicit batch operations (see 'ops doctor' and 'ops exec'), where skip_batch
+// servers are left out unless --include-skipped asks for them.
+//
+// explicit reports which form was used, because the two treat "nothing is
+// managed in 1Password" differently.
+func selectOnePasswordPullTargets(store *server.Store, args []string) (targets []*server.Server, explicit bool, skipped []string, err error) {
+	if len(args) > 0 {
+		targets = make([]*server.Server, 0, len(args))
+		for _, name := range args {
+			srv, getErr := store.Get(name)
+			if getErr != nil {
+				return nil, true, nil, getErr
+			}
+			targets = append(targets, srv)
+		}
+		return targets, true, nil, nil
+	}
+
+	if !onePasswordPullAll {
+		return nil, false, nil, fmt.Errorf("specify at least one server name, or pass --all to target every server")
+	}
+
+	all, err := store.List()
+	if err != nil {
+		return nil, false, nil, err
+	}
+	targets = make([]*server.Server, 0, len(all))
+	for i := range all {
+		if all[i].SkipBatch && !onePasswordPullInclSkip {
+			skipped = append(skipped, all[i].Name)
+			continue
+		}
+		targets = append(targets, &all[i])
+	}
+	return targets, false, skipped, nil
+}
+
+// countPullablePasswords counts the servers whose password would land in
+// servers.yaml as plaintext, so the warning can name a number.
+func countPullablePasswords(targets []*server.Server) int {
+	count := 0
+	for _, srv := range targets {
+		if secret.Is1PRef(srv.Password) {
+			count++
+		}
+	}
+	return count
+}
+
+// confirmPlaintextPull gates the one irreversible step of a pull: a password
+// can only come back as plaintext in servers.yaml.
+//
+// A non-interactive shell is refused rather than prompted at. Reading from a
+// pipe that never closes would hang a script, and defaulting to "yes" would
+// write a secret nobody agreed to. The I/O and the interactivity verdict are
+// parameters so the policy can be tested without touching the real terminal.
+func confirmPlaintextPull(in io.Reader, out io.Writer, count int, interactive, yes bool) error {
+	if yes {
+		return nil
+	}
+	if !interactive {
+		return fmt.Errorf("refusing to write %d plaintext password(s) into servers.yaml without confirmation; re-run with --yes to accept this in a non-interactive shell", count)
+	}
+	prompt := fmt.Sprintf("⚠️  Warning: pulling will write %d plaintext password(s) into servers.yaml.\nAre you sure you want to proceed? [y/N]: ", count)
+	if !promptConfirm(in, out, prompt, false) {
+		return fmt.Errorf("pull cancelled by user")
+	}
+	return nil
+}
+
+// pullOneServer restores every credential a single server keeps in 1Password.
+//
+// Key and password are checked independently on purpose. A server can hold both
+// - 'ops server setup-key' deliberately leaves the password behind as a
+// fallback - and restoring only one of them would strand an op:// reference
+// once the 1Password account is gone.
+func pullOneServer(ctx context.Context, store *server.Store, srv *server.Server, explicit bool) pullOutcome {
+	out := pullOutcome{name: srv.Name}
+
+	keyManaged := secret.Is1PRef(srv.KeyPath)
+	passManaged := secret.Is1PRef(srv.Password)
+	if !keyManaged && !passManaged {
+		if explicit {
+			// The user asked for this server by name, so having nothing to pull
+			// is a real failure rather than something to quietly skip past.
+			out.err = fmt.Errorf("keeps its credentials in servers.yaml, not in 1Password; run 'ops 1p push %s' to upload them first", srv.Name)
+			return out
+		}
+		out.reason = "no credential is managed in 1Password"
+		return out
+	}
+
+	if keyManaged {
+		written, err := pullKeyFromOnePassword(ctx, store, srv)
+		switch {
+		case err != nil:
+			out.err = err
+			return out
+		case !written:
+			out.blocked = true
+			out.reason = "a different key already occupies the local path; re-run with --force to replace it"
+		default:
+			out.keyPulled = true
+		}
+	}
+	if passManaged {
+		if err := pullPasswordFromOnePassword(ctx, store, srv); err != nil {
+			out.err = err
+			return out
+		}
+		out.passPulled = true
+	}
+	return out
+}
+
+// reportPullOutcomes prints the per-server detail and the batch summary, and
+// turns an incomplete restore into a non-zero exit.
+//
+// A blocked server counts towards the failure of the run even though nothing
+// went wrong technically: its credential is still in 1Password, so a caller who
+// asked for a complete off-ramp has not got one and must be told.
+func reportPullOutcomes(w io.Writer, outcomes []pullOutcome) error {
+	var restoredCount, skipped, blocked, failed, passwords int
+	for _, out := range outcomes {
+		if out.err != nil {
+			failed++
+			fmt.Fprintf(w, "❌ %q: %v\n", out.name, out.err)
+			continue
+		}
+		// Counted before the switch so that a server whose key is blocked still
+		// gets credit for the password that did come back.
+		if out.passPulled {
+			passwords++
+		}
+
+		switch {
+		case out.blocked:
+			blocked++
+			fmt.Fprintf(w, "⚠️  %q: %s\n", out.name, out.reason)
+		case out.restored():
+			restoredCount++
+		default:
+			skipped++
+			fmt.Fprintf(w, "⏭️  %q: %s\n", out.name, out.reason)
+		}
+	}
+
+	fmt.Fprintln(w)
+	if passwords > 0 {
+		fmt.Fprintf(w, "⚠️  Wrote %d plaintext password(s) into servers.yaml. Delete them (or re-run 'ops 1p push') once the local copy is no longer needed.\n", passwords)
+	}
+	fmt.Fprintf(w, "Pull finished: %d restored, %d skipped, %d blocked, %d failed.\n", restoredCount, skipped, blocked, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d server(s) could not be pulled", failed)
+	}
+	if blocked > 0 {
+		return fmt.Errorf("%d server(s) still need a decision before their credentials can be restored", blocked)
+	}
+	return nil
 }
 
 // pullKeyFromOnePassword writes a 1Password-hosted private key back onto local
 // disk and rebinds the server to the file, leaving the item in 1Password alone.
-func pullKeyFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server) error {
+//
+// It reports whether the file was written: false with a nil error means the
+// destination already holds a different key and was deliberately left alone.
+func pullKeyFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server) (bool, error) {
 	ref := srv.KeyPath
 	vault, item, _, _ := secret.Parse1PRef(ref)
 	fmt.Printf("⬇️  Pulling key for %q from 1Password (%s/%s)...\n", srv.Name, vault, item)
 
 	keyData, err := onePasswordResolver().ResolveSSHKey(ctx, ref)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := validatePrivateKeyContent([]byte(keyData)); err != nil {
-		return fmt.Errorf("the 1Password item %q does not contain a usable SSH private key: %w", item, err)
+		return false, fmt.Errorf("the 1Password item %q does not contain a usable SSH private key: %w", item, err)
 	}
 
 	storedDest, expandedDest, err := setupKeyPath(srv.Name)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(expandedDest), 0o700); err != nil {
-		return fmt.Errorf("create ~/.ssh directory: %w", err)
-	}
+
 	body := []byte(keyData)
 	if !strings.HasSuffix(keyData, "\n") {
 		body = append(body, '\n')
 	}
+
+	replace, err := mayReplaceLocalKey(expandedDest, body)
+	if err != nil {
+		return false, err
+	}
+	if !replace {
+		return false, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(expandedDest), 0o700); err != nil {
+		return false, fmt.Errorf("create ~/.ssh directory: %w", err)
+	}
 	if err := os.WriteFile(expandedDest, body, 0o600); err != nil {
-		return fmt.Errorf("write private key to %s: %w", expandedDest, err)
+		return false, fmt.Errorf("write private key to %s: %w", expandedDest, err)
 	}
 	writePublicKeyFile(expandedDest, body)
 
 	srv.KeyPath = storedDest
 	if err := store.Save(*srv); err != nil {
-		return fmt.Errorf("rebind server %q to the local key: %w", srv.Name, err)
+		return false, fmt.Errorf("rebind server %q to the local key: %w", srv.Name, err)
 	}
 
-	fmt.Printf("✅ Saved to %s and rebound %q to it.\n", storedDest, srv.Name)
+	fmt.Printf("✅ %q: saved to %s and rebound to it.\n", srv.Name, storedDest)
 	fmt.Printf("   The 1Password item %q was left untouched.\n", secret.SSHKeyItemTitle(srv.Name))
-	return nil
+	return true, nil
+}
+
+// mayReplaceLocalKey reports whether an incoming key may overwrite whatever
+// already sits at path.
+//
+// The comparison is by public key rather than by bytes. 1Password normalises a
+// key on the way back out - an RSA key stored as classic PEM returns in OpenSSH
+// format - so a byte comparison would report a conflict for a key that is in
+// fact identical, and send the user to --force for no reason.
+func mayReplaceLocalKey(path string, incoming []byte) (bool, error) {
+	if onePasswordPullForce {
+		return true, nil
+	}
+	existing, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- OpsPulse's own managed key location
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", path, err)
+	}
+
+	existingPub, existingOK := publicKeyLine(existing)
+	incomingPub, incomingOK := publicKeyLine(incoming)
+	if existingOK && incomingOK {
+		return existingPub == incomingPub, nil
+	}
+	// One side is unparsable, so fall back to a byte comparison: that can only
+	// over-report a conflict, never silently overwrite something unrecognised.
+	return bytes.Equal(bytes.TrimSpace(existing), bytes.TrimSpace(incoming)), nil
+}
+
+// publicKeyLine derives the OpenSSH authorized_keys line of a private key,
+// reporting false when the material cannot be parsed.
+func publicKeyLine(keyData []byte) (string, bool) {
+	signer, err := ssh.ParsePrivateKey(keyData)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), true
 }
 
 // pullPasswordFromOnePassword writes a 1Password-hosted password back into
@@ -458,7 +737,7 @@ func pullPasswordFromOnePassword(ctx context.Context, store *server.Store, srv *
 		return fmt.Errorf("write the password back into servers.yaml: %w", err)
 	}
 
-	fmt.Printf("✅ Wrote the password for %q back into servers.yaml as plaintext.\n", srv.Name)
+	fmt.Printf("✅ %q: password written back into servers.yaml as plaintext.\n", srv.Name)
 	fmt.Printf("   The 1Password item %q was left untouched.\n", secret.PasswordItemTitle(srv.Name))
 	return nil
 }
@@ -907,11 +1186,8 @@ func authorizedKeyFor(privateKeyPath string, keyData []byte) string {
 			return line
 		}
 	}
-	signer, err := ssh.ParsePrivateKey(keyData)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	line, _ := publicKeyLine(keyData)
+	return line
 }
 
 func writePublicKeyFile(privateKeyPath string, keyData []byte) {
@@ -1119,6 +1395,10 @@ func init() {
 	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigAccount, "account", "", "Remember this account as the default")
 	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigUnset, "unset", false, "Forget the remembered vault and account")
 
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullAll, "all", false, "Pull every server that keeps a credential in 1Password")
+	onePasswordPullCmd.Flags().BoolVarP(&onePasswordPullYes, "yes", "y", false, "Write plaintext passwords into servers.yaml without asking for confirmation")
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullForce, "force", false, "Overwrite a local key file even when it holds a different key")
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullInclSkip, "include-skipped", false, "Include servers configured with skip_batch when using --all")
 	onePasswordPullCmd.ValidArgsFunction = completeServerNames
 	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
