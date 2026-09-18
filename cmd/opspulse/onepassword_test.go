@@ -2,6 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +15,21 @@ import (
 
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
+	"golang.org/x/crypto/ssh"
 )
+
+// testPrivateKeyPEM builds a deterministic OpenSSH-format ed25519 private key.
+// Generating it here keeps key material out of the repository and means the
+// tests never read or write the developer's real ~/.ssh.
+func testPrivateKeyPEM(t *testing.T, seed byte) []byte {
+	t.Helper()
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
+	block, err := ssh.MarshalPrivateKey(priv, "opspulse:test")
+	if err != nil {
+		t.Fatalf("marshal test key: %v", err)
+	}
+	return pem.EncodeToMemory(block)
+}
 
 func TestOnePasswordRefDisplay(t *testing.T) {
 	got := onePasswordRefDisplay("op://Private/opspulse_web/private key")
@@ -354,4 +374,351 @@ func TestOnePasswordCommandWiring(t *testing.T) {
 	if onePasswordPullCmd.ValidArgsFunction == nil {
 		t.Error("pull should complete server names")
 	}
+}
+
+func TestOnePasswordPullCommandFlags(t *testing.T) {
+	for _, flag := range []string{"all", "yes", "force", "include-skipped"} {
+		if onePasswordPullCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("ops 1p pull should expose --%s", flag)
+		}
+	}
+	if onePasswordPullCmd.Flags().ShorthandLookup("y") == nil {
+		t.Error("ops 1p pull should expose -y as a shorthand for --yes")
+	}
+}
+
+func TestPublicKeyLine(t *testing.T) {
+	line, ok := publicKeyLine(testPrivateKeyPEM(t, 3))
+	if !ok {
+		t.Fatal("publicKeyLine() should parse a generated key")
+	}
+	if !strings.HasPrefix(line, "ssh-ed25519 ") {
+		t.Errorf("publicKeyLine() = %q, want an ssh-ed25519 authorized_keys line", line)
+	}
+	if _, ok := publicKeyLine([]byte("not a key")); ok {
+		t.Error("publicKeyLine() should report failure for unparsable material")
+	}
+}
+
+// TestMayReplaceLocalKey pins the guard that stops a batch pull from silently
+// destroying a key file that already lives at the managed path.
+func TestMayReplaceLocalKey(t *testing.T) {
+	keyA := testPrivateKeyPEM(t, 1)
+	keyB := testPrivateKeyPEM(t, 2)
+
+	writeFixture := func(t *testing.T, data []byte) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "opspulse_web")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		return path
+	}
+
+	assertDecision := func(t *testing.T, got bool, err error, want bool) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("mayReplaceLocalKey() error = %v, want nil", err)
+		}
+		if got != want {
+			t.Errorf("mayReplaceLocalKey() = %v, want %v", got, want)
+		}
+	}
+
+	t.Run("a missing destination is free to write", func(t *testing.T) {
+		got, err := mayReplaceLocalKey(filepath.Join(t.TempDir(), "absent"), keyA)
+		assertDecision(t, got, err, true)
+	})
+
+	t.Run("an identical key is written without ceremony", func(t *testing.T) {
+		got, err := mayReplaceLocalKey(writeFixture(t, keyA), keyA)
+		assertDecision(t, got, err, true)
+	})
+
+	t.Run("the same key with different surrounding bytes is still the same key", func(t *testing.T) {
+		padded := append([]byte("\n"), keyA...)
+		padded = append(padded, '\n', '\n')
+		got, err := mayReplaceLocalKey(writeFixture(t, padded), keyA)
+		assertDecision(t, got, err, true)
+	})
+
+	t.Run("a different key is left alone", func(t *testing.T) {
+		got, err := mayReplaceLocalKey(writeFixture(t, keyB), keyA)
+		assertDecision(t, got, err, false)
+	})
+
+	t.Run("--force overrides the guard", func(t *testing.T) {
+		onePasswordPullForce = true
+		t.Cleanup(func() { onePasswordPullForce = false })
+
+		got, err := mayReplaceLocalKey(writeFixture(t, keyB), keyA)
+		assertDecision(t, got, err, true)
+	})
+
+	t.Run("unparsable content falls back to a byte comparison", func(t *testing.T) {
+		path := writeFixture(t, []byte("not a key"))
+		got, err := mayReplaceLocalKey(path, keyA)
+		assertDecision(t, got, err, false)
+
+		got, err = mayReplaceLocalKey(path, []byte("not a key"))
+		assertDecision(t, got, err, true)
+	})
+}
+
+// TestMayReplaceLocalKeyNormalisesKeyFormats is the reason the comparison is by
+// public key rather than by bytes: 1Password hands a key back in OpenSSH form
+// even when it was uploaded as classic PEM, so a byte comparison would demand
+// --force for a key that never changed.
+func TestMayReplaceLocalKeyNormalisesKeyFormats(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	classicPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(rsaKey),
+	})
+	block, err := ssh.MarshalPrivateKey(rsaKey, "")
+	if err != nil {
+		t.Fatalf("marshal OpenSSH key: %v", err)
+	}
+	openSSHForm := pem.EncodeToMemory(block)
+
+	if bytes.Equal(classicPEM, openSSHForm) {
+		t.Fatal("fixture assumption broken: the two encodings should differ byte for byte")
+	}
+
+	path := filepath.Join(t.TempDir(), "rsa_key")
+	if err := os.WriteFile(path, classicPEM, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, err := mayReplaceLocalKey(path, openSSHForm)
+	if err != nil {
+		t.Fatalf("mayReplaceLocalKey() error = %v, want nil", err)
+	}
+	if !got {
+		t.Error("the same RSA key in a different encoding must not be reported as a conflict")
+	}
+}
+
+func TestCountPullablePasswords(t *testing.T) {
+	targets := []*server.Server{
+		{Name: "a", Password: "op://Private/opspulse_a_password/password"},
+		{Name: "b", Password: "plaintext"},
+		{Name: "c", KeyPath: "op://Private/opspulse_c/private key"},
+		{Name: "d", Password: "op://Private/opspulse_d_password/password"},
+	}
+	if got := countPullablePasswords(targets); got != 2 {
+		t.Errorf("countPullablePasswords() = %d, want 2", got)
+	}
+}
+
+func TestSelectOnePasswordPullTargets(t *testing.T) {
+	store := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
+	for _, s := range []server.Server{
+		{Name: "web", Host: "10.0.0.1"},
+		{Name: "guarded", Host: "10.0.0.2", SkipBatch: true},
+	} {
+		if err := store.Save(s); err != nil {
+			t.Fatalf("seed store: %v", err)
+		}
+	}
+
+	namesOf := func(targets []*server.Server) []string {
+		out := make([]string, 0, len(targets))
+		for _, s := range targets {
+			out = append(out, s.Name)
+		}
+		return out
+	}
+
+	t.Run("an explicit name is honoured even when the server carries skip_batch", func(t *testing.T) {
+		targets, explicit, skipped, err := selectOnePasswordPullTargets(store, []string{"guarded"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !explicit {
+			t.Error("naming servers should be reported as an explicit selection")
+		}
+		if len(skipped) != 0 {
+			t.Errorf("skipped = %v, want none", skipped)
+		}
+		if got := namesOf(targets); len(got) != 1 || got[0] != "guarded" {
+			t.Errorf("targets = %v, want [guarded]", got)
+		}
+	})
+
+	t.Run("--all leaves skip_batch servers out and names them", func(t *testing.T) {
+		onePasswordPullAll = true
+		t.Cleanup(func() { onePasswordPullAll = false })
+
+		targets, explicit, skipped, err := selectOnePasswordPullTargets(store, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if explicit {
+			t.Error("--all should not be reported as an explicit selection")
+		}
+		if got := namesOf(targets); len(got) != 1 || got[0] != "web" {
+			t.Errorf("targets = %v, want [web]", got)
+		}
+		if len(skipped) != 1 || skipped[0] != "guarded" {
+			t.Errorf("skipped = %v, want [guarded]", skipped)
+		}
+	})
+
+	t.Run("--include-skipped pulls the guarded server too", func(t *testing.T) {
+		onePasswordPullAll, onePasswordPullInclSkip = true, true
+		t.Cleanup(func() { onePasswordPullAll, onePasswordPullInclSkip = false, false })
+
+		targets, _, skipped, err := selectOnePasswordPullTargets(store, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(skipped) != 0 {
+			t.Errorf("skipped = %v, want none", skipped)
+		}
+		if got := namesOf(targets); len(got) != 2 {
+			t.Errorf("targets = %v, want both servers", got)
+		}
+	})
+
+	t.Run("neither names nor --all is an error", func(t *testing.T) {
+		if _, _, _, err := selectOnePasswordPullTargets(store, nil); err == nil {
+			t.Error("expected an error when nothing selects a target")
+		}
+	})
+
+	t.Run("an unknown name fails before any work happens", func(t *testing.T) {
+		if _, _, _, err := selectOnePasswordPullTargets(store, []string{"nope"}); err == nil {
+			t.Error("expected an error for an unknown server name")
+		}
+	})
+}
+
+func TestConfirmPlaintextPull(t *testing.T) {
+	t.Run("--yes accepts without prompting", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := confirmPlaintextPull(strings.NewReader(""), &out, 2, true, true); err != nil {
+			t.Fatalf("confirmPlaintextPull() error = %v, want nil", err)
+		}
+		if out.Len() != 0 {
+			t.Errorf("--yes should not prompt, got %q", out.String())
+		}
+	})
+
+	t.Run("a non-interactive shell is refused rather than prompted at", func(t *testing.T) {
+		var out bytes.Buffer
+		err := confirmPlaintextPull(strings.NewReader(""), &out, 2, false, false)
+		if err == nil || !strings.Contains(err.Error(), "--yes") {
+			t.Fatalf("confirmPlaintextPull() error = %v, want it to point at --yes", err)
+		}
+	})
+
+	t.Run("an explicit yes proceeds and spells out the consequence", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := confirmPlaintextPull(strings.NewReader("y\n"), &out, 2, true, false); err != nil {
+			t.Fatalf("confirmPlaintextPull() error = %v, want nil", err)
+		}
+		if !strings.Contains(out.String(), "plaintext password") {
+			t.Errorf("the warning should spell out the consequence, got %q", out.String())
+		}
+	})
+
+	t.Run("an explicit no cancels", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := confirmPlaintextPull(strings.NewReader("n\n"), &out, 2, true, false); err == nil {
+			t.Error("confirmPlaintextPull() should refuse when the user says no")
+		}
+	})
+
+	t.Run("an empty answer defaults to refusing", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := confirmPlaintextPull(strings.NewReader("\n"), &out, 2, true, false); err == nil {
+			t.Error("confirmPlaintextPull() should default to refusing")
+		}
+	})
+}
+
+func TestReportPullOutcomes(t *testing.T) {
+	t.Run("a clean batch summarises and succeeds", func(t *testing.T) {
+		var out bytes.Buffer
+		err := reportPullOutcomes(&out, []pullOutcome{
+			{name: "web", keyPulled: true},
+			{name: "db", passPulled: true},
+			{name: "idle", reason: "no credential is managed in 1Password"},
+		})
+		if err != nil {
+			t.Fatalf("reportPullOutcomes() error = %v, want nil", err)
+		}
+		got := out.String()
+		for _, want := range []string{"2 restored, 1 skipped, 0 blocked, 0 failed", "1 plaintext password(s)", "idle"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("summary should contain %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("a failure is surfaced and fails the batch", func(t *testing.T) {
+		var out bytes.Buffer
+		err := reportPullOutcomes(&out, []pullOutcome{
+			{name: "web", keyPulled: true},
+			{name: "db", err: errors.New("1Password is unreachable")},
+		})
+		if err == nil {
+			t.Fatal("reportPullOutcomes() should fail the batch when a server fails")
+		}
+		got := out.String()
+		if !strings.Contains(got, "1 restored, 0 skipped, 0 blocked, 1 failed") {
+			t.Errorf("the summary should count the failure:\n%s", got)
+		}
+		if !strings.Contains(got, "1Password is unreachable") {
+			t.Errorf("the per-server error should be surfaced:\n%s", got)
+		}
+	})
+
+	// A blocked credential is not a technical failure, but it does mean the
+	// off-ramp is incomplete, so the run must not report success.
+	t.Run("a blocked key fails the batch even when the password came back", func(t *testing.T) {
+		var out bytes.Buffer
+		err := reportPullOutcomes(&out, []pullOutcome{
+			{
+				name:       "web",
+				passPulled: true,
+				blocked:    true,
+				reason:     "a different key already occupies the local path; re-run with --force to replace it",
+			},
+		})
+		if err == nil {
+			t.Fatal("reportPullOutcomes() should fail when a credential is still stranded")
+		}
+		got := out.String()
+		if !strings.Contains(got, "0 restored, 0 skipped, 1 blocked, 0 failed") {
+			t.Errorf("a server with a stranded key is not a clean restore:\n%s", got)
+		}
+		if !strings.Contains(got, "1 plaintext password(s)") {
+			t.Errorf("the password that did come back should still be reported:\n%s", got)
+		}
+		if !strings.Contains(got, "--force") {
+			t.Errorf("the blocked key should be explained:\n%s", got)
+		}
+	})
+
+	t.Run("a purely blocked server counts as blocked rather than skipped", func(t *testing.T) {
+		var out bytes.Buffer
+		err := reportPullOutcomes(&out, []pullOutcome{
+			{name: "web", blocked: true, reason: "a different key already occupies the local path"},
+		})
+		if err == nil {
+			t.Fatal("reportPullOutcomes() should fail when nothing could be restored")
+		}
+		got := out.String()
+		if !strings.Contains(got, "0 restored, 0 skipped, 1 blocked, 0 failed") {
+			t.Errorf("a block is not a benign skip:\n%s", got)
+		}
+		if strings.Contains(got, "plaintext password") {
+			t.Errorf("no password was pulled, so none should be announced:\n%s", got)
+		}
+	})
 }
