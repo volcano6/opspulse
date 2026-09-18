@@ -14,6 +14,7 @@ import (
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/pathutil"
 	"github.com/volcano6/opspulse/internal/shellquote"
 	"github.com/volcano6/opspulse/internal/storage"
 )
@@ -200,7 +201,9 @@ func (r *Runner) RunContainerBackup(
 					Required: true,
 					Reason:   "bind_mount",
 				})
-				if !strings.HasPrefix(m.Source, projectDir) {
+				// Boundary match: a sibling such as ".../nginx-other" is not
+				// inside ".../nginx" and must still be backed up separately.
+				if !pathutil.HasPathPrefix(m.Source, projectDir) {
 					backupPaths = append(backupPaths, m.Source)
 				}
 			}
