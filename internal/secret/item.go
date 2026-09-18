@@ -41,7 +41,29 @@ const (
 
 	loginUsernameFieldID = "username"
 	loginPasswordFieldID = "password"
+
+	// inventoryNoteFieldID is the built-in notes field of a Secure Note, and
+	// the home of the servers.yaml backup.
+	inventoryNoteFieldID = "notesPlain"
 )
+
+// InventoryItemCategory is the 1Password category of the inventory backup item.
+//
+// A Secure Note rather than a Login: the payload is a YAML document, not a
+// credential, and the built-in notes field is the only CLI-writable home for
+// free text. Unlike a real SSH Key item (see sshKeyManagedFieldID), a Secure
+// Note round-trips byte for byte through the CLI - verified against op 2.34.1
+// for both `op item create` and `op item edit`, including a value with no
+// trailing newline, so the read-back comparison can be exact.
+const InventoryItemCategory = "Secure Note"
+
+// InventoryItemTitle is the deterministic title of the single item holding the
+// servers.yaml backup.
+//
+// There is deliberately one shared item rather than one per machine: the backup
+// is a union of every machine that has pushed, so a new machine can restore the
+// whole inventory from a single place.
+const InventoryItemTitle = "opspulse_inventory"
 
 // SSHKeyItemTitle returns the deterministic 1Password item title used to store a
 // managed server's SSH key.
@@ -73,6 +95,12 @@ func BuildSSHKeyRef(vault, title string) string {
 // a managed Login item.
 func BuildPasswordRef(vault, title string) string {
 	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, title, PasswordItemLabel)
+}
+
+// BuildInventoryRef builds the op:// reference pointing at the body of the
+// inventory backup item.
+func BuildInventoryRef(vault string) string {
+	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, InventoryItemTitle, inventoryNoteFieldID)
 }
 
 // Parse1PRef splits an op://<vault>/<item>/<field> reference. The field part is
@@ -163,6 +191,37 @@ func FillLoginItem(doc []byte, title, username, password string) ([]byte, error)
 	fields, found := setItemField(fields, loginPasswordFieldID, password)
 	if !found {
 		return nil, fmt.Errorf("the 1Password Login item has no %q field, so the password cannot be stored", loginPasswordFieldID)
+	}
+	item["fields"] = fields
+
+	return encodeItem(item)
+}
+
+// FillInventoryItem writes the servers.yaml backup onto a Secure Note document.
+//
+// doc may be either a fresh template (`op item template get "Secure Note"`) for a
+// create, or the current item (`op item get <id> --format json`) for an update,
+// matching FillSSHKeyItem.
+//
+// Unlike the key field, notesPlain is a built-in field of the Secure Note
+// template, so a missing one means the document is not what the caller assumed.
+// Appending it is deliberately not attempted: a field the template does not
+// define is exactly the shape that gets silently dropped on write.
+func FillInventoryItem(doc []byte, yamlText string) ([]byte, error) {
+	if strings.TrimSpace(yamlText) == "" {
+		return nil, fmt.Errorf("refusing to write an empty inventory into 1Password")
+	}
+
+	item, err := decodeItem(doc, InventoryItemCategory)
+	if err != nil {
+		return nil, err
+	}
+	prepareItem(item, InventoryItemTitle)
+
+	fields, _ := item["fields"].([]any)
+	fields, found := setItemField(fields, inventoryNoteFieldID, yamlText)
+	if !found {
+		return nil, fmt.Errorf("the 1Password %s item has no %q field, so the inventory cannot be stored", InventoryItemCategory, inventoryNoteFieldID)
 	}
 	item["fields"] = fields
 

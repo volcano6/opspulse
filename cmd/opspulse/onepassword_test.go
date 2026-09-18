@@ -377,7 +377,7 @@ func TestOnePasswordCommandWiring(t *testing.T) {
 }
 
 func TestOnePasswordPullCommandFlags(t *testing.T) {
-	for _, flag := range []string{"all", "yes", "force", "include-skipped", "filter", "from-vault", "materialize", "vault"} {
+	for _, flag := range []string{"all", "yes", "force", "include-skipped", "filter", "from-vault", "materialize", "vault", "inventory", "prefer-local", "prefer-remote"} {
 		if onePasswordPullCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("ops 1p pull should expose --%s", flag)
 		}
@@ -391,7 +391,7 @@ func TestOnePasswordPullCommandFlags(t *testing.T) {
 }
 
 func TestOnePasswordPushCommandFlags(t *testing.T) {
-	for _, flag := range []string{"all", "vault", "delete-local", "filter", "include-skipped"} {
+	for _, flag := range []string{"all", "vault", "delete-local", "filter", "include-skipped", "inventory", "prefer-local", "prefer-remote"} {
 		if onePasswordPushCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("ops 1p push should expose --%s", flag)
 		}
@@ -485,6 +485,7 @@ func TestReportUnmatchedVaultItems(t *testing.T) {
 			"opspulse_web_key":    {},
 			"opspulse_web2_key":   {},
 			"opspulse_orphan_key": {},
+			"opspulse_inventory":  {},
 			"some_user_item":      {},
 		},
 	}
@@ -501,6 +502,11 @@ func TestReportUnmatchedVaultItems(t *testing.T) {
 	}
 	if strings.Contains(got, "opspulse_web_key") || strings.Contains(got, "opspulse_web2_key") {
 		t.Errorf("claimed items must not be reported as unmatched:\n%s", got)
+	}
+	// The inventory backup belongs to no single server, so without an explicit
+	// exclusion its opspulse_ prefix would make it look orphaned forever.
+	if strings.Contains(got, secret.InventoryItemTitle) {
+		t.Errorf("the inventory backup must not be reported as an orphaned credential:\n%s", got)
 	}
 
 	out.Reset()

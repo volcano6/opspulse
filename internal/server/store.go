@@ -163,6 +163,18 @@ func (s *Store) Validate(data []byte) error {
 	return err
 }
 
+// ParseConfig parses and validates a complete servers document and returns the
+// servers it holds. It is the read side of Replace: a document that passes this
+// can be written back verbatim, so a restored backup is checked before it is
+// allowed anywhere near servers.yaml.
+func ParseConfig(data []byte) ([]Server, error) {
+	cf, err := parseAndValidateConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	return cf.Servers, nil
+}
+
 // Replace validates and replaces the complete inventory while preserving the
 // caller-provided YAML formatting and comments.
 func (s *Store) Replace(data []byte) error {

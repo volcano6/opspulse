@@ -66,27 +66,33 @@ func onePasswordAuthHint(cli secret.CLI) string {
 }
 
 var (
-	onePasswordVault        string
-	onePasswordAll          bool
-	onePasswordFilter       string
-	onePasswordDeleteLocal  bool
-	onePasswordAccount      string
-	onePasswordPushFilter   string
-	onePasswordPushInclSkip bool
+	onePasswordVault            string
+	onePasswordAll              bool
+	onePasswordFilter           string
+	onePasswordDeleteLocal      bool
+	onePasswordAccount          string
+	onePasswordPushFilter       string
+	onePasswordPushInclSkip     bool
+	onePasswordPushInventory    bool
+	onePasswordPushPreferLocal  bool
+	onePasswordPushPreferRemote bool
 )
 
 // Pull keeps its own flags rather than sharing push's. The two commands mean
 // different things by "all" and by "yes", and a shared variable would quietly
 // couple them the first time either grows a default.
 var (
-	onePasswordPullAll         bool
-	onePasswordPullYes         bool
-	onePasswordPullForce       bool
-	onePasswordPullInclSkip    bool
-	onePasswordPullFilter      string
-	onePasswordPullFromVault   bool
-	onePasswordPullMaterialize bool
-	onePasswordPullVault       string
+	onePasswordPullAll          bool
+	onePasswordPullYes          bool
+	onePasswordPullForce        bool
+	onePasswordPullInclSkip     bool
+	onePasswordPullFilter       string
+	onePasswordPullFromVault    bool
+	onePasswordPullMaterialize  bool
+	onePasswordPullVault        string
+	onePasswordPullInventory    bool
+	onePasswordPullPreferLocal  bool
+	onePasswordPullPreferRemote bool
 )
 
 var onePasswordCmd = &cobra.Command{
@@ -131,7 +137,19 @@ still worked.
   ops 1p push web db-01            # several
   ops 1p push --all                # every server (equivalent to --filter all)
   ops 1p push --filter prod        # by label, tag, or name
-  ops 1p push --all --delete-local # remove the local copies once uploaded`,
+  ops 1p push --all --delete-local # remove the local copies once uploaded
+
+servers.yaml itself is machine-local and never syncs, so a new machine cannot be
+bootstrapped from credentials alone - an item holds a key but no host. --inventory
+backs the whole file up into one shared item (opspulse_inventory), which
+'ops 1p pull --inventory' restores on another machine:
+
+  ops 1p push --inventory                    # back up or refresh the whole file
+  ops 1p push --inventory --prefer-remote    # unattended: the backup wins conflicts
+
+The backup merges rather than overwrites, so two machines can both push without
+losing each other's servers. Deleting a server from the backup is therefore done
+by hand: remove it locally first, then edit the item.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runPushToOnePassword(cmd.Context(), args)
@@ -172,7 +190,16 @@ OpsPulse gives them (opspulse_<server>_key / _password) instead:
 
 Without --materialize the values stay only in 1Password and 'ops ssh'
 materializes the key on demand, so that machine cannot connect while 1Password is
-unavailable.`,
+unavailable.
+
+--inventory restores the whole servers.yaml from the shared backup instead, which
+is what a new machine needs before any credential can be adopted:
+
+  ops 1p pull --inventory                    # restore the server list itself
+  ops 1p pull --inventory --prefer-local     # unattended: this machine wins conflicts
+
+It merges with whatever servers.yaml already holds and never deletes a server
+that only this machine knows about.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runPullFromOnePassword(cmd.Context(), args)
@@ -247,9 +274,26 @@ current account can see. With flags it records a default so that plain
 }
 
 func runPushToOnePassword(ctx context.Context, args []string) error {
+	// Flag validation comes first so that a contradictory invocation fails
+	// before OpsPulse touches 1Password or offers to install its CLI.
+	if err := validateInventoryPushFlags(args); err != nil {
+		return err
+	}
+	if err := validatePreferFlags(onePasswordPushInventory, onePasswordPushPreferLocal, onePasswordPushPreferRemote); err != nil {
+		return err
+	}
+
 	cli, err := ensure1PCLI()
 	if err != nil {
 		return err
+	}
+
+	if onePasswordPushInventory {
+		vault, err := resolveAndValidateVault(ctx, cli, onePasswordVault, true)
+		if err != nil {
+			return err
+		}
+		return pushInventoryToOnePassword(ctx, cli, vault)
 	}
 
 	store := server.NewDefaultStore()
@@ -305,6 +349,9 @@ func runPushToOnePassword(ctx context.Context, args []string) error {
 			fmt.Println("   Run 'ops 1p push <server> --delete-local' if you want OpsPulse to remove the managed local key copies for you.")
 		}
 		fmt.Println("   Verify with: ops 1p status")
+		// servers.yaml changed, so any existing inventory backup is now behind.
+		// Best-effort: a push that worked must not fail over a side errand.
+		autoRefreshInventoryBackup(ctx, cli, vault)
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("failed to push %d of %d server(s): %s", len(failed), len(targets), strings.Join(failed, ", "))
@@ -588,9 +635,24 @@ func (d *vaultDiscovery) passwordRef(serverName string) string {
 }
 
 func runPullFromOnePassword(ctx context.Context, args []string) error {
+	if err := validateInventoryPullFlags(args); err != nil {
+		return err
+	}
+	if err := validatePreferFlags(onePasswordPullInventory, onePasswordPullPreferLocal, onePasswordPullPreferRemote); err != nil {
+		return err
+	}
+
 	cli, err := ensure1PCLI()
 	if err != nil {
 		return err
+	}
+
+	if onePasswordPullInventory {
+		vault, err := resolveAndValidateVault(ctx, cli, onePasswordPullVault, false)
+		if err != nil {
+			return err
+		}
+		return pullInventoryFromOnePassword(ctx, cli, vault)
 	}
 
 	store := server.NewDefaultStore()
@@ -715,6 +777,9 @@ func reportUnmatchedVaultItems(w io.Writer, discovery *vaultDiscovery, servers [
 		claimed[secret.SSHKeyItemTitle(srv.Name)] = struct{}{}
 		claimed[secret.PasswordItemTitle(srv.Name)] = struct{}{}
 	}
+	// The inventory backup is not a credential, so no server ever claims it by
+	// name; without this it would be reported as orphaned on every pull.
+	claimed[secret.InventoryItemTitle] = struct{}{}
 
 	var unmatched []string
 	for title := range discovery.titles {
@@ -1837,6 +1902,9 @@ func init() {
 	onePasswordPushCmd.Flags().StringVarP(&onePasswordPushFilter, "filter", "f", "", "Push servers matching a label (key=val), tag, or name")
 	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushInclSkip, "include-skipped", false, "Include servers configured with skip_batch when using --all/--filter")
 	onePasswordPushCmd.Flags().BoolVar(&onePasswordDeleteLocal, "delete-local", false, "Delete the managed local key file after a successful push")
+	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushInventory, "inventory", false, "Back up the whole servers.yaml into one shared 1Password item (merges with what is already there)")
+	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushPreferLocal, "prefer-local", false, "With --inventory, resolve every conflict in favour of this machine's servers.yaml")
+	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushPreferRemote, "prefer-remote", false, "With --inventory, resolve every conflict in favour of the 1Password backup")
 	onePasswordPushCmd.ValidArgsFunction = completeServerNames
 
 	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigVault, "vault", "", "Remember this vault as the default target")
@@ -1851,6 +1919,9 @@ func init() {
 	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullFromVault, "from-vault", false, "Find credentials by their 1Password item name instead of by the references in servers.yaml")
 	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullMaterialize, "materialize", false, "With --from-vault, write credentials to local disk instead of just rebinding to op:// references")
 	onePasswordPullCmd.Flags().StringVar(&onePasswordPullVault, "vault", "", "Vault to search with --from-vault (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullInventory, "inventory", false, "Restore servers.yaml from the shared 1Password backup (merges with this machine's servers)")
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullPreferLocal, "prefer-local", false, "With --inventory, resolve every conflict in favour of this machine's servers.yaml")
+	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullPreferRemote, "prefer-remote", false, "With --inventory, resolve every conflict in favour of the 1Password backup")
 	onePasswordPullCmd.ValidArgsFunction = completeServerNames
 	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 
