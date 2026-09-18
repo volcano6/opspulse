@@ -47,7 +47,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	if err == io.EOF || now.Sub(pr.lastUpdate) >= 200*time.Millisecond {
 		pr.lastUpdate = now
 		pr.printProgress()
-		
+
 		if err == io.EOF {
 			fmt.Println() // Print newline when finished
 		}

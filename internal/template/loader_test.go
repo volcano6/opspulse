@@ -255,4 +255,3 @@ echo "running alias"
 		t.Errorf("expected name 'custom-alias', got %q", tmplByFile.Metadata.Name)
 	}
 }
-

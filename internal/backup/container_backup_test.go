@@ -17,10 +17,10 @@ import (
 
 func TestParseContainerTarget(t *testing.T) {
 	tests := []struct {
-		arg         string
-		wantServer  string
-		wantCtr     string
-		wantIsCtr   bool
+		arg        string
+		wantServer string
+		wantCtr    string
+		wantIsCtr  bool
 	}{
 		{"vps-1:nginx-test", "vps-1", "nginx-test", true},
 		{"prod-server:blog-db", "prod-server", "blog-db", true},

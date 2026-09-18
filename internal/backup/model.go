@@ -114,5 +114,3 @@ func (j *Job) ResolveAllPaths(assetStore *asset.Store) ([]string, error) {
 
 	return result, nil
 }
-
-

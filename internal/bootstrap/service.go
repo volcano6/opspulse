@@ -231,7 +231,7 @@ func (s *Service) Run(ctx context.Context, opts RunOptions, consoleOut io.Writer
 			execToUse := s.executor
 			if target.IsLocal {
 				execToUse = s.localExecutor
-				
+
 				// Perform a quick pre-authentication check so the user isn't prompted repeatedly during execution
 				sudoCheck := exec.CommandContext(ctx, "sudo", "-v")
 				sudoCheck.Stdout = consoleOut

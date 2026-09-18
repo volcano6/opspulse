@@ -325,4 +325,3 @@ func TestServerAddCommand_Integration(t *testing.T) {
 		t.Errorf("expected node-skip to have SkipBatch=true, got false")
 	}
 }
-

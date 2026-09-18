@@ -97,4 +97,3 @@ func TestBuildSnapshotsScript_DeterministicEnv(t *testing.T) {
 		}
 	}
 }
-

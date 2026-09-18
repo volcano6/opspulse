@@ -6,12 +6,12 @@ import (
 
 func TestParseBindString(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantSrc  string
-		wantDst  string
-		wantRO   bool
-		wantOK   bool
+		name    string
+		input   string
+		wantSrc string
+		wantDst string
+		wantRO  bool
+		wantOK  bool
 	}{
 		{
 			name:    "Standard unix bind",
