@@ -24,7 +24,6 @@ var serverCmd = &cobra.Command{
 	Long:  "Add, list, inspect, test connectivity, and remove managed servers from servers.yaml.",
 }
 
-
 var listFilter string
 
 var serverListCmd = &cobra.Command{

@@ -9,15 +9,15 @@ import (
 
 // Snapshot represents a restic backup snapshot.
 type Snapshot struct {
-	ID        string    `json:"id"`
-	ShortID   string    `json:"short_id"`
-	Time      time.Time `json:"time"`
-	Parent    string    `json:"parent,omitempty"`
-	Tree      string    `json:"tree"`
-	Paths     []string  `json:"paths"`
-	Hostname  string    `json:"hostname"`
-	Username  string    `json:"username"`
-	Tags      []string  `json:"tags,omitempty"`
+	ID       string    `json:"id"`
+	ShortID  string    `json:"short_id"`
+	Time     time.Time `json:"time"`
+	Parent   string    `json:"parent,omitempty"`
+	Tree     string    `json:"tree"`
+	Paths    []string  `json:"paths"`
+	Hostname string    `json:"hostname"`
+	Username string    `json:"username"`
+	Tags     []string  `json:"tags,omitempty"`
 }
 
 // ParseSnapshotsJSON parses the JSON array output of `restic snapshots --json`.

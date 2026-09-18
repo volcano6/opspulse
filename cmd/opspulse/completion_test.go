@@ -279,8 +279,8 @@ func TestCompletePrivateKeyPath(t *testing.T) {
 		t.Fatalf("unexpected completion directive for directory listing: %v", directive)
 	}
 	want := map[string]bool{
-		"~/.ssh/id_ed25519":    true,
-		"~/.ssh/server.pem":    true,
+		"~/.ssh/id_ed25519":   true,
+		"~/.ssh/server.pem":   true,
 		"~/.ssh/custom_keys/": true,
 	}
 	if len(completions) != len(want) {

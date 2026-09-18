@@ -20,7 +20,7 @@ func Try1PAgentSocket() net.Conn {
 	}
 
 	// 2. Try default 1Password agent path for Linux/macOS.
-	// For WSL, this will naturally target the Linux filesystem path 
+	// For WSL, this will naturally target the Linux filesystem path
 	// (e.g. if the user used npiperelay to map it to ~/.1password/agent.sock).
 	home, err := os.UserHomeDir()
 	if err == nil {

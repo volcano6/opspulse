@@ -264,4 +264,3 @@ func TestScheduler_RunOnce_ContextCancellation(t *testing.T) {
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
-

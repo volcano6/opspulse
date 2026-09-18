@@ -198,4 +198,3 @@ func TestPool_EarlyFailureRecordedInSummary(t *testing.T) {
 		t.Errorf("expected failure breakdown in summary, got:\n%s", summaryStr)
 	}
 }
-

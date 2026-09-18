@@ -253,7 +253,7 @@ func detectWindowsClients() []ClientInfo {
 		resolveWinPath(`C:\Program Files (x86)\WinSCP\WinSCP.exe`),
 		resolveWinPath(`C:\Program Files\WinSCP\WinSCP.exe`),
 	}
-	// In WSL, os.Getenv("LOCALAPPDATA") is empty, but we can't easily get it. 
+	// In WSL, os.Getenv("LOCALAPPDATA") is empty, but we can't easily get it.
 	// We rely on standard paths or PATH.
 	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
 		winSCPLocations = append(winSCPLocations, filepath.Join(localAppData, "Programs", "WinSCP", "WinSCP.exe"))

@@ -302,5 +302,3 @@ func TestBootstrap_ServerEnvironmentVariables(t *testing.T) {
 		t.Errorf("expected default port script to contain OPS_SSH_PORT=22, got:\n%s", exec.capturedScripts[1])
 	}
 }
-
-
