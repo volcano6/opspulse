@@ -36,6 +36,16 @@ const loginTemplateFixture = `{
   ]
 }`
 
+// secureNoteTemplateFixture mirrors the document produced by
+// `op item template get "Secure Note"`.
+const secureNoteTemplateFixture = `{
+  "title": "",
+  "category": "SECURE_NOTE",
+  "fields": [
+    {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": ""}
+  ]
+}`
+
 func fieldValues(t *testing.T, payload []byte) map[string]string {
 	t.Helper()
 
@@ -343,6 +353,83 @@ func TestFillLoginItemRejectsMissingPasswordOrEmptyValue(t *testing.T) {
 func TestItemTitles(t *testing.T) {
 	if got := SSHKeyItemTitle("web-01"); got != "opspulse_web-01_key" {
 		t.Errorf("SSHKeyItemTitle() = %q, want opspulse_web-01_key", got)
+	}
+}
+
+func TestBuildInventoryRef(t *testing.T) {
+	if got := BuildInventoryRef("Personal"); got != "op://Personal/opspulse_inventory/notesPlain" {
+		t.Errorf("BuildInventoryRef() = %q", got)
+	}
+}
+
+// The inventory payload is YAML with significant indentation and trailing
+// whitespace, so the round trip has to be byte-exact rather than "close enough".
+func TestFillInventoryItem(t *testing.T) {
+	yamlText := "servers:\n    - name: web\n      host: 10.0.0.10\n      user: ubuntu\n"
+
+	payload, err := FillInventoryItem([]byte(secureNoteTemplateFixture), yamlText)
+	if err != nil {
+		t.Fatalf("FillInventoryItem() error: %v", err)
+	}
+
+	parsed := decodeDocument(t, payload)
+	if parsed["title"] != InventoryItemTitle {
+		t.Errorf("title = %v, want %v", parsed["title"], InventoryItemTitle)
+	}
+	if _, present := parsed["vault"]; present {
+		t.Error("vault should have been removed")
+	}
+	if got := fieldValues(t, payload)[inventoryNoteFieldID]; got != yamlText {
+		t.Errorf("notesPlain = %q, want %q", got, yamlText)
+	}
+}
+
+// Re-using the item's own document on updates is what keeps user-added fields
+// alive, so the fill must touch notesPlain and nothing else.
+func TestFillInventoryItemPreservesExistingItem(t *testing.T) {
+	existing := `{
+	  "id": "abc123",
+	  "title": "opspulse_inventory",
+	  "version": 4,
+	  "vault": {"id": "vault-uuid"},
+	  "category": "SECURE_NOTE",
+	  "tags": ["infra"],
+	  "fields": [
+	    {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": "stale"}
+	  ]
+	}`
+
+	payload, err := FillInventoryItem([]byte(existing), "fresh")
+	if err != nil {
+		t.Fatalf("FillInventoryItem() error: %v", err)
+	}
+
+	parsed := decodeDocument(t, payload)
+	if parsed["id"] != "abc123" || parsed["version"] != float64(4) {
+		t.Errorf("identity was not preserved: id=%v version=%v", parsed["id"], parsed["version"])
+	}
+	tags, _ := parsed["tags"].([]any)
+	if len(tags) != 1 || tags[0] != "infra" {
+		t.Errorf("tags were not preserved: %v", parsed["tags"])
+	}
+	if got := fieldValues(t, payload)[inventoryNoteFieldID]; got != "fresh" {
+		t.Errorf("notesPlain = %q, want fresh", got)
+	}
+}
+
+func TestFillInventoryItemRejectsMissingNoteFieldOrEmptyValue(t *testing.T) {
+	// A Secure Note template always carries notesPlain, so its absence means the
+	// document is not what the caller assumed. Appending it would risk the exact
+	// silent-drop shape that made SSH Key items unusable.
+	sparse := `{"title": "", "category": "SECURE_NOTE", "fields": []}`
+	if _, err := FillInventoryItem([]byte(sparse), "servers: []"); err == nil {
+		t.Error("expected an error when the document has no notesPlain field")
+	}
+	if _, err := FillInventoryItem([]byte(secureNoteTemplateFixture), "   \n"); err == nil {
+		t.Error("expected an error for an empty inventory")
+	}
+	if _, err := FillInventoryItem([]byte("not json"), "servers: []"); err == nil {
+		t.Error("expected an error for an unparsable document")
 	}
 }
 

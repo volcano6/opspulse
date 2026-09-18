@@ -35,6 +35,17 @@ const loginTemplate = `{
   ]
 }`
 
+// secureNoteTemplate is what `op item template get "Secure Note"` returns. The
+// inventory backup rides in notesPlain, so the template's only field is the one
+// OpsPulse fills.
+const secureNoteTemplate = `{
+  "title": "",
+  "category": "SECURE_NOTE",
+  "fields": [
+    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": ""}
+  ]
+}`
+
 // existingItem mirrors `op item get <id> --format json` for a managed key item:
 // a Login item carrying OpsPulse's custom concealed field, which the user has
 // since annotated.
@@ -50,6 +61,21 @@ const existingItem = `{
     {"id": "password", "type": "CONCEALED", "label": "password", "purpose": "PASSWORD", "value": ""},
     {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": "user note"},
     {"id": "opspulse_private_key", "type": "CONCEALED", "label": "private key", "value": "OLD"}
+  ]
+}`
+
+// inventoryItem mirrors `op item get <id> --format json` for the shared
+// servers.yaml backup. The body is deliberately blank: what the merge reads
+// comes from `op read`, and this document only has to be the right shape for
+// FillInventoryItem to write into.
+const inventoryItem = `{
+  "id": "item-opspulse_inventory",
+  "title": "opspulse_inventory",
+  "version": 3,
+  "vault": {"id": "vault-uuid"},
+  "category": "SECURE_NOTE",
+  "fields": [
+    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": ""}
   ]
 }`
 
@@ -105,6 +131,8 @@ func handleItem(args []string, stdin []byte) {
 			fmt.Print(sshKeyTemplate)
 		case "login":
 			fmt.Print(loginTemplate)
+		case "secure note", "securenote", "secure_note":
+			fmt.Print(secureNoteTemplate)
 		default:
 			fatalf("stub: unknown template %q", args[2])
 		}
@@ -127,16 +155,29 @@ func handleItem(args []string, stdin []byte) {
 
 	case "get":
 		// item get <id> --vault V --format json
+		// The document has to match the item's category: FillInventoryItem
+		// refuses a document with no notesPlain field, which is how a real
+		// mismatch between the item and the writer would surface.
+		id := ""
+		if len(args) > 1 {
+			id = args[1]
+		}
+		if strings.Contains(id, "opspulse_inventory") {
+			fmt.Print(inventoryItem)
+			return
+		}
 		fmt.Print(existingItem)
 
 	case "create":
 		// item create --vault V -
 		assertItemDocument(stdin, "create")
+		storeNoteDocument(stdin)
 		writeJSON(map[string]string{"id": "item-created"})
 
 	case "edit":
 		// item edit <id> --vault V  (payload arrives on stdin)
 		assertItemDocument(stdin, "edit")
+		storeNoteDocument(stdin)
 		writeJSON(map[string]string{"id": "item-existing"})
 
 	default:
@@ -149,6 +190,11 @@ func handleRead(args []string) {
 		fatalf("stub: read needs a reference")
 	}
 	ref := args[0]
+	if strings.HasSuffix(ref, "/notesPlain") {
+		// The inventory backup's body, served from the note store.
+		fmt.Print(readNoteDocument())
+		return
+	}
 	if strings.Contains(ref, "/password") {
 		fmt.Print(envOr("STUB_OP_PASSWORD", "stub-vault-pw"))
 		return
@@ -191,7 +237,8 @@ func assertItemDocument(stdin []byte, op string) {
 	if title == "" {
 		fatalf("item document has no title")
 	}
-	if category, _ := doc["category"].(string); strings.EqualFold(category, "SSH_KEY") || strings.EqualFold(category, "SSHKEY") {
+	category, _ := doc["category"].(string)
+	if strings.EqualFold(category, "SSH_KEY") || strings.EqualFold(category, "SSHKEY") {
 		fatalf("item %q targets the SSH_KEY category; the 1Password CLI silently discards the private key on create and refuses to edit such items - a key belongs in a Login item's concealed field", title)
 	}
 
@@ -208,9 +255,74 @@ func assertItemDocument(stdin []byte, op string) {
 			seen[id] = "SET"
 		}
 	}
+	// What counts as a usable document depends on the category: a credential
+	// item must carry a secret, while the inventory backup must carry a body.
+	if strings.EqualFold(category, "SECURE_NOTE") {
+		if seen["notesPlain"] == "" {
+			fatalf("Secure Note item %q carries an empty notesPlain value, so the backup would be blank", title)
+		}
+		return
+	}
 	if seen["opspulse_private_key"] == "" && seen["password"] == "" {
 		fatalf("item %q carries neither a private key nor a password value", title)
 	}
+}
+
+// noteStorePath is the file the stub keeps the Secure Note's body in, standing
+// in for the vault. `op read` serves it back and `item create`/`edit` overwrite
+// it, which is what makes the write-then-read-back verification testable: a
+// stateless stub would return the same value no matter what was written, and the
+// check that exists to catch a silently discarded write would pass vacuously.
+func noteStorePath() string {
+	return strings.TrimSpace(os.Getenv("STUB_OP_NOTE_STORE"))
+}
+
+// storeNoteDocument records the notesPlain value of a Secure Note write.
+func storeNoteDocument(stdin []byte) {
+	path := noteStorePath()
+	if path == "" {
+		return
+	}
+	var doc struct {
+		Category string `json:"category"`
+		Fields   []struct {
+			ID    string `json:"id"`
+			Value string `json:"value"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(stdin, &doc); err != nil {
+		return
+	}
+	if !strings.EqualFold(doc.Category, "SECURE_NOTE") {
+		return
+	}
+	for _, field := range doc.Fields {
+		if field.ID != "notesPlain" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Clean(path), []byte(field.Value), 0o600); err != nil { // #nosec G304 G703
+			fatalf("stub: store note: %v", err)
+		}
+		return
+	}
+}
+
+// readNoteDocument serves the note body. STUB_OP_NOTE_READ overrides the store
+// so the harness can reproduce the failure mode that motivates the read-back
+// check: the real CLI accepting a write, exiting 0, and storing something else.
+func readNoteDocument() string {
+	if override, ok := os.LookupEnv("STUB_OP_NOTE_READ"); ok {
+		return override
+	}
+	path := noteStorePath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 G703
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func readStdin() []byte {

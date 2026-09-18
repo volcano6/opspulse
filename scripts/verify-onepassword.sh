@@ -18,6 +18,11 @@
 #   * `pull --all` restores everything, leaves skip_batch servers alone unless
 #     --include-skipped is given, and restores a dual-credential server in full
 #   * a foreign key on disk blocks the restore until --force says otherwise
+#   * `push --inventory` writes the whole servers.yaml into one Secure Note and
+#     `pull --inventory` restores it, merging in both directions
+#   * an inventory merge never deletes, treats op:// vs local paths as a
+#     non-conflict, and refuses to guess at a real conflict in a pipe
+#   * a backup write that does not read back verbatim fails the push
 #
 # Only structural facts are printed - no key material, no plaintext password.
 #
@@ -383,6 +388,189 @@ check "the run still succeeds" 0 "$ORPHAN_RC"
 check "the orphaned item is reported" 1 "$(printf '%s' "$ORPHAN" | grep -c 'opspulse_orphan_key')"
 check "no server is invented for it" 1 "$(grep -c 'name: web' "$YAML")"
 check "the orphan did not become a server" 0 "$(grep -c 'name: orphan' "$YAML")"
+
+# The inventory backup is a whole-file operation, not a credential one. Its
+# scenarios need their own fixtures, so they run last and leave the shared
+# $YAML in a state nothing after them depends on.
+#
+# STUB_OP_NOTE_STORE stands in for the vault's copy of the note: the stub
+# overwrites it on every Secure Note write and serves it back on `op read`,
+# which is what makes the write-then-read-back check meaningful rather than
+# vacuous.
+NOTE_STORE="$WORK_NATIVE/note.store"
+HOME2="$WORK_NATIVE/home2"
+rm -f "$NOTE_STORE"
+rm -rf "$HOME2"
+
+echo
+echo "==> push --inventory backs the whole servers.yaml up into one Secure Note"
+cat > "$YAML" <<YAML
+servers:
+  - name: vps1
+    host: 10.0.0.21
+    user: root
+    key_path: op://Personal/opspulse_vps1_key/opspulse_private_key
+  - name: vps2
+    host: 10.0.0.22
+    user: root
+    password: op://Personal/opspulse_vps2_password/password
+YAML
+: > "$STUB_OP_LOG"
+INV_PUSH_RC=0
+STUB_OP_NOTE_STORE="$NOTE_STORE" "$OPS" 1p push --inventory > "$WORK_NATIVE/inv-push.out" 2>&1 || INV_PUSH_RC=$?
+check "the backup push succeeds" 0 "$INV_PUSH_RC"
+check "the backup item is a Secure Note" 1 "$(grep -c 'category=SECURE_NOTE' "$STUB_OP_LOG")"
+check "the Secure Note template was requested" 1 "$(grep -c 'item template get Secure Note' "$STUB_OP_LOG")"
+check "no SSH Key template is involved" 0 "$(grep -c 'item template get SSH Key' "$STUB_OP_LOG")"
+check "the backup carries vps1" 1 "$(grep -c 'name: vps1' "$NOTE_STORE")"
+check "the backup carries vps2" 1 "$(grep -c 'name: vps2' "$NOTE_STORE")"
+check "the write was verified by reading it back" 1 "$(grep -c 'Backed up 2 server' "$WORK_NATIVE/inv-push.out")"
+
+echo
+echo "==> pull --inventory restores the list onto a machine that has none"
+PULL_INV_RC=0
+STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	OPSPULSE_HOME="$HOME2" "$OPS" 1p pull --inventory > "$WORK_NATIVE/inv-pull.out" 2>&1 || PULL_INV_RC=$?
+check "the restore succeeds" 0 "$PULL_INV_RC"
+check "the restored file matches the backup byte for byte" 1 "$(cmp -s "$NOTE_STORE" "$HOME2/servers.yaml" && echo 1 || echo 0)"
+check "the restore reports what it added" 1 "$(grep -c '2 added' "$WORK_NATIVE/inv-pull.out")"
+
+echo
+echo "==> push --inventory unions, so another machine's servers survive"
+cat > "$YAML" <<YAML
+servers:
+  - name: vps3
+    host: 10.0.0.23
+    user: root
+YAML
+STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --inventory > "$WORK_NATIVE/inv-union.out" 2>&1
+check "the vault server survived the push" 1 "$(grep -c 'name: vps1' "$NOTE_STORE")"
+check "the local-only server was added" 1 "$(grep -c 'name: vps3' "$NOTE_STORE")"
+check "the union is reported" 1 "$(grep -c 'were not in the backup yet' "$WORK_NATIVE/inv-union.out")"
+
+echo
+echo "==> a backup that is merely behind is still refreshed"
+# The local file already holds everything in the backup plus one more server.
+# Neither counter moves in this case - the extra server was never "added" from
+# the backup's point of view, and nothing was "updated" - so a skip decided from
+# the counters alone would leave the backup permanently one server behind. This
+# is the shape a real machine has after adding a server, and it is what an
+# earlier revision got wrong.
+cp "$NOTE_STORE" "$YAML"
+cat >> "$YAML" <<YAML
+    - name: vps4
+      host: 10.0.0.24
+      port: 22
+      user: root
+YAML
+SUPERSET="$(STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --inventory 2>&1)"
+check "the backup is not mistaken for up to date" 1 "$(printf '%s' "$SUPERSET" | grep -c 'Backed up 4 server')"
+check "the missing server reached the backup" 1 "$(grep -c 'name: vps4' "$NOTE_STORE")"
+check "the shortfall is reported" 1 "$(printf '%s' "$SUPERSET" | grep -c 'were not in the backup yet')"
+
+echo
+echo "==> a real conflict is refused in a pipe, and --prefer-remote settles it"
+cat > "$YAML" <<YAML
+servers:
+  - name: vps1
+    host: 10.0.0.99
+    user: root
+YAML
+# stdin is a pipe on purpose. Redirecting from /dev/null would not do: /dev/null
+# is a character device, so stdinIsInteractive() would report a terminal and the
+# conflict prompt would block a non-interactive run.
+CONFLICT_INV_RC=0
+CONFLICT_INV="$(printf '' | STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --inventory 2>&1)" || CONFLICT_INV_RC=$?
+check "an undecided conflict fails" 1 "$CONFLICT_INV_RC"
+check "the conflict shows the field-level diff" 1 "$(printf '%s' "$CONFLICT_INV" | grep -c 'host: 10.0.0.99 -> 10.0.0.21')"
+check "the conflict offers a way out" 1 "$(printf '%s' "$CONFLICT_INV" | grep -c -- '--prefer-local')"
+check "the backup was not written" 1 "$(grep -c 'host: 10.0.0.21' "$NOTE_STORE")"
+check "the local host was not written" 0 "$(grep -c '10.0.0.99' "$NOTE_STORE")"
+
+STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --inventory --prefer-remote >/dev/null
+check "--prefer-remote writes the vault's definition" 1 "$(grep -c 'host: 10.0.0.21' "$NOTE_STORE")"
+
+echo
+echo "==> a local key path and an op:// reference are not a conflict"
+cat > "$YAML" <<YAML
+servers:
+  - name: vps1
+    host: 10.0.0.21
+    user: root
+    key_path: $WORK_NATIVE/id_web
+YAML
+STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --inventory > "$WORK_NATIVE/inv-cred.out" 2>&1
+check "the portable reference wins" 1 "$(grep -c 'key_path: op://Personal/opspulse_vps1_key' "$NOTE_STORE")"
+check "the machine-local path was not written" 0 "$(grep -c 'id_web' "$NOTE_STORE")"
+
+echo
+echo "==> pull --inventory never deletes a server only this machine knows"
+cat > "$YAML" <<YAML
+servers:
+  - name: localonly
+    host: 10.0.0.31
+    user: root
+YAML
+STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p pull --inventory > "$WORK_NATIVE/inv-merge.out" 2>&1
+check "the local-only server survived" 1 "$(grep -c 'name: localonly' "$YAML")"
+check "the vault servers were restored" 1 "$(grep -c 'name: vps2' "$YAML")"
+check "the restore reports what it kept" 1 "$(grep -c 'only this machine had' "$WORK_NATIVE/inv-merge.out")"
+
+echo
+echo "==> the inventory backup is not an orphaned credential"
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: $WORK_NATIVE/id_web
+YAML
+ORPHAN_INV="$(STUB_OP_EXISTING=opspulse_web_key,opspulse_inventory "$OPS" 1p pull --all --from-vault --yes 2>&1)"
+check "the backup is not reported as an orphan" 0 "$(printf '%s' "$ORPHAN_INV" | grep -c 'opspulse_inventory')"
+
+echo
+echo "==> an automatic refresh warns on a conflict instead of prompting"
+cat > "$YAML" <<YAML
+servers:
+  - name: vps1
+    host: 10.0.0.99
+    user: root
+    key_path: $WORK_NATIVE/id_web
+  - name: fresh
+    host: 10.0.0.41
+    user: root
+    key_path: $WORK_NATIVE/id_web
+YAML
+AUTO_OUT="$(printf '' | STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	"$OPS" 1p push --all 2>&1)"
+check "the push itself still succeeds" 1 "$(printf '%s' "$AUTO_OUT" | grep -c 'Pushed credentials for 2 server')"
+check "the refresh reports the conflict instead of writing" 1 "$(printf '%s' "$AUTO_OUT" | grep -c 'was not refreshed')"
+check "the refresh points at push --inventory" 1 "$(printf '%s' "$AUTO_OUT" | grep -c 'ops 1p push --inventory')"
+
+echo
+echo "==> a backup write that does not read back verbatim is caught"
+# The real CLI has accepted a write, exited 0, and stored something else. The
+# stub reproduces the observable half by serving a different note on read than
+# the one it just accepted. The override must differ from the local file,
+# otherwise the merge finds nothing to do and never writes at all.
+cat > "$YAML" <<YAML
+servers:
+  - name: vps9
+    host: 10.0.0.99
+    user: root
+YAML
+MISMATCH_INV_RC=0
+MISMATCH_INV="$(STUB_OP_EXISTING=opspulse_inventory STUB_OP_NOTE_STORE="$NOTE_STORE" \
+	STUB_OP_NOTE_READ=$'servers:\n  - name: phantom\n    host: 10.0.0.50\n    user: root\n' \
+	"$OPS" 1p push --inventory 2>&1)" || MISMATCH_INV_RC=$?
+check "the mismatch fails the backup push" 1 "$MISMATCH_INV_RC"
+check "the mismatch explains itself" 1 "$(printf '%s' "$MISMATCH_INV" | grep -c 'did not store the inventory verbatim')"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
