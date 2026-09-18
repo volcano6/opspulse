@@ -6,19 +6,39 @@ import (
 	"strings"
 )
 
-// SSHKeyItemLabel is the 1Password built-in field label holding an SSH key's
-// private half.
+// SSHKeyItemLabel is the label OpsPulse gives the concealed field that holds a
+// managed server's private key.
 const SSHKeyItemLabel = "private key"
 
 // PasswordItemLabel is the 1Password built-in field label holding a password.
 const PasswordItemLabel = "password"
 
-// Field ids inside the 1Password item categories OpsPulse writes to. They come
-// from `op item template get "SSH Key"` and `op item template get Login`, and
-// are what the item documents are keyed by.
+// Field ids inside the 1Password item categories OpsPulse writes to.
 const (
+	// sshKeyPrivateFieldID is the built-in "private key" field of a real
+	// 1Password SSH Key item. OpsPulse reads such items when a user points a
+	// key_path at one, but never writes them - see sshKeyManagedFieldID.
 	sshKeyPrivateFieldID = "private_key"
-	sshKeyPublicFieldID  = "public_key"
+
+	// sshKeyManagedFieldID is the custom concealed field OpsPulse creates on a
+	// Login item to hold a managed server's private key.
+	//
+	// It exists because the 1Password CLI cannot write SSH Key items at all.
+	// Verified against op 2.34.1:
+	//
+	//   - `op item create` accepts a private_key value, echoes it back, exits 0,
+	//     and then the item has no such field (both PEM and OpenSSH keys).
+	//   - `op item edit` refuses outright: "SSH Key item editing in the CLI is
+	//     not yet supported."
+	//   - `op item get <id> --format json` fails on the resulting empty item.
+	//
+	// A concealed field on a Login item is the only CLI-writable home for a
+	// private key, so the id deliberately differs from the built-in
+	// private_key: SSHKeyRefWithFormat uses that difference to decide whether an
+	// op:// reference wants the ssh-format=openssh parameter, which real SSHKEY
+	// fields require and a concealed text field rejects.
+	sshKeyManagedFieldID = "opspulse_private_key"
+
 	loginUsernameFieldID = "username"
 	loginPasswordFieldID = "password"
 )
@@ -26,7 +46,7 @@ const (
 // SSHKeyItemTitle returns the deterministic 1Password item title used to store a
 // managed server's SSH key.
 func SSHKeyItemTitle(serverName string) string {
-	return "opspulse_" + serverName
+	return "opspulse_" + serverName + "_key"
 }
 
 // PasswordItemTitle returns the deterministic 1Password item title used to store
@@ -39,10 +59,14 @@ func PasswordItemTitle(serverName string) string {
 	return "opspulse_" + serverName + "_password"
 }
 
-// BuildSSHKeyRef builds the op:// reference pointing at the private key field of
-// a managed SSH key item.
+// BuildSSHKeyRef builds the op:// reference pointing at the concealed field of a
+// managed SSH key item.
+//
+// No ssh-format query parameter is appended: the key is stored as plain text in
+// a concealed field rather than as a 1Password SSHKEY field, and `op` rejects
+// the parameter on anything but a real SSHKEY field.
 func BuildSSHKeyRef(vault, title string) string {
-	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, title, SSHKeyItemLabel)
+	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, title, sshKeyManagedFieldID)
 }
 
 // BuildPasswordRef builds the op:// reference pointing at the password field of
@@ -81,43 +105,41 @@ func ParseSSHKeyRef(ref string) (vault, item string, ok bool) {
 	return vault, item, ok
 }
 
-// FillSSHKeyItem writes an SSH key onto a 1Password item document.
+// FillSSHKeyItem writes a private key onto a Login item document.
 //
-// doc may be either a fresh template (`op item template get "SSH Key"`) for a
-// create, or the current item (`op item get <item> --format json`) for an
-// update. Re-using the item's own document on updates matters: `op item edit`
-// consumes a whole item, so uploading a bare template would drop every field the
-// user added by hand along with the item's identity.
+// doc may be either a fresh template (`op item template get Login`) for a create,
+// or the current item (`op item get <item> --format json`) for an update. Re-using
+// the item's own document on updates matters: `op item edit` consumes a whole
+// item, so uploading a bare template would drop every field the user added by
+// hand along with the item's identity.
 //
-// The JSON indirection is mandatory rather than stylistic. 1Password assignment
-// statements (the `field=value` command line form) do not support the SSHKEY
-// field type at all, so an existing private key can only be imported through an
-// item document; passing it as a command line argument would also expose it to
-// every process on the machine via the process list.
-func FillSSHKeyItem(doc []byte, title, privateKey, publicKey string) ([]byte, error) {
+// The key lands in a custom concealed field (sshKeyManagedFieldID) instead of a
+// real SSH Key item's private_key, because the CLI cannot write those at all -
+// see that constant's comment. A fresh Login template carries no such field, so
+// one is appended; on updates the existing field is overwritten in place.
+func FillSSHKeyItem(doc []byte, title, privateKey string) ([]byte, error) {
 	if strings.TrimSpace(privateKey) == "" {
 		return nil, fmt.Errorf("refusing to write an empty private key into 1Password")
 	}
 
-	item, err := decodeItem(doc, "SSH Key")
+	item, err := decodeItem(doc, "Login")
 	if err != nil {
 		return nil, err
 	}
 	prepareItem(item, title)
 
 	fields, _ := item["fields"].([]any)
-	fields, found := setItemField(fields, sshKeyPrivateFieldID, privateKey)
-	if !found {
-		return nil, fmt.Errorf("the 1Password SSH Key item has no %q field, so the key cannot be stored", sshKeyPrivateFieldID)
+	if updated, found := setItemField(fields, sshKeyManagedFieldID, privateKey); found {
+		item["fields"] = updated
+		return encodeItem(item)
 	}
-	// 1Password derives the public key from the private key, and the stock
-	// template carries no field for it. Only fill one when the document
-	// happens to have it; never invent a custom field.
-	if strings.TrimSpace(publicKey) != "" {
-		fields, _ = setItemField(fields, sshKeyPublicFieldID, publicKey)
-	}
-	item["fields"] = fields
 
+	item["fields"] = append(fields, map[string]any{
+		"id":    sshKeyManagedFieldID,
+		"label": SSHKeyItemLabel,
+		"type":  "CONCEALED",
+		"value": privateKey,
+	})
 	return encodeItem(item)
 }
 

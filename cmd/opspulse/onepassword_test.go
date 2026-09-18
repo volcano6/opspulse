@@ -161,12 +161,12 @@ func TestWritePublicKeyFileIgnoresInvalidMaterial(t *testing.T) {
 }
 
 func TestSelectOnePasswordTargetsRequiresSelection(t *testing.T) {
-	restore := onePasswordAll
-	onePasswordAll = false
-	t.Cleanup(func() { onePasswordAll = restore })
+	restoreAll, restoreFilter := onePasswordAll, onePasswordPushFilter
+	onePasswordAll, onePasswordPushFilter = false, ""
+	t.Cleanup(func() { onePasswordAll, onePasswordPushFilter = restoreAll, restoreFilter })
 
 	store := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
-	if _, err := selectOnePasswordTargets(store, nil); err == nil {
+	if _, _, err := selectOnePasswordTargets(store, nil); err == nil {
 		t.Error("expected an error when neither server names nor --all are given")
 	}
 }
@@ -377,13 +377,155 @@ func TestOnePasswordCommandWiring(t *testing.T) {
 }
 
 func TestOnePasswordPullCommandFlags(t *testing.T) {
-	for _, flag := range []string{"all", "yes", "force", "include-skipped"} {
+	for _, flag := range []string{"all", "yes", "force", "include-skipped", "filter", "from-vault", "materialize", "vault"} {
 		if onePasswordPullCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("ops 1p pull should expose --%s", flag)
 		}
 	}
 	if onePasswordPullCmd.Flags().ShorthandLookup("y") == nil {
 		t.Error("ops 1p pull should expose -y as a shorthand for --yes")
+	}
+	if onePasswordPullCmd.Flags().ShorthandLookup("f") == nil {
+		t.Error("ops 1p pull should expose -f as a shorthand for --filter")
+	}
+}
+
+func TestOnePasswordPushCommandFlags(t *testing.T) {
+	for _, flag := range []string{"all", "vault", "delete-local", "filter", "include-skipped"} {
+		if onePasswordPushCmd.Flags().Lookup(flag) == nil {
+			t.Errorf("ops 1p push should expose --%s", flag)
+		}
+	}
+	if onePasswordPushCmd.Flags().ShorthandLookup("f") == nil {
+		t.Error("ops 1p push should expose -f as a shorthand for --filter")
+	}
+}
+
+// TestVaultDiscoveryMatchesByExactTitle pins the matching rule that makes
+// --from-vault safe: a server is claimed only by the item title derived from its
+// exact name, so "web" can never be wired to "web2"'s key.
+func TestVaultDiscoveryMatchesByExactTitle(t *testing.T) {
+	discovery := &vaultDiscovery{
+		vault: "Personal",
+		titles: map[string]struct{}{
+			"opspulse_web_key":         {},
+			"opspulse_web2_key":        {},
+			"opspulse_web_password":    {},
+			"unrelated_item":           {},
+			"opspulse_only_a_password": {},
+		},
+	}
+
+	if got, want := discovery.keyRef("web"), "op://Personal/opspulse_web_key/opspulse_private_key"; got != want {
+		t.Errorf("keyRef(web) = %q, want %q", got, want)
+	}
+	if got, want := discovery.keyRef("web2"), "op://Personal/opspulse_web2_key/opspulse_private_key"; got != want {
+		t.Errorf("keyRef(web2) = %q, want %q", got, want)
+	}
+	if got, want := discovery.passwordRef("web"), "op://Personal/opspulse_web_password/password"; got != want {
+		t.Errorf("passwordRef(web) = %q, want %q", got, want)
+	}
+
+	// A prefix of a real title must not match, and a vault with no such item
+	// yields no reference at all rather than a guess.
+	if got := discovery.keyRef("we"); got != "" {
+		t.Errorf("keyRef(we) = %q, want no match", got)
+	}
+	if got := discovery.keyRef("only_a"); got != "" {
+		t.Errorf("keyRef(only_a) = %q, want no match (only the password item exists)", got)
+	}
+	if got := discovery.keyRef("absent"); got != "" {
+		t.Errorf("keyRef(absent) = %q, want no match", got)
+	}
+
+	var nilDiscovery *vaultDiscovery
+	if got := nilDiscovery.keyRef("web"); got != "" {
+		t.Errorf("a nil discovery must yield no reference, got %q", got)
+	}
+}
+
+// TestPlanPull pins the precedence between the vault and servers.yaml: the vault
+// wins where it has an item, and servers.yaml still supplies what the vault does
+// not, so --from-vault widens the search instead of replacing it.
+func TestPlanPull(t *testing.T) {
+	discovery := &vaultDiscovery{
+		vault:  "Personal",
+		titles: map[string]struct{}{"opspulse_web_key": {}},
+	}
+
+	t.Run("the vault overrides a stale local reference", func(t *testing.T) {
+		srv := &server.Server{Name: "web", KeyPath: "~/.ssh/opspulse_web", Password: "op://Other/opspulse_web_password/password"}
+		plan := planPull(srv, discovery)
+
+		if want := "op://Personal/opspulse_web_key/opspulse_private_key"; plan.keyRef != want {
+			t.Errorf("keyRef = %q, want %q", plan.keyRef, want)
+		}
+		if want := "op://Other/opspulse_web_password/password"; plan.passRef != want {
+			t.Errorf("passRef = %q, want the servers.yaml reference as a fallback", want)
+		}
+	})
+
+	t.Run("without discovery only servers.yaml counts", func(t *testing.T) {
+		srv := &server.Server{Name: "web", KeyPath: "op://Personal/opspulse_web_key/opspulse_private_key", Password: "plaintext"}
+		plan := planPull(srv, nil)
+
+		if plan.keyRef == "" {
+			t.Error("an existing op:// reference should still be pulled")
+		}
+		if plan.passRef != "" {
+			t.Error("a plaintext password is not something to pull")
+		}
+	})
+}
+
+func TestReportUnmatchedVaultItems(t *testing.T) {
+	discovery := &vaultDiscovery{
+		vault: "Personal",
+		titles: map[string]struct{}{
+			"opspulse_web_key":    {},
+			"opspulse_web2_key":   {},
+			"opspulse_orphan_key": {},
+			"some_user_item":      {},
+		},
+	}
+
+	var out bytes.Buffer
+	reportUnmatchedVaultItems(&out, discovery, []server.Server{{Name: "web"}, {Name: "web2"}})
+	got := out.String()
+
+	if !strings.Contains(got, "opspulse_orphan_key") {
+		t.Errorf("an unclaimed opspulse item should be reported:\n%s", got)
+	}
+	if strings.Contains(got, "some_user_item") {
+		t.Errorf("items OpsPulse did not create must stay out of the report:\n%s", got)
+	}
+	if strings.Contains(got, "opspulse_web_key") || strings.Contains(got, "opspulse_web2_key") {
+		t.Errorf("claimed items must not be reported as unmatched:\n%s", got)
+	}
+
+	out.Reset()
+	reportUnmatchedVaultItems(&out, nil, nil)
+	if out.Len() != 0 {
+		t.Errorf("without --from-vault nothing should be printed, got %q", out.String())
+	}
+}
+
+// TestNormaliseKeyText pins the fallback comparison used when a key is in a
+// format crypto/ssh cannot parse. Line endings are the one difference that must
+// not count: a key that travelled through Windows comes back with CRLF, and
+// treating that as a mismatch would fail a push that worked.
+func TestNormaliseKeyText(t *testing.T) {
+	unixForm := "-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----\n"
+	dosForm := "-----BEGIN KEY-----\r\nabc\r\ndef\r\n-----END KEY-----\r\n"
+
+	if normaliseKeyText(unixForm) != normaliseKeyText(dosForm) {
+		t.Errorf("CRLF must not count as a difference:\n%q\n%q", normaliseKeyText(unixForm), normaliseKeyText(dosForm))
+	}
+	if normaliseKeyText(unixForm) == normaliseKeyText("-----BEGIN KEY-----\nabc\nghi\n-----END KEY-----\n") {
+		t.Error("different key material must not normalise to the same text")
+	}
+	if got := normaliseKeyText("  spaced  \n"); got != "spaced" {
+		t.Errorf("normaliseKeyText() = %q, want surrounding whitespace dropped", got)
 	}
 }
 
@@ -503,15 +645,142 @@ func TestMayReplaceLocalKeyNormalisesKeyFormats(t *testing.T) {
 }
 
 func TestCountPullablePasswords(t *testing.T) {
-	targets := []*server.Server{
-		{Name: "a", Password: "op://Private/opspulse_a_password/password"},
-		{Name: "b", Password: "plaintext"},
-		{Name: "c", KeyPath: "op://Private/opspulse_c/private key"},
-		{Name: "d", Password: "op://Private/opspulse_d_password/password"},
+	plans := []pullPlan{
+		{server: &server.Server{Name: "a"}, passRef: "op://Private/opspulse_a_password/password"},
+		{server: &server.Server{Name: "b", Password: "plaintext"}},
+		{server: &server.Server{Name: "c"}, keyRef: "op://Private/opspulse_c_key/opspulse_private_key"},
+		{server: &server.Server{Name: "d"}, passRef: "op://Private/opspulse_d_password/password"},
 	}
-	if got := countPullablePasswords(targets); got != 2 {
+	if got := countPullablePasswords(plans); got != 2 {
 		t.Errorf("countPullablePasswords() = %d, want 2", got)
 	}
+
+	// Adoption writes a reference, not a secret, so it needs no confirmation.
+	restoreFromVault, restoreMaterialize := onePasswordPullFromVault, onePasswordPullMaterialize
+	onePasswordPullFromVault, onePasswordPullMaterialize = true, false
+	t.Cleanup(func() { onePasswordPullFromVault, onePasswordPullMaterialize = restoreFromVault, restoreMaterialize })
+
+	if got := countPullablePasswords(plans); got != 0 {
+		t.Errorf("countPullablePasswords() in reference-only mode = %d, want 0", got)
+	}
+}
+
+// TestResolveBatchFilter pins the combinations that mean something, and the ones
+// that do not. Silently letting one selector win would target a different set of
+// servers than the user asked for, which is worse than refusing.
+func TestResolveBatchFilter(t *testing.T) {
+	tests := []struct {
+		name    string
+		filter  string
+		all     bool
+		named   bool
+		want    string
+		wantErr bool
+	}{
+		{name: "names alone select nothing extra", named: true, want: ""},
+		{name: "names plus a filter is refused", named: true, filter: "prod", wantErr: true},
+		{name: "--all becomes the all selector", all: true, want: "all"},
+		{name: "a bare filter is used as given", filter: "prod", want: "prod"},
+		{name: "an empty filter counts as unset", filter: "   ", wantErr: true},
+		{name: "--all with the matching filter agrees", all: true, filter: "all", want: "all"},
+		{name: "--all with the matching filter is case insensitive", all: true, filter: "ALL", want: "ALL"},
+		{name: "--all with a different filter is refused", all: true, filter: "prod", wantErr: true},
+		{name: "nothing at all is refused", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveBatchFilter(tc.filter, tc.all, tc.named)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveBatchFilter() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSelectOnePasswordTargetsByFilter(t *testing.T) {
+	store := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
+	for _, s := range []server.Server{
+		{Name: "web", Host: "10.0.0.1", Labels: map[string]string{"env": "prod"}},
+		{Name: "db", Host: "10.0.0.2", Labels: map[string]string{"env": "prod"}, SkipBatch: true},
+		{Name: "dev", Host: "10.0.0.3", Labels: map[string]string{"env": "dev"}},
+	} {
+		if err := store.Save(s); err != nil {
+			t.Fatalf("seed store: %v", err)
+		}
+	}
+
+	namesOf := func(targets []*server.Server) []string {
+		out := make([]string, 0, len(targets))
+		for _, s := range targets {
+			out = append(out, s.Name)
+		}
+		return out
+	}
+
+	restoreFilter, restoreAll, restoreSkip := onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip
+	t.Cleanup(func() {
+		onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip = restoreFilter, restoreAll, restoreSkip
+	})
+
+	t.Run("a filter selects several servers and skips skip_batch ones", func(t *testing.T) {
+		onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip = "env=prod", false, false
+
+		targets, skipped, err := selectOnePasswordTargets(store, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := namesOf(targets); len(got) != 1 || got[0] != "web" {
+			t.Errorf("targets = %v, want [web]", got)
+		}
+		if len(skipped) != 1 || skipped[0] != "db" {
+			t.Errorf("skipped = %v, want [db]", skipped)
+		}
+	})
+
+	t.Run("--include-skipped adds the guarded server", func(t *testing.T) {
+		onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip = "env=prod", false, true
+
+		targets, skipped, err := selectOnePasswordTargets(store, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(skipped) != 0 {
+			t.Errorf("skipped = %v, want none", skipped)
+		}
+		if got := namesOf(targets); len(got) != 2 {
+			t.Errorf("targets = %v, want [web db]", got)
+		}
+	})
+
+	t.Run("a filter matching nothing is not an error", func(t *testing.T) {
+		onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip = "env=staging", false, false
+
+		targets, _, err := selectOnePasswordTargets(store, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(targets) != 0 {
+			t.Errorf("targets = %v, want none", namesOf(targets))
+		}
+	})
+
+	t.Run("a filter alongside server names is refused", func(t *testing.T) {
+		onePasswordPushFilter, onePasswordAll, onePasswordPushInclSkip = "env=prod", false, false
+
+		if _, _, err := selectOnePasswordTargets(store, []string{"web"}); err == nil {
+			t.Error("expected an error when both names and --filter are given")
+		}
+	})
 }
 
 func TestSelectOnePasswordPullTargets(t *testing.T) {
@@ -653,7 +922,7 @@ func TestReportPullOutcomes(t *testing.T) {
 			t.Fatalf("reportPullOutcomes() error = %v, want nil", err)
 		}
 		got := out.String()
-		for _, want := range []string{"2 restored, 1 skipped, 0 blocked, 0 failed", "1 plaintext password(s)", "idle"} {
+		for _, want := range []string{"2 restored, 0 adopted, 1 skipped, 0 blocked, 0 failed", "1 plaintext password(s)", "idle"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("summary should contain %q:\n%s", want, got)
 			}
@@ -670,7 +939,7 @@ func TestReportPullOutcomes(t *testing.T) {
 			t.Fatal("reportPullOutcomes() should fail the batch when a server fails")
 		}
 		got := out.String()
-		if !strings.Contains(got, "1 restored, 0 skipped, 0 blocked, 1 failed") {
+		if !strings.Contains(got, "1 restored, 0 adopted, 0 skipped, 0 blocked, 1 failed") {
 			t.Errorf("the summary should count the failure:\n%s", got)
 		}
 		if !strings.Contains(got, "1Password is unreachable") {
@@ -694,7 +963,7 @@ func TestReportPullOutcomes(t *testing.T) {
 			t.Fatal("reportPullOutcomes() should fail when a credential is still stranded")
 		}
 		got := out.String()
-		if !strings.Contains(got, "0 restored, 0 skipped, 1 blocked, 0 failed") {
+		if !strings.Contains(got, "0 restored, 0 adopted, 0 skipped, 1 blocked, 0 failed") {
 			t.Errorf("a server with a stranded key is not a clean restore:\n%s", got)
 		}
 		if !strings.Contains(got, "1 plaintext password(s)") {
@@ -714,7 +983,7 @@ func TestReportPullOutcomes(t *testing.T) {
 			t.Fatal("reportPullOutcomes() should fail when nothing could be restored")
 		}
 		got := out.String()
-		if !strings.Contains(got, "0 restored, 0 skipped, 1 blocked, 0 failed") {
+		if !strings.Contains(got, "0 restored, 0 adopted, 0 skipped, 1 blocked, 0 failed") {
 			t.Errorf("a block is not a benign skip:\n%s", got)
 		}
 		if strings.Contains(got, "plaintext password") {
