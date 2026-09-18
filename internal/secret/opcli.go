@@ -162,38 +162,89 @@ func writeSecretTemp(dir, pattern string, data []byte) (string, func(), error) {
 // unlock prompt working. A Linux build in WSL only works with an explicit
 // service account token or a manual `op account add`.
 //
+// The preference is not cosmetic. A Linux `op` under WSL never has a session,
+// so every real operation stops at
+//
+//	No accounts configured for use with 1Password CLI.
+//	Do you want to add an account manually now? [Y/n]
+//
+// which the user experiences as an unexplained password prompt. WSL therefore
+// exhausts every Windows avenue before it will consider a Linux build.
+//
 // Set OPSPULSE_OP_PATH to force a specific executable.
 func Detect() CLI {
 	if forced := strings.TrimSpace(os.Getenv("OPSPULSE_OP_PATH")); forced != "" {
 		return CLI{Path: forced, IsWindowsBinary: looksLikeWindowsBinary(forced)}
 	}
 	if platform.IsWSL() {
-		if p, err := exec.LookPath("op.exe"); err == nil {
-			return CLI{Path: p, IsWindowsBinary: true}
-		}
-		if p, err := exec.LookPath("op"); err == nil {
-			return CLI{Path: p, IsWindowsBinary: looksLikeWindowsBinary(p)}
-		}
-		// Probe common WSL system and user bin locations where op / op.exe might be installed or symlinked
-		for _, candidate := range []string{"/usr/local/bin/op.exe", "/usr/local/bin/op"} {
-			if platform.FileExists(candidate) {
-				return CLI{Path: candidate, IsWindowsBinary: looksLikeWindowsBinary(candidate)}
-			}
-		}
-		if home, err := os.UserHomeDir(); err == nil {
-			for _, candidate := range []string{filepath.Join(home, ".local", "bin", "op.exe"), filepath.Join(home, ".local", "bin", "op")} {
-				if platform.FileExists(candidate) {
-					return CLI{Path: candidate, IsWindowsBinary: looksLikeWindowsBinary(candidate)}
-				}
-			}
-		}
-		if p, ok := locateWindowsExecutable("op.exe"); ok {
-			return CLI{Path: p, IsWindowsBinary: true}
-		}
-		if p, ok := locateWingetCLI(); ok {
+		return detectInWSL()
+	}
+	return detectNative()
+}
+
+// detectInWSL resolves the CLI inside WSL, where only the Windows build can
+// reuse the Desktop App's unlock state.
+func detectInWSL() CLI {
+	for _, probe := range wslWindowsCLIProbes {
+		if p, ok := probe(); ok {
 			return CLI{Path: p, IsWindowsBinary: true}
 		}
 	}
+	// Nothing Windows-shaped is reachable, so a Linux build is all that is
+	// left. It works, but only after `op account add` or with a service
+	// account token.
+	if cli := detectNative(); cli.Available() {
+		return cli
+	}
+	if p, ok := firstExistingWSLBin("op"); ok {
+		return CLI{Path: p, IsWindowsBinary: looksLikeWindowsBinary(p)}
+	}
+	return CLI{}
+}
+
+// wslWindowsCLIProbes are consulted, in order, before WSL will fall back to a
+// Linux build. Every entry must yield a Windows op.exe: none of them may look
+// up the bare `op` name, because on WSL that resolves to a Linux build which
+// can never reach the Desktop App.
+var wslWindowsCLIProbes = []func() (string, bool){
+	// The Windows CLI is usually already on the WSL PATH via Windows interop.
+	func() (string, bool) {
+		p, err := exec.LookPath("op.exe")
+		return p, err == nil
+	},
+	// The Windows PATH is not always mirrored into WSL, so ask Windows itself.
+	func() (string, bool) { return locateWindowsExecutable("op.exe") },
+	// winget does not reliably materialise its Links shim.
+	locateWingetCLI,
+	// An op.exe copied or symlinked into a WSL bin directory.
+	func() (string, bool) { return firstExistingWSLBin("op.exe") },
+}
+
+// firstExistingWSLBin looks for name in the bin directories a WSL user is
+// likely to have installed or symlinked a 1Password CLI into.
+func firstExistingWSLBin(name string) (string, bool) {
+	for _, dir := range wslBinDirs() {
+		candidate := filepath.Join(dir, name)
+		if platform.FileExists(candidate) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// wslBinDirs lists the directories searched for a manually installed CLI
+// inside WSL.
+func wslBinDirs() []string {
+	dirs := []string{"/usr/local/bin"}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	}
+	return dirs
+}
+
+// detectNative locates the CLI on a host where `op` and `op.exe` belong to the
+// same platform, so the plain name is tried first.
+func detectNative() CLI {
 	if p, err := exec.LookPath("op"); err == nil {
 		return CLI{Path: p, IsWindowsBinary: looksLikeWindowsBinary(p)}
 	}

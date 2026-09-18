@@ -88,6 +88,84 @@ func TestFindWingetCLIIn(t *testing.T) {
 	})
 }
 
+// TestDetectInWSLDoesNotFallBackToLinuxOpBeforeWindowsPaths is the regression
+// guard for the ordering fix. With the Windows CLI hidden from the WSL PATH but
+// still reachable through the Windows-side probes, a Linux `op` sitting on PATH
+// must not be chosen: it has no Desktop App session, so every real operation
+// stops at an interactive "Do you want to add an account manually now? [Y/n]"
+// prompt, which reads as an unexplained password prompt.
+func TestDetectInWSLDoesNotFallBackToLinuxOpBeforeWindowsPaths(t *testing.T) {
+	if !platform.IsWSL() {
+		t.Skip("only meaningful inside WSL")
+	}
+	if _, ok := locateWindowsExecutable("op.exe"); !ok {
+		t.Skip("no Windows op.exe reachable from this host")
+	}
+
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "op")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake Linux op: %v", err)
+	}
+
+	// Drop the WinGet directories so the WSL PATH alone cannot yield an
+	// op.exe; the Windows-side probes must still find one.
+	kept := []string{dir}
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.Contains(strings.ToLower(entry), "winget") {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	t.Setenv("PATH", strings.Join(kept, string(os.PathListSeparator)))
+
+	cli := Detect()
+	if cli.Path == fake {
+		t.Fatalf("Detect() chose the Linux op at %q; inside WSL the Windows build must win", fake)
+	}
+	if !cli.IsWindowsBinary {
+		t.Fatalf("Detect() = %q (IsWindowsBinary=false), want a Windows op.exe", cli.Path)
+	}
+}
+
+// TestWSLWindowsCLIProbesAreWindows pins the invariant that every probe WSL
+// consults before falling back to a Linux build yields a Windows op.exe. A
+// probe that resolves the bare `op` name would let a sessionless Linux build
+// win, which is the bug this ordering exists to prevent.
+func TestWSLWindowsCLIProbesAreWindows(t *testing.T) {
+	if len(wslWindowsCLIProbes) == 0 {
+		t.Fatal("wslWindowsCLIProbes is empty; WSL would fall straight through to a Linux op")
+	}
+	for i, probe := range wslWindowsCLIProbes {
+		p, ok := probe()
+		if !ok {
+			continue
+		}
+		if !looksLikeWindowsBinary(p) {
+			t.Fatalf("wslWindowsCLIProbes[%d] returned %q, which is not a Windows binary", i, p)
+		}
+	}
+}
+
+// TestWSLBinDirs covers the directories probed for a manually installed CLI.
+func TestWSLBinDirs(t *testing.T) {
+	dirs := wslBinDirs()
+	if len(dirs) == 0 || dirs[0] != "/usr/local/bin" {
+		t.Fatalf("wslBinDirs() = %v, want it to start with /usr/local/bin", dirs)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	want := filepath.Join(home, ".local", "bin")
+	for _, dir := range dirs {
+		if dir == want {
+			return
+		}
+	}
+	t.Fatalf("wslBinDirs() = %v, want it to contain %q", dirs, want)
+}
+
 // TestWithAccount makes sure the `ops 1p --account` value reaches the CLI
 // process as OP_ACCOUNT, and that an empty value is a no-op.
 func TestWithAccount(t *testing.T) {
