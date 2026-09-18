@@ -118,7 +118,6 @@ func TestServerSetCmd_FlagsConflict(t *testing.T) {
 	}
 }
 
-
 func TestEditServerConfigValidatesBeforeReplacing(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -241,4 +241,3 @@ func TestBackupRepo_TimestampsInUTC(t *testing.T) {
 		t.Errorf("raw finished_at should be formatted in UTC (ending in Z), got %q", rawFinishedAt)
 	}
 }
-

@@ -90,4 +90,3 @@ func (pw *PrefixedWriter) Flush() error {
 	}
 	return nil
 }
-

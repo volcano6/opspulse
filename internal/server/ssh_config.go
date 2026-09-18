@@ -98,8 +98,6 @@ func RenderSSHConfig(servers []Server) string {
 			buf.WriteString("    PreferredAuthentications password,keyboard-interactive\n")
 		}
 
-
-
 		if s.JumpHost != "" {
 			buf.WriteString(fmt.Sprintf("    ProxyJump %s\n", s.JumpHost))
 		}
