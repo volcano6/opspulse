@@ -250,6 +250,89 @@ func TestRunContainerBackup_Standalone_WithAlias(t *testing.T) {
 	}
 }
 
+func TestRunContainerBackup_BindMountPathBoundary(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	backupRepo := storage.NewBackupRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-03", Host: "10.0.0.3", User: "root"})
+
+	// Seed a job so the container backup can inherit a repository backend.
+	_ = backupStore.Save(Job{
+		Name:    "seed",
+		Server:  "vps-03",
+		Paths:   []string{"/var/log"},
+		Backend: "/mnt/repo",
+	})
+
+	// Alias "nginx" makes the standalone project dir
+	// /var/lib/opspulse/containers/nginx.
+	const projectDir = "/var/lib/opspulse/containers/nginx"
+
+	inspectJSON := `[{
+		"Id": "aaa11111",
+		"Name": "/nginx-test",
+		"Config": {"Image": "nginx:alpine"},
+		"HostConfig": {
+			"Binds": [
+				"/var/lib/opspulse/containers/nginx-other:/data/other",
+				"/var/lib/opspulse/containers/nginx/sub:/data/sub",
+				"/opt/appdata:/data/app"
+			]
+		}
+	}]`
+
+	exec := &dynamicMockExecutor{
+		inspectJSON:  inspectJSON,
+		resticOutput: `{"message_type":"summary","files_new":1,"data_added":1,"total_duration":0.1,"snapshot_id":"snap-boundary"}`,
+	}
+
+	runner := NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
+
+	var buf bytes.Buffer
+	res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+		Server:        "vps-03",
+		ContainerName: "nginx-test",
+		AliasName:     "nginx",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RunContainerBackup() error: %v", err)
+	}
+
+	hasPath := func(p string) bool {
+		for _, got := range res.Paths {
+			if got == p {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !hasPath(projectDir) {
+		t.Errorf("res.Paths = %v, want it to contain project dir %q", res.Paths, projectDir)
+	}
+	// A sibling directory that merely shares the project dir's byte prefix is
+	// not inside it, so it must be archived in its own right.
+	if !hasPath(projectDir + "-other") {
+		t.Errorf("res.Paths = %v, want sibling %q to be backed up", res.Paths, projectDir+"-other")
+	}
+	if !hasPath("/opt/appdata") {
+		t.Errorf("res.Paths = %v, want /opt/appdata to be backed up", res.Paths)
+	}
+	// A genuine child is already covered by the project dir itself.
+	if hasPath(projectDir + "/sub") {
+		t.Errorf("res.Paths = %v, want child %q to be skipped as redundant", res.Paths, projectDir+"/sub")
+	}
+}
+
 func TestRunContainerBackup_ComposeAndDatabase(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
