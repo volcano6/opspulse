@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/pathutil"
 )
 
 var (
@@ -136,7 +138,10 @@ func IsSystemMount(source string) bool {
 	if clean == "/etc/localtime" || clean == "/etc/timezone" || clean == "/etc/resolv.conf" || clean == "/etc/hosts" || clean == "/etc/hostname" {
 		return true
 	}
-	if strings.HasPrefix(clean, "/proc") || strings.HasPrefix(clean, "/sys") || strings.HasPrefix(clean, "/dev") || strings.HasPrefix(clean, "/run") {
+	// Match on path boundaries so that legitimate data directories such as
+	// "/development/data" or "/system/backups" are not mistaken for /dev or /sys.
+	if pathutil.HasPathPrefix(clean, "/proc") || pathutil.HasPathPrefix(clean, "/sys") ||
+		pathutil.HasPathPrefix(clean, "/dev") || pathutil.HasPathPrefix(clean, "/run") {
 		return true
 	}
 	return false

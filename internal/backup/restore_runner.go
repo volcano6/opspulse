@@ -14,6 +14,7 @@ import (
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/pathutil"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/shellquote"
@@ -389,7 +390,7 @@ func (r *RestoreRunner) autoStartContainers(
 
 		// A. Check external mounts
 		for _, em := range manifest.ExternalMounts {
-			if em.Reason == "system_mount" || strings.HasPrefix(em.Source, "/var/run") || strings.HasPrefix(em.Source, "/dev") {
+			if em.Reason == "system_mount" || pathutil.HasPathPrefix(em.Source, "/var/run") || pathutil.HasPathPrefix(em.Source, "/dev") {
 				checkScript := fmt.Sprintf("test -e %s || echo 'MISSING'", shellquote.Quote(em.Source))
 				var checkBuf bytes.Buffer
 				_, _ = execToUse.Execute(ctx, target, "check-mount", checkScript, &checkBuf)
