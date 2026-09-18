@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-
 func TestPrefixedWriter_Basic(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewPrefixedWriter("[tag] ", &buf)

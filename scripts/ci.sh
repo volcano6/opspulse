@@ -29,13 +29,20 @@ GOOS=darwin go vet ./...
 echo "  -> Multi-OS Vet: PASSED"
 
 echo ""
-echo "[2/4] Running Linters (revive, errcheck, ineffassign, gosec, staticcheck)..."
+echo "[2/4] Running Linters (gofmt, revive, errcheck, ineffassign, gosec, staticcheck)..."
 check_tool "revive" "github.com/mgechev/revive@latest"
 check_tool "errcheck" "github.com/kisielk/errcheck@latest"
 check_tool "ineffassign" "github.com/gordonklaus/ineffassign@latest"
 check_tool "gosec" "github.com/securego/gosec/v2/cmd/gosec@latest"
 check_tool "staticcheck" "honnef.co/go/tools/cmd/staticcheck@latest"
 
+echo "  -> gofmt..."
+unformatted="$(gofmt -l .)"
+if [ -n "$unformatted" ]; then
+  echo "  ✗ The following files are not gofmt-formatted:" >&2
+  echo "$unformatted" >&2
+  exit 1
+fi
 echo "  -> revive..."
 revive -set_exit_status ./...
 echo "  -> errcheck..."

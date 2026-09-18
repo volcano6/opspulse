@@ -82,4 +82,3 @@ func TestDoctorCmdFlags(t *testing.T) {
 		t.Error("expected --include-skipped flag")
 	}
 }
-

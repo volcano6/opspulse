@@ -19,12 +19,12 @@ func NewPathRemapper(rules map[string]string) *PathRemapper {
 		if !strings.HasPrefix(cleanKey, "/") {
 			cleanKey = "/" + cleanKey
 		}
-		
+
 		cleanVal := path.Clean(v)
 		if !strings.HasPrefix(cleanVal, "/") {
 			cleanVal = "/" + cleanVal
 		}
-		
+
 		normalized[cleanKey] = cleanVal
 	}
 	return &PathRemapper{Rules: normalized}

@@ -140,4 +140,3 @@ func TestInstallCompletion_Fish(t *testing.T) {
 		t.Errorf("expected opspulse.fish to exist: %v", err)
 	}
 }
-

@@ -7,7 +7,7 @@ import (
 
 func TestPathRemapper_Remap(t *testing.T) {
 	rules := map[string]string{
-		"/home/user":       "/root",
+		"/home/user":         "/root",
 		"/home/user/.config": "/root/.config",
 		"var/log/":          "/opt/log",
 	}
@@ -58,4 +58,3 @@ func TestBuildRestoreScript_WithRemap(t *testing.T) {
 		t.Errorf("script missing expected log message:\n%s", script)
 	}
 }
-

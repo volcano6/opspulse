@@ -29,13 +29,13 @@ type ScheduledJob struct {
 
 // Scheduler coordinates cron scheduling of configured backup jobs.
 type Scheduler struct {
-	cron       *cron.Cron
-	runner     *backup.Runner
-	store      *backup.Store
-	dispatcher *notify.Dispatcher
-	out        io.Writer
-	mu         sync.Mutex
-	jobs       map[cron.EntryID]backup.Job
+	cron         *cron.Cron
+	runner       *backup.Runner
+	store        *backup.Store
+	dispatcher   *notify.Dispatcher
+	out          io.Writer
+	mu           sync.Mutex
+	jobs         map[cron.EntryID]backup.Job
 	daemonCtx    context.Context
 	daemonCancel context.CancelFunc
 }
