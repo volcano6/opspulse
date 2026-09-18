@@ -35,17 +35,21 @@ const loginTemplate = `{
   ]
 }`
 
+// existingItem mirrors `op item get <id> --format json` for a managed key item:
+// a Login item carrying OpsPulse's custom concealed field, which the user has
+// since annotated.
 const existingItem = `{
-  "id": "item-existing",
-  "title": "opspulse_web",
+  "id": "item-opspulse_web_key",
+  "title": "opspulse_web_key",
   "version": 7,
   "vault": {"id": "vault-uuid"},
-  "category": "SSH_KEY",
+  "category": "LOGIN",
   "tags": ["infra"],
   "fields": [
-    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "value": "user note"},
-    {"id": "private_key", "type": "SSHKEY", "label": "private key", "value": "OLD"},
-    {"id": "public_key", "type": "STRING", "label": "public key", "value": "ssh-ed25519 OLD"}
+    {"id": "username", "type": "STRING", "label": "username", "purpose": "USERNAME", "value": ""},
+    {"id": "password", "type": "CONCEALED", "label": "password", "purpose": "PASSWORD", "value": ""},
+    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": "user note"},
+    {"id": "opspulse_private_key", "type": "CONCEALED", "label": "private key", "value": "OLD"}
   ]
 }`
 
@@ -107,12 +111,19 @@ func handleItem(args []string, stdin []byte) {
 
 	case "list":
 		// item list --vault V --format json
-		existing := os.Getenv("STUB_OP_EXISTING")
-		if existing == "" {
-			writeJSON([]map[string]string{})
-			return
+		// STUB_OP_EXISTING is a comma-separated list of titles, so a single run
+		// can exercise both the update path and --from-vault discovery.
+		var items []map[string]string
+		for _, title := range strings.Split(os.Getenv("STUB_OP_EXISTING"), ",") {
+			if title = strings.TrimSpace(title); title == "" {
+				continue
+			}
+			items = append(items, map[string]string{"id": "item-" + title, "title": title})
 		}
-		writeJSON([]map[string]string{{"id": "item-existing", "title": existing}})
+		if items == nil {
+			items = []map[string]string{}
+		}
+		writeJSON(items)
 
 	case "get":
 		// item get <id> --vault V --format json
@@ -144,7 +155,9 @@ func handleRead(args []string) {
 	}
 
 	// A key reference: serve a real key so the pull path can validate it.
-	keyPath := os.Getenv("STUB_OP_KEY")
+	// STUB_OP_READ_KEY overrides what reads return, which is how the harness
+	// simulates a write that silently stored something else.
+	keyPath := envOr("STUB_OP_READ_KEY", os.Getenv("STUB_OP_KEY"))
 	if keyPath == "" {
 		fatalf("stub: STUB_OP_KEY is not set, cannot serve a private key")
 	}
@@ -159,6 +172,12 @@ func handleRead(args []string) {
 // stdin, which is exactly the failure the real CLI produces for a --template
 // run: "cannot create an item from template and stdin at the same time" is the
 // mirror image of this check.
+//
+// It also refuses an SSH_KEY payload outright. The real CLI accepts one, exits 0,
+// and then stores nothing - which is how the original empty-item bug went
+// unnoticed: a stub that only checked "was stdin non-empty" happily agreed. A
+// hard failure here means any regression back to SSH Key items is caught by the
+// harness instead of by a user's broken connection.
 func assertItemDocument(stdin []byte, op string) {
 	if len(strings.TrimSpace(string(stdin))) == 0 {
 		fatalf("no item document received on stdin, so `op item %s` cannot proceed", op)
@@ -171,6 +190,9 @@ func assertItemDocument(stdin []byte, op string) {
 	title, _ := doc["title"].(string)
 	if title == "" {
 		fatalf("item document has no title")
+	}
+	if category, _ := doc["category"].(string); strings.EqualFold(category, "SSH_KEY") || strings.EqualFold(category, "SSHKEY") {
+		fatalf("item %q targets the SSH_KEY category; the 1Password CLI silently discards the private key on create and refuses to edit such items - a key belongs in a Login item's concealed field", title)
 	}
 
 	fields, _ := doc["fields"].([]any)
@@ -186,8 +208,8 @@ func assertItemDocument(stdin []byte, op string) {
 			seen[id] = "SET"
 		}
 	}
-	if seen["private_key"] == "" && seen["password"] == "" {
-		fatalf("item %q carries neither a private_key nor a password value", title)
+	if seen["opspulse_private_key"] == "" && seen["password"] == "" {
+		fatalf("item %q carries neither a private key nor a password value", title)
 	}
 }
 
@@ -207,15 +229,18 @@ func logLine(path string, args []string, stdin []byte) {
 	}
 	defer func() { _ = f.Close() }()
 
-	kind := "-"
+	kind, category := "-", "-"
 	var doc map[string]any
 	if err := json.Unmarshal(stdin, &doc); err == nil {
 		if title, _ := doc["title"].(string); title != "" {
 			kind = title
 		}
+		if c, _ := doc["category"].(string); c != "" {
+			category = c
+		}
 	}
-	_, _ = fmt.Fprintf(f, "op %s | stdin=%d bytes | item=%s | OP_ACCOUNT=%s\n",
-		strings.Join(args, " "), len(stdin), kind, os.Getenv("OP_ACCOUNT"))
+	_, _ = fmt.Fprintf(f, "op %s | stdin=%d bytes | item=%s | category=%s | OP_ACCOUNT=%s\n",
+		strings.Join(args, " "), len(stdin), kind, category, os.Getenv("OP_ACCOUNT"))
 }
 
 func envOr(key, fallback string) string {

@@ -91,10 +91,8 @@ func (r *Resolver) ResolvePassword(ctx context.Context, ref string) (string, err
 
 // ResolveSSHKey resolves an op:// reference into an OpenSSH formatted private key.
 //
-// The ssh-format=openssh query parameter is mandatory: without it 1Password
-// returns the key in its own internal storage format, which neither
-// crypto/ssh nor ssh(1) can parse. Line endings are normalised to LF because
-// crypto/ssh's PEM decoder rejects CRLF, and op.exe on Windows can produce them.
+// Line endings are normalised to LF because crypto/ssh's PEM decoder rejects
+// CRLF, and op.exe on Windows can produce them.
 func (r *Resolver) ResolveSSHKey(ctx context.Context, ref string) (string, error) {
 	withFormat, err := SSHKeyRefWithFormat(ref)
 	if err != nil {
@@ -108,6 +106,16 @@ func (r *Resolver) ResolveSSHKey(ctx context.Context, ref string) (string, error
 	// included, is what SSH tooling expects.
 	out, err := r.cli.Run(ctx, "read", withFormat)
 	if err != nil {
+		// A hand-written reference into some other concealed field gets the
+		// parameter appended by SSHKeyRefWithFormat, and `op` rejects it there.
+		// Retry once without it rather than failing on a parameter OpsPulse
+		// added itself.
+		trimmed := strings.TrimSpace(ref)
+		if withFormat != trimmed && strings.Contains(err.Error(), "ssh-format") {
+			if plain, plainErr := r.cli.Run(ctx, "read", trimmed); plainErr == nil {
+				return strings.ReplaceAll(string(plain), "\r\n", "\n"), nil
+			}
+		}
 		return "", fmt.Errorf("failed to read SSH key from 1Password: %w", err)
 	}
 	return strings.ReplaceAll(string(out), "\r\n", "\n"), nil
@@ -153,14 +161,25 @@ func (r *Resolver) ResolveMap(ctx context.Context, env map[string]string) (map[s
 	return resolved, nil
 }
 
-// SSHKeyRefWithFormat appends the ssh-format=openssh query parameter to an op://
-// reference when it is not already present.
+// SSHKeyRefWithFormat returns the op:// reference to read a private key from.
+//
+// A reference into a real SSH Key item's built-in private key field needs the
+// ssh-format=openssh query parameter: without it 1Password returns the key in
+// its own internal storage format, which neither crypto/ssh nor ssh(1) can parse.
+//
+// A reference into the concealed field OpsPulse manages (sshKeyManagedFieldID)
+// holds plain text and must NOT carry the parameter - `op` rejects it on
+// anything but a real SSHKEY field. The field id is what distinguishes the two,
+// which is why OpsPulse does not reuse the built-in private_key id.
 func SSHKeyRefWithFormat(ref string) (string, error) {
 	trimmed := strings.TrimSpace(ref)
 	if !Is1PRef(trimmed) {
 		return "", fmt.Errorf("%q is not a 1Password secret reference (expected an op:// URI)", ref)
 	}
-	if strings.Contains(trimmed, "ssh-format=") {
+	if _, _, field, ok := Parse1PRef(trimmed); ok && field == sshKeyManagedFieldID {
+		return trimmed, nil
+	}
+	if hasQueryParam(trimmed, "ssh-format") {
 		return trimmed, nil
 	}
 	separator := "?"
@@ -168,4 +187,23 @@ func SSHKeyRefWithFormat(ref string) (string, error) {
 		separator = "&"
 	}
 	return trimmed + separator + "ssh-format=openssh", nil
+}
+
+// hasQueryParam reports whether the reference already carries the named query
+// parameter.
+//
+// It inspects the query string rather than searching the whole reference, so a
+// vault or item whose name merely contains the text does not count as a match.
+func hasQueryParam(ref, name string) bool {
+	idx := strings.Index(ref, "?")
+	if idx < 0 {
+		return false
+	}
+	for _, pair := range strings.Split(ref[idx+1:], "&") {
+		key, _, _ := strings.Cut(pair, "=")
+		if key == name {
+			return true
+		}
+	}
+	return false
 }

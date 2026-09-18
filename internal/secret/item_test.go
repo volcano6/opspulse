@@ -2,34 +2,25 @@ package secret
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
-// sshKeyTemplateFixture mirrors the document produced by
-// `op item template get "SSH Key"` on a real CLI: the private key is the only
-// value-bearing field, and there is no vault placeholder.
-const sshKeyTemplateFixture = `{
-  "title": "Imported Key",
-  "category": "SSH_KEY",
-  "fields": [
-    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "value": ""},
-    {"id": "private_key", "type": "SSHKEY", "label": "private key", "value": ""}
-  ]
-}`
-
 // sshKeyItemFixture mirrors `op item get <item> --format json` for an existing
-// managed item that the user has since annotated.
+// managed key item - a Login item carrying OpsPulse's custom concealed field -
+// that the user has since annotated.
 const sshKeyItemFixture = `{
   "id": "abc123",
-  "title": "opspulse_web",
+  "title": "opspulse_web_key",
   "version": 3,
   "vault": {"id": "vault-uuid"},
-  "category": "SSH_KEY",
+  "category": "LOGIN",
   "tags": ["infra"],
   "fields": [
-    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "value": "rotate me"},
-    {"id": "private_key", "type": "SSHKEY", "label": "private key", "value": "OLD-KEY"},
-    {"id": "public_key", "type": "STRING", "label": "public key", "value": "ssh-ed25519 OLD"}
+    {"id": "username", "type": "STRING", "label": "username", "purpose": "USERNAME", "value": ""},
+    {"id": "password", "type": "CONCEALED", "label": "password", "purpose": "PASSWORD", "value": ""},
+    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": "rotate me"},
+    {"id": "opspulse_private_key", "type": "CONCEALED", "label": "private key", "value": "OLD-KEY"}
   ]
 }`
 
@@ -95,14 +86,19 @@ func TestIs1PRef(t *testing.T) {
 }
 
 func TestSSHKeyRefRoundTrip(t *testing.T) {
-	ref := BuildSSHKeyRef("Private", "opspulse_web")
-	if want := "op://Private/opspulse_web/private key"; ref != want {
+	ref := BuildSSHKeyRef("Private", "opspulse_web_key")
+	if want := "op://Private/opspulse_web_key/opspulse_private_key"; ref != want {
 		t.Fatalf("BuildSSHKeyRef() = %q, want %q", ref, want)
+	}
+	// The key lives in a concealed text field, and `op` rejects ssh-format on
+	// anything but a real SSHKEY field.
+	if strings.Contains(ref, "ssh-format") {
+		t.Errorf("BuildSSHKeyRef() = %q, must not carry ssh-format", ref)
 	}
 
 	vault, item, ok := ParseSSHKeyRef(ref)
-	if !ok || vault != "Private" || item != "opspulse_web" {
-		t.Errorf("ParseSSHKeyRef(%q) = (%q, %q, %v), want (Private, opspulse_web, true)", ref, vault, item, ok)
+	if !ok || vault != "Private" || item != "opspulse_web_key" {
+		t.Errorf("ParseSSHKeyRef(%q) = (%q, %q, %v), want (Private, opspulse_web_key, true)", ref, vault, item, ok)
 	}
 
 	if _, _, ok := ParseSSHKeyRef("~/.ssh/id_ed25519"); ok {
@@ -117,8 +113,9 @@ func TestPasswordRefRoundTrip(t *testing.T) {
 	if got := PasswordItemTitle("vps_01"); got != "opspulse_vps_01_password" {
 		t.Fatalf("PasswordItemTitle() = %q", got)
 	}
-	// The key item and the password item must never share a title, otherwise a
-	// Login item would replace the pushed SSH key.
+	// The key item and the password item must never share a title: both are
+	// Login items, so a shared title would mean a push of one overwrites the
+	// other's fields.
 	if PasswordItemTitle("vps_01") == SSHKeyItemTitle("vps_01") {
 		t.Fatal("password and SSH key items must not share a title")
 	}
@@ -168,6 +165,16 @@ func TestSSHKeyRefWithFormat(t *testing.T) {
 			want:  "op://Private/opspulse_web/private key?ssh-format=openssh",
 		},
 		{
+			name:  "leaves the managed concealed field untouched",
+			input: "op://Private/opspulse_web_key/opspulse_private_key",
+			want:  "op://Private/opspulse_web_key/opspulse_private_key",
+		},
+		{
+			name:  "does not mistake an item name for the query parameter",
+			input: "op://Private/opspulse_ssh-format/private key",
+			want:  "op://Private/opspulse_ssh-format/private key?ssh-format=openssh",
+		},
+		{
 			name:    "rejects non references",
 			input:   "~/.ssh/id_ed25519",
 			wantErr: true,
@@ -193,41 +200,77 @@ func TestSSHKeyRefWithFormat(t *testing.T) {
 	}
 }
 
-func TestFillSSHKeyItemFromTemplate(t *testing.T) {
-	payload, err := FillSSHKeyItem([]byte(sshKeyTemplateFixture), "opspulse_web", "PRIVATE-KEY-DATA", "ssh-ed25519 AAAA opspulse:web")
+func TestFillSSHKeyItemAppendsManagedField(t *testing.T) {
+	payload, err := FillSSHKeyItem([]byte(loginTemplateFixture), "opspulse_web_key", "PRIVATE-KEY-DATA")
 	if err != nil {
 		t.Fatalf("FillSSHKeyItem() error: %v", err)
 	}
 
 	parsed := decodeDocument(t, payload)
-	if parsed["title"] != "opspulse_web" {
-		t.Errorf("title = %v, want opspulse_web", parsed["title"])
+	if parsed["title"] != "opspulse_web_key" {
+		t.Errorf("title = %v, want opspulse_web_key", parsed["title"])
 	}
-	if parsed["category"] != "SSH_KEY" {
-		t.Errorf("category = %v, want SSH_KEY", parsed["category"])
+	if parsed["category"] != "LOGIN" {
+		t.Errorf("category = %v, want LOGIN", parsed["category"])
 	}
 	if _, present := parsed["vault"]; present {
 		t.Error("vault should never be left in the payload, the command line selects it")
 	}
 
 	values := fieldValues(t, payload)
-	if values["private_key"] != "PRIVATE-KEY-DATA" {
-		t.Errorf("private_key = %q, want PRIVATE-KEY-DATA", values["private_key"])
+	if values[sshKeyManagedFieldID] != "PRIVATE-KEY-DATA" {
+		t.Errorf("%s = %q, want PRIVATE-KEY-DATA", sshKeyManagedFieldID, values[sshKeyManagedFieldID])
 	}
-	// 1Password derives the public key from the private key and the stock
-	// template has no field for it, so no custom field may be invented.
-	if _, present := values["public_key"]; present {
-		t.Error("public_key must not be invented when the template has no such field")
+	// The key must not be smuggled into the built-in password field: that is
+	// what the item's own Login semantics use, and clobbering it would surprise
+	// anyone who also keeps a password there.
+	if values[loginPasswordFieldID] != "" {
+		t.Errorf("password = %q, want it left empty", values[loginPasswordFieldID])
+	}
+	if _, present := values[sshKeyPrivateFieldID]; present {
+		t.Error("a Login item must not pretend to carry a real SSHKEY field")
 	}
 	if _, present := values["notesPlain"]; !present {
 		t.Error("unrelated built-in fields should be preserved")
 	}
 }
 
+func TestFillSSHKeyItemDoesNotDuplicateManagedField(t *testing.T) {
+	// A re-push must overwrite the managed field, not append a second one: op
+	// accepts duplicate ids and the reader would then depend on field order.
+	first, err := FillSSHKeyItem([]byte(loginTemplateFixture), "opspulse_web_key", "OLD-KEY")
+	if err != nil {
+		t.Fatalf("FillSSHKeyItem() error: %v", err)
+	}
+	second, err := FillSSHKeyItem(first, "opspulse_web_key", "NEW-KEY")
+	if err != nil {
+		t.Fatalf("FillSSHKeyItem() error on the second pass: %v", err)
+	}
+
+	parsed := decodeDocument(t, second)
+	fields, _ := parsed["fields"].([]any)
+	count := 0
+	for _, raw := range fields {
+		field, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, _ := field["id"].(string); id == sshKeyManagedFieldID {
+			count++
+			if value, _ := field["value"].(string); value != "NEW-KEY" {
+				t.Errorf("managed field value = %q, want NEW-KEY", value)
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("managed field appears %d times, want exactly 1", count)
+	}
+}
+
 func TestFillSSHKeyItemPreservesExistingItem(t *testing.T) {
 	// Re-pushing a key must not wipe what the user added in 1Password, nor the
 	// item's identity: `op item edit` consumes the whole document.
-	payload, err := FillSSHKeyItem([]byte(sshKeyItemFixture), "opspulse_web", "NEW-KEY", "ssh-ed25519 NEW")
+	payload, err := FillSSHKeyItem([]byte(sshKeyItemFixture), "opspulse_web_key", "NEW-KEY")
 	if err != nil {
 		t.Fatalf("FillSSHKeyItem() error: %v", err)
 	}
@@ -247,32 +290,19 @@ func TestFillSSHKeyItemPreservesExistingItem(t *testing.T) {
 	}
 
 	values := fieldValues(t, payload)
-	if values["private_key"] != "NEW-KEY" {
-		t.Errorf("private_key = %q, want NEW-KEY", values["private_key"])
-	}
-	if values["public_key"] != "ssh-ed25519 NEW" {
-		t.Errorf("public_key = %q, want it refreshed when the document has the field", values["public_key"])
+	if values[sshKeyManagedFieldID] != "NEW-KEY" {
+		t.Errorf("%s = %q, want NEW-KEY", sshKeyManagedFieldID, values[sshKeyManagedFieldID])
 	}
 	if values["notesPlain"] != "rotate me" {
 		t.Errorf("notesPlain = %q, want the user's note preserved", values["notesPlain"])
 	}
 }
 
-func TestFillSSHKeyItemRejectsMissingKeyField(t *testing.T) {
-	// A document without the SSHKEY field would silently produce an item with no
-	// key, so this has to fail loudly instead.
-	sparse := `{"title": "", "category": "SSH_KEY", "fields": [{"id": "notesPlain", "type": "STRING", "value": ""}]}`
-
-	if _, err := FillSSHKeyItem([]byte(sparse), "opspulse_db", "KEY", ""); err == nil {
-		t.Error("expected an error when the document has no private_key field")
-	}
-}
-
 func TestFillSSHKeyItemRejectsEmptyKeyOrInvalidJSON(t *testing.T) {
-	if _, err := FillSSHKeyItem([]byte(sshKeyTemplateFixture), "t", "   ", ""); err == nil {
+	if _, err := FillSSHKeyItem([]byte(loginTemplateFixture), "t", "   "); err == nil {
 		t.Error("expected an error for an empty private key")
 	}
-	if _, err := FillSSHKeyItem([]byte("not json"), "t", "k", ""); err == nil {
+	if _, err := FillSSHKeyItem([]byte("not json"), "t", "k"); err == nil {
 		t.Error("expected an error for an unparsable document")
 	}
 }
@@ -311,8 +341,8 @@ func TestFillLoginItemRejectsMissingPasswordOrEmptyValue(t *testing.T) {
 }
 
 func TestItemTitles(t *testing.T) {
-	if got := SSHKeyItemTitle("web-01"); got != "opspulse_web-01" {
-		t.Errorf("SSHKeyItemTitle() = %q, want opspulse_web-01", got)
+	if got := SSHKeyItemTitle("web-01"); got != "opspulse_web-01_key" {
+		t.Errorf("SSHKeyItemTitle() = %q, want opspulse_web-01_key", got)
 	}
 }
 
