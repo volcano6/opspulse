@@ -132,3 +132,48 @@ func TestParseInspectJSON_WindowsBindsFallback(t *testing.T) {
 		t.Errorf("unexpected m2: %+v", m2)
 	}
 }
+
+func TestIsSystemMount(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		// Sockets and runtime-injected configuration.
+		{"docker socket", "/var/run/docker.sock", true},
+		{"docker socket short path", "/run/docker.sock", true},
+		{"localtime", "/etc/localtime", true},
+		{"resolv.conf", "/etc/resolv.conf", true},
+
+		// Virtual filesystems, matched on path boundaries.
+		{"proc root", "/proc", true},
+		{"proc entry", "/proc/1/ns/net", true},
+		{"sys root", "/sys", true},
+		{"sys subtree", "/sys/fs/cgroup", true},
+		{"dev root", "/dev", true},
+		{"dev shm", "/dev/shm", true},
+		{"run root", "/run", true},
+		{"run subtree", "/run/systemd", true},
+
+		// Regression: directories that merely share a byte prefix with a
+		// system directory are legitimate data and must still be archived.
+		{"development dir", "/development/data", false},
+		{"procurement dir", "/procurement/files", false},
+		{"system dir", "/system/backups", false},
+		{"runtime dir", "/runtime/app", false},
+
+		// Ordinary data.
+		{"data dir", "/data/app", false},
+		{"opt dir", "/opt/blog", false},
+		{"windows drive path", `C:\data`, false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSystemMount(tt.source); got != tt.want {
+				t.Errorf("IsSystemMount(%q) = %v, want %v", tt.source, got, tt.want)
+			}
+		})
+	}
+}
