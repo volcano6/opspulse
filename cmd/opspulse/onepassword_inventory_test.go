@@ -214,6 +214,58 @@ func TestCollectBackupCredentials(t *testing.T) {
 	}
 }
 
+func TestCountLocalOnly(t *testing.T) {
+	names := func(list ...string) map[string]struct{} {
+		set := make(map[string]struct{}, len(list))
+		for _, name := range list {
+			set[name] = struct{}{}
+		}
+		return set
+	}
+
+	tests := []struct {
+		name     string
+		local    []server.Server
+		incoming map[string]struct{}
+		want     int
+	}{
+		{
+			// The bug this helper exists for: on a fresh machine nothing is
+			// local, so the count must be zero however large the backup is.
+			name:     "a fresh machine keeps nothing",
+			local:    nil,
+			incoming: names("a", "b", "c"),
+			want:     0,
+		},
+		{
+			name:     "a local-only server is counted",
+			local:    []server.Server{{Name: "a"}, {Name: "mine"}},
+			incoming: names("a", "b"),
+			want:     1,
+		},
+		{
+			name:     "a shared server is not local-only even when the merge updated it",
+			local:    []server.Server{{Name: "a"}, {Name: "b"}},
+			incoming: names("a", "b", "c"),
+			want:     0,
+		},
+		{
+			name:     "an empty backup leaves every local server local-only",
+			local:    []server.Server{{Name: "a"}, {Name: "b"}},
+			incoming: names(),
+			want:     2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countLocalOnly(tt.local, tt.incoming); got != tt.want {
+				t.Errorf("countLocalOnly = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWarnMissingLocalKeyFiles(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "present.key")

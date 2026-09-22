@@ -461,6 +461,9 @@ check "the restore reports the list" 1 "$(grep -c 'Restored the server list' "$W
 check "the key followed onto disk" 1 "$([ -f "$WORK_POSIX/fakehome/.ssh/opspulse_vps1" ] && echo 1 || echo 0)"
 check "the key on disk is the backed-up copy" "$KEY_WANT" "$(key_fpr "$WORK_POSIX/fakehome/.ssh/opspulse_vps1")"
 check "the summary counts one restore" 1 "$(grep -c 'Restore finished: 1 restored, 1 skipped, 0 blocked, 0 failed' "$WORK_NATIVE/bootstrap.out")"
+# The file was empty, so nothing here predates the backup: reporting a "kept"
+# count would be arithmetic on the backup's size rather than on what was local.
+check "a fresh machine keeps nothing, so it says nothing" 0 "$(grep -c 'only this machine had' "$WORK_NATIVE/bootstrap.out")"
 
 echo
 echo "==> a restore never deletes a server only this machine knows"
@@ -476,7 +479,7 @@ STUB_OP_EXISTING="$BLOB_TITLE" \
 check "the merge succeeds" 0 "$MERGE_RC"
 check "the local-only server survived" 1 "$(grep -c 'name: localonly' "$HOME2/servers.yaml")"
 check "the vault servers were restored" 1 "$(grep -c 'name: vps1' "$HOME2/servers.yaml")"
-check "the restore reports what it kept" 1 "$(grep -c 'only this machine had' "$WORK_NATIVE/merge.out")"
+check "the restore reports what it kept" 1 "$(grep -c 'Kept 1 server(s) that only this machine had' "$WORK_NATIVE/merge.out")"
 
 echo
 echo "==> an orphaned item is a hint, but a backup document is not an orphan"
