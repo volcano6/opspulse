@@ -39,10 +39,8 @@ ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 ## 命令速览
 
 ```bash
-ops 1p backup                     # 备份本机全部凭据 + 整份 servers.yaml
-ops 1p backup --vault Private     # 指定保险库
-ops 1p backup --prefer-remote     # 清单合并冲突时，以备份为准
-ops 1p backup -p 8                # 并发备份 8 台（默认 4；WSL 驱动 op.exe 时默认 2）
+ops 1p backup                     # 备份本机全部私钥 + 整份 servers.yaml（一个条目，两次 op 调用）
+ops 1p backup --vault Private     # 指定保险库（同时省掉一次列保险库的调用）
 ops 1p restore                    # 还原清单与全部凭据（新机器一条命令起步）
 ops 1p restore web db-01          # 只还原这几台服务器的凭据（不动 servers.yaml）
 ops 1p restore --yes              # 无人值守（跳过明文密码确认）
@@ -61,30 +59,28 @@ ops 1p config --unset             # 忘掉记住的默认值
 ops 1p backup
 ```
 
-它做两件事：
+它把**整台机器**存进 1Password 的**一个** Secure Note：
 
-1. 把**每台有本地私钥文件或明文密码**的服务器上传到 1Password；
-2. 把**整份 `servers.yaml`** 存进共享条目 `opspulse_inventory`。
+1. 整份 `servers.yaml`（含每台服务器的明文密码）；
+2. 本机持有的**每一把私钥**的全文。
+
+条目名是 `opspulse_inventory_<hostname>`：`<hostname>` 取 `os.Hostname()` 并清洗
+（只保留字母数字与 `-_.`，其余替换成 `_`；取不到主机名则用 `unknown`）。
 
 几个关键性质：
 
+- **两次 op 调用。** 一次写入（`op item edit`，首次改走 `op item create`）+ 一次读回校验。
+  旧版是"每台服务器一条私钥条目 + 一条密码条目"，规模稍大就是几十次调用、两分多钟；
+  而每次 `op` 调用都是一次桌面端授权往返（Windows 上 `op.exe` **没有缓存**），
+  所以**调用次数就是耗时**。整机一个条目把这件事压成常数级。
 - **绝不改写 `servers.yaml`。** 本地磁盘始终是唯一真相源，所以备份**不会**改变
   `ops ssh` 的连接方式，也**不会**把一台本来能连的服务器变成依赖 1Password 解锁的服务器。
   这是与旧版 `ops 1p push` 最根本的区别。
 - **无条件全量。** 没有服务器选择、没有 `skip_batch` 跳过列表——要么全备份，要么不备份。
-- **并发上传，但有上界。** 默认 4 台同时上传，`-p/--parallel` 可调。多台同时进行时，进度行会
-  **交错打印**（每台一开始就打出 `⬆️` 行），不会等整批跑完再一起吐——所以看到的先后顺序
-  不代表完成顺序。中途若 1Password 被锁，只有那台失败，整批继续，最后汇总到 `failed` 列表。
-- **WSL 下默认降到 2 台。** 当 OpsPulse 驱动的是 Windows 版 `op.exe` 时，瓶颈不是桌面端，
-  而是 WSL 的 interop 中继：**同时存活的长命 Windows 进程一多，中继就开始拒绝新进程**，
-  报 `<3>WSL ... ERROR: UtilAcceptVsock:273: accept4 failed 110`（errno 110 = ETIMEDOUT，
-  固定 10 秒 accept 窗口后放弃）。实测 2 个存活进程时干净，4 个起开始间歇失败，而 4 路并发
-  恰好落在失败区——原先会**整台丢失**。所以这条路径的默认值单独降为 2；显式 `-p` 仍然优先。
-  另外 `op` 调用本身也带重试：中继拒绝属于「进程根本没起来」，没有副作用，重试安全。
-- **整批只列一次保险库。** 所有服务器共享一份「标题 → 条目 ID」索引，`op item list` 从
-  「每台一次」降到「整批一次」。这在 Windows 上尤其值钱：`op.exe` **没有缓存**
-  （`op --help` 原文：Caching is not available on Windows），每次调用都是一次桌面端授权往返
-  （实测 10~102s）。**索引砍掉的是调用次数，并发摊掉的是每次的耗时**——两者解决的是不同问题。
+  没有凭据的服务器也照常进备份：清单本身就是备份的一部分。
+- **不再并发。** 只有一次写入，没有 fan-out，所以 `-p/--parallel` 已移除。
+- **`--vault` 能省一次调用。** 没记住保险库、也没给 `--vault` 时，得先 `op vault list`
+  才知道往哪儿写；记住了或显式给了就跳过。所以首次 3~4 次调用，之后稳定 2 次。
 - **遇到 `op://` 残留直接拒绝。** 如果 `servers.yaml` 里还有服务器持有 `op://` 引用，
   `backup` 会在**触碰 1Password 之前**就报错退出：
 
@@ -96,34 +92,85 @@ ops 1p backup
 
   否则上传上去的就是一条陈旧的引用，备份本身就不可信了。先 `ops 1p restore` 迁移，再备份。
 
-条目命名是确定性的：
+### 一个条目里装什么
 
 | 内容 | 条目类型 | 标题 | 字段 |
 |------|----------|------|------|
-| 私钥 | Login | `opspulse_<server>_key` | 自定义 CONCEALED 字段 `opspulse_private_key` |
-| 密码 | Login | `opspulse_<server>_password` | 内置 `password` 字段 |
-| 服务器清单 | Secure Note | `opspulse_inventory` | 内置正文 `notesPlain` |
+| 整机备份 | Secure Note | `opspulse_inventory_<hostname>` | 内置正文 `notesPlain` |
 
-已经存在同名条目时走更新，不会重复创建。
+`notesPlain` 里是一段 YAML：
 
-### 清单备份是并集，不是覆盖
+```yaml
+version: 1          # 格式版本，留升级余地
+machine: laptop     # 机器标识，仅供人读
+servers: [...]      # 一份标准的 servers.yaml
+keys:               # 服务器名 -> 私钥全文
+  web: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    ...
+```
 
-`opspulse_inventory` 的合并**只增不减**：
+`keys` 和 `servers` **并排**，而不是把私钥内联进每台服务器——这样 `servers` 部分始终是一份
+标准的 `servers.yaml`，合并、比较、字段级 diff 全部原样复用。
+
+已经存在同名条目时走 `op item edit` **原地更新**，不会重复创建。
+注意 `op item create` **不按标题去重**：对已存在的条目调用它会静默产生第二条同名条目。
+所以写入顺序是「先 `edit`，只有 CLI 明确回 `could not find item` 才 `create`」。
+
+读不到私钥文件时（路径写错、文件被删）会**告警并跳过那把私钥**，但服务器本身照常进备份。
+这正是还原要修的状态，为它放弃整台机器的备份并不划算。
+
+### 备份文档不做合并
+
+旧版的共享条目是**并集**语义，因此 `backup` 要读回来、合并、再写回，还要处理冲突。
+现在每台机器各写各的条目，`backup` 是纯粹的**覆盖式写入**：它只反映这台机器的现状。
+
+- `--prefer-local` / `--prefer-remote` 从 `backup` 上**移除**了（它不再合并）；
+- 并集与冲突处理全部搬到 `restore`：还原时把所有机器的备份文档并起来，
+  才可能遇到"同一个服务器名、两份不同定义"。
+
+公司电脑有 `vps1`、家里电脑有 `vps2`，两边各自 `backup`，各自条目里只有自己那份；
+新机器 `restore` 时把两份并起来，得到 `vps1 + vps2`，谁都不会丢。
+
+## 还原：`ops 1p restore`
+
+`restore` 是**唯一的脱困通道**：它把 1Password 里的凭据写回本地磁盘，让整台机器不再依赖
+1Password 解锁。
+
+### 无参数：整机还原（新机器起步）
+
+```bash
+ops 1p restore
+```
+
+顺序是固定的，且很重要：
+
+1. **先还原 `servers.yaml`**（把保险库里所有 `opspulse_inventory_*` 文档并起来，
+   再与本机已有的做并集合并）；
+2. **再还原每台服务器的凭据**：私钥写到 `~/.ssh/opspulse_<server>`，密码写进 `servers.yaml`。
+
+先清单、后凭据，是因为凭据要靠服务器名去匹配。私钥**直接来自已经读进内存的备份文档**，
+不再逐台发起 op 调用。一台全新机器装好 1Password CLI 后，这一条命令就够了。
+
+如果保险库里一个 `opspulse_inventory_*` 文档都没有，不会报错退出，而是提示一句
+`No inventory backup in vault ...; restoring credentials for the servers already in servers.yaml.`
+然后继续用本机已有的 `servers.yaml` 还原凭据。
+
+### 清单合并是并集，不是覆盖
+
+多个备份文档的合并**只增不减**：
 
 | 情况 | 结果 |
 |------|------|
-| 只有保险库有 | 加入备份 |
+| 只有保险库有 | 加入本地 |
 | 只有本机有 | **保留**，绝不删除 |
 | 同名、清单字段全等 | 不动 |
 | 同名、清单字段有差异 | **冲突**，问你（见下） |
 | 同名、只有凭据字段不同 | 不算冲突：凭据字段不参与冲突判定，本机已有的值保留 |
 
-所以公司电脑有 `vps1`、家里电脑有 `vps2`，两边先后 `backup`，备份里最终是 `vps1 + vps2`，
-谁都不会丢。
-
 凭据字段（`key_path` / `password`）单独走一套规则，且**永远不会**构成冲突：它们天然是
 机器本地的——这台机器存一个密钥文件路径，那台机器存一个明文密码——按"值不同"判冲突会
-每次备份都吵。规则是：
+每次还原都吵。规则是：
 
 - 只有一边有值 → 用有值的那边；
 - 两边都有值且不同 → **保留本机的**，不来回 churn；
@@ -146,38 +193,12 @@ ops 1p backup
 非交互环境（管道、CI）**不会挂住**：直接报错并列出全部冲突，要求你显式表态：
 
 ```bash
-ops 1p backup --prefer-local    # 本机赢
-ops 1p backup --prefer-remote   # 备份赢
+ops 1p restore --prefer-local    # 本机赢
+ops 1p restore --prefer-remote   # 备份赢
 ```
 
 `--prefer-local` / `--prefer-remote` 是**显式选择**，没有"默认本地赢"这回事——
 静默替你选一个，等于谎称另一个选项不存在。两者不能同时给。
-
-> `--prefer-local` / `--prefer-remote` 只在 `ops 1p backup` 与 `ops 1p restore` 上有效，
-> 且都作用于清单合并。凭据本身没有"冲突"一说。
-
-## 还原：`ops 1p restore`
-
-`restore` 是**唯一的脱困通道**：它把 1Password 里的凭据写回本地磁盘，让整台机器不再依赖
-1Password 解锁。
-
-### 无参数：整机还原（新机器起步）
-
-```bash
-ops 1p restore
-```
-
-顺序是固定的，且很重要：
-
-1. **先还原 `servers.yaml`**（从 `opspulse_inventory` 条目，与本机已有的并集合并）；
-2. **再还原每台服务器的凭据**：私钥写到 `~/.ssh/opspulse_<server>`，密码写进 `servers.yaml`。
-
-先清单、后凭据，是因为凭据要靠服务器名去匹配条目——没有清单就没有名字可匹配。
-一台全新机器装好 1Password CLI 后，这一条命令就够了。
-
-如果保险库里根本没有 `opspulse_inventory` 条目，不会报错退出，而是提示一句
-`No inventory backup in vault ...; restoring credentials for the servers already in servers.yaml.`
-然后继续用本机已有的 `servers.yaml` 还原凭据。
 
 ### 具名参数：只还原这几台的凭据
 
@@ -188,6 +209,9 @@ ops 1p restore web db-01
 只还原指定服务器的凭据，**不动 `servers.yaml`**。名字不存在于 `servers.yaml` 时是**报错**，
 而不是静默跳过——最常见的成因就是"清单还没还原就先还原凭据"，报错会直接告诉你先跑
 无参数的 `ops 1p restore`。
+
+凭据同样优先从备份文档里取（读一次文档，所有点名服务器的私钥都在里面）；
+只有文档里没有某台服务器的私钥时，才回退去按条目名找旧格式的条目。
 
 ### 明文密码确认
 
@@ -240,18 +264,20 @@ Restore finished: N restored, M skipped, K blocked, B failed.
 只要有 `failed` 或 `blocked`，命令就以非 0 退出。单台失败不会中断整批。
 
 `restore` 结束后还会检查保险库里有没有 `opspulse_*` 条目**没有**匹配到本机的任何服务器，
-列出提示。它**不会**据此凭空创建服务器——条目里没有 host / user / port / tags，
+列出提示。备份文档（`opspulse_inventory_*`）不算孤儿：它是整机备份的载体，本来就不对应
+任何单台服务器。它**不会**据此凭空创建服务器——条目里没有 host / user / port / tags，
 造不出一台可用的服务器。
 
 ### 怎么删除一台服务器（重要）
 
 因为是并集，**备份里的服务器只能手工删**。顺序不能反：
 
-1. 在**还持有它**的每台机器上 `ops server remove <name>`；
-2. 最后在 1Password 里手工编辑 `opspulse_inventory`，删掉那一段。
+1. 在**还持有它**的每台机器上 `ops server remove <name>`，然后各跑一次 `ops 1p backup`
+   （`backup` 是覆盖式写入，这一跑就把它从**这台机器**的条目里删掉了）；
+2. 剩下的机器重复第 1 步；任何一台漏掉，它的条目里就还留着这台服务器。
 
-> ⚠️ 只做第 2 步没用：只要还有任何一台机器的 `servers.yaml` 留着这台服务器，
-> 下一次 `ops 1p backup` 就会把它加回备份。
+> ⚠️ 只在一台机器上删没用：只要还有任何一台机器的条目（或 `servers.yaml`）留着它，
+> 下一次在**那台机器**上 `restore` 就会把它加回来。
 
 ## `ops 1p status`：凭据现在放在哪儿
 
@@ -276,7 +302,9 @@ legacy   legacy 1password ref (Private/opspulse_legacy_key)   -
 运行时已经拒绝它，它是一个**待修复的问题**，不是一种可用的配置。
 
 加 `--remote` 会额外查询保险库，把表换成 `LOCAL KEY` / `1P BACKUP` 两列，
-告诉你哪些服务器在 1Password 里有备份（这一步需要授权）。
+告诉你哪些服务器在 1Password 里有备份（这一步需要授权）。它会读一遍各机器的备份文档，
+所以新格式下这个列会显示文档的条目名（`opspulse_inventory_<hostname>`）——
+服务器现在住在文档里，旧格式的 `opspulse_<server>_key` 条目只是历史遗留。
 
 `status` 还会检查每个 `local file` 指向的密钥文件**是否真的在这台机器上**。缺失就点名
 告警，并**不再**打印"全部本地"的确认——否则那句绿字会被第一次连接失败当场推翻。
@@ -354,51 +382,54 @@ jobs:
 
 ## 设计上的几个关键点
 
-- **为什么私钥存在 Login 条目里，而不是 "SSH Key" 条目？**
+- **为什么整机备份放在 Secure Note 的正文里，而不是每台服务器一条目？**
   因为 **1Password CLI 根本写不了 SSH Key 条目**。实测（op 2.34.1）：
   `op item create` 会**接受**带 `private_key` 的 payload、把值回显出来、**退出码 0**，
   然后条目里根本没有这个字段；`op item edit` 则直接拒绝：
   `SSH Key item editing in the CLI is not yet supported`；
   这种空壳条目还会让 `op item get <id> --format json` 整体失败。
   PEM 和 OpenSSH 两种格式都一样，所以不是格式问题，是字段被整体丢弃。
-  Login 条目的 CONCEALED 字段是当前**唯一** CLI 可写的私钥载体，PEM / OpenSSH 往返逐字节一致。
-  如果 1Password 以后支持编辑 SSH Key 条目，可以平滑迁回。
-- **必须用 JSON 模板写入。** 1Password 的命令行赋值语句（`private key=...` 这种
-  `field=value` 形式）不支持 SSHKEY 字段类型，而且命令行参数会出现在进程列表中，
-  等于把私钥公开给同机所有进程。OpsPulse 取 `op item template get Login` 拿到官方模板，
-  填好后通过 **stdin** 交给 CLI（`op` 拒绝 `--template` 与重定向 stdin 同时使用，
-  而 Go 起的子进程 stdin 永远是重定向的），私钥因此完全不经过磁盘。
+  旧版因此把私钥塞进 Login 条目的 CONCEALED 字段——能写，但要**每台一条**。
+  现在私钥是 Secure Note 正文里的一段文本（`notesPlain`，op 2.34.1 上多行 YAML
+  写入/回读逐字节一致，含"末尾无换行"的情形），整台机器只需要**一条**。
+  旧版按服务器命名的 Login 条目仍能**读**，是 `restore` 的回退路径。
 - **`?ssh-format=openssh` 只对真正的 SSHKEY 字段有效。**
   指向真实 SSH Key 条目的 `op://…/private key` 必须带这个查询参数，否则 1Password 返回的是
   它自己的内部存储格式，`ssh` 和 `crypto/ssh` 都解析不了。
-  但 OpsPulse 自己的条目用的是**普通文本的 concealed 字段**，对它加这个参数会被 `op` 直接拒绝。
+  而 OpsPulse 旧版条目用的是**普通文本的 concealed 字段**，对它加这个参数会被 `op` 直接拒绝。
   OpsPulse 靠字段 id 区分这两种情况：`opspulse_private_key` 不加，其他字段照旧自动补上。
-- **清单备份用 Secure Note 的 `notesPlain`。** 同理，SSHKEY 写不了，而 Secure Note 的
-  内置正文是 CLI 可写的：op 2.34.1 上多行 YAML 写入/回读逐字节一致（含"末尾无换行"的情形）。
-  条目名固定 `opspulse_inventory`，全机器共享一个——每台机器一个条目就又要引入"机器名"
-  这一层身份，而服务器清单本来就该是同一份。
+- **写入文档是本地拼的，不取模板。** 旧版要先 `op item template get Login` 拿官方模板再填，
+  那是一次额外的往返。Secure Note 的文档结构固定（一个 `notesPlain` 字段），
+  本地拼好直接走 **stdin** 交给 CLI 即可——私钥因此完全不经过磁盘，
+  也完全不经过命令行参数（命令行参数会出现在进程列表里）。
+  代价是如果 1Password 改了 Secure Note 的字段定义，得跟着改 `secret.BuildInventoryItem`。
+- **先 `edit`，只在「找不到条目」时才 `create`。** `op item create` **不按标题去重**：
+  对一个已存在的条目调用它会静默产生**第二条同名条目**。所以写入顺序必须是
+  「先 `op item edit <title>`（标题直接定位条目，省掉 `op item list`），
+  只有 CLI 明确回 `could not find item` 才 `create`」。
+  判断依据是**错误文本**而不是退出码——`op` 所有失败都返回 1。
 - **写入后回读校验。** 1Password CLI 接受过一次实际什么都没存进去的写入并返回成功
-  （见上），所以 `backup` 写完会立刻把内容读回来比对；不一致就报错，
+  （见上），所以 `backup` 写完会立刻把内容读回来**逐字节**比对；不一致就报错，
   **不会留下一个"看起来成功"的备份**。一个悄悄出错的备份比没有备份更糟——
   你只会在新机器上才发现，而那时已经无从回退。
 - **WSL 下不走 `cmd.exe` 传参。** 多行私钥经过 Windows 命令解释器会被转义破坏，
   所以 OpsPulse 只用 `cmd.exe` 定位 `op.exe`，实际执行直接调该可执行文件。
-- **共享私钥按服务器各存一份，不做去重。** 多台服务器用同一把私钥时（很常见，
-  例如同一把 GCP 下发的 key），1Password 里就会有多个内容相同的条目——这是**预期行为**，
-  不是 bug，不要手动去删。好处是命名完全由服务器名决定（`opspulse_<name>_key`），
-  不需要引入"密钥实体"这一层抽象，`~/.ssh/` 下本来就每台一份副本。
+- **共享私钥不去重。** 多台服务器用同一把私钥时（很常见，例如同一把 GCP 下发的 key），
+  文档的 `keys` 里会有多个内容相同的值——这是**预期行为**，不是 bug。
+  好处是 `keys` 的键就是服务器名，不需要引入"密钥实体"这一层抽象，
+  `~/.ssh/` 下本来就每台一份副本。
 
 ## 已知边界
 
 | 场景 | 行为 |
 |------|------|
 | `ops ssh` / `ops exec` / `ops cp` | **完全不碰 1Password**，直接读本地 `servers.yaml`；残留的 `op://` 引用会快速失败并指向 `ops 1p restore` |
-| `ops 1p backup` | 上传全部本地凭据 + 整份 `servers.yaml`；**不改写 `servers.yaml`**；有 `op://` 残留时先报错拒绝 |
-| `ops 1p restore`（无参数） | 先还原清单、再还原全部凭据；密码以**明文**写回 `servers.yaml`（需确认或 `--yes`） |
+| `ops 1p backup` | 把整份 `servers.yaml` + 本机全部私钥写进一个 `opspulse_inventory_<hostname>` 条目；**不改写 `servers.yaml`**；有 `op://` 残留时先报错拒绝 |
+| `ops 1p restore`（无参数） | 先还原清单（并集合并所有机器的备份文档）、再还原全部凭据；密码以**明文**写回 `servers.yaml`（需确认或 `--yes`） |
 | `ops 1p restore <name>...` | 只还原指定服务器的凭据，不动 `servers.yaml`；名字不存在则报错 |
 | `ops 1p restore` 遇到遗留 `op://` | 原样使用该引用并迁移为本地凭据，顺带清理 `~/.ssh/opspulse-1p`；提示重启 daemon |
 | `ops 1p status` | **离线**，只读 `servers.yaml`，从不弹授权框 |
-| `ops 1p status --remote` | 额外查询保险库，需授权 |
+| `ops 1p status --remote` | 额外查询保险库并读取各机器的备份文档，需授权 |
 | `ops 1p config --offline` | 只读写本地记忆的默认值，不联系 CLI |
 | `ops 1p push` / `ops 1p pull` | 已退役（隐藏命令），运行只给出重命名指引 |
 | `ops export ssh-config` | 系统 `ssh` 读不了 `op://`；若某主机仍是引用，则不写 `IdentityFile`，只留注释指引 |
@@ -419,20 +450,25 @@ jobs:
 （空的）`servers.yaml` 继续。详见「还原：`ops 1p restore`」。
 
 **`ops 1p restore` 报 "no inventory backup in vault ..."**
-这不是错误，只是一句提示：保险库里还没有 `opspulse_inventory` 条目，于是它退回到
+这不是错误，只是一句提示：保险库里还没有任何 `opspulse_inventory_*` 文档，于是它退回到
 "用本机已有的 `servers.yaml` 还原凭据"。到一台已经有 `servers.yaml` 的机器上先跑
-`ops 1p backup` 即可建立备份条目。
+`ops 1p backup` 即可建立备份文档。
 
-**`ops 1p backup` 报 "did not store the inventory verbatim"**
+**`ops 1p backup` 报 "did not store the backup verbatim"**
 写入后回读校验没通过：1Password 存进去的正文与刚写的不是同一份。
 这是 CLI 静默丢字段那一类故障的兜底（见「设计上的几个关键点」），
 此时备份**不可信**，命令以非 0 退出。排查：`ops 1p config` 看鉴权，
-确认 `opspulse_inventory` 确实是 OpsPulse 建的 Secure Note 条目；必要时删掉它重跑。
+确认 `opspulse_inventory_<hostname>` 确实是 OpsPulse 建的 Secure Note 条目；
+必要时删掉它重跑（下一次会走 `create` 重建）。
 
-**删了一台服务器，下次备份又回来了**
-这是并集语义的预期结果。正确顺序是先在**所有**还持有它的机器上
-`ops server remove <name>`，最后再手工编辑 `opspulse_inventory` 删掉那一段。
-详见「怎么删除一台服务器」。
+**换过主机名，保险库里出现了两个 `opspulse_inventory_*` 条目**
+条目名里的机器名就是主机名。主机名变了，OpsPulse 就认不出旧条目了，于是新建一个。
+这不会丢数据：`restore` 会把**所有**备份文档并起来。不想要旧条目的话，
+`restore` 之后手工在 1Password 里删掉它即可。
+
+**删了一台服务器，下次还原又回来了**
+这是并集语义的预期结果。正确顺序是先在**还持有它**的每台机器上
+`ops server remove <name>` 并各跑一次 `ops 1p backup`。详见「怎么删除一台服务器」。
 
 **`ops 1p restore` 之后某台服务器连不上，说密钥文件不存在**
 如果它不在本次还原的目标里（具名还原只处理你点名的服务器），就不会落盘。

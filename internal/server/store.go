@@ -236,20 +236,28 @@ func parseAndValidateConfig(data []byte) (*ConfigFile, error) {
 		}
 		return nil, fmt.Errorf("failed to parse servers YAML: %w", err)
 	}
-	seen := make(map[string]struct{}, len(cf.Servers))
-	for i := range cf.Servers {
-		if err := cf.Servers[i].Validate(); err != nil {
-			return nil, fmt.Errorf("invalid server entry %d: %w", i+1, err)
-		}
-		if _, exists := seen[cf.Servers[i].Name]; exists {
-			return nil, fmt.Errorf("duplicate server name %q", cf.Servers[i].Name)
-		}
-		seen[cf.Servers[i].Name] = struct{}{}
-	}
-	if err := validateJumpHosts(cf.Servers); err != nil {
+	if err := validateServers(cf.Servers); err != nil {
 		return nil, err
 	}
 	return &cf, nil
+}
+
+// validateServers checks a list of server definitions, normalising each entry's
+// defaults in place. It is shared with the 1Password backup parser so that a
+// document OpsPulse is willing to write and a document it is willing to read are
+// held to the same rules.
+func validateServers(servers []Server) error {
+	seen := make(map[string]struct{}, len(servers))
+	for i := range servers {
+		if err := servers[i].Validate(); err != nil {
+			return fmt.Errorf("invalid server entry %d: %w", i+1, err)
+		}
+		if _, exists := seen[servers[i].Name]; exists {
+			return fmt.Errorf("duplicate server name %q", servers[i].Name)
+		}
+		seen[servers[i].Name] = struct{}{}
+	}
+	return validateJumpHosts(servers)
 }
 
 func validateJumpHosts(servers []Server) error {

@@ -6,46 +6,6 @@ import (
 	"testing"
 )
 
-// sshKeyItemFixture mirrors `op item get <item> --format json` for an existing
-// managed key item - a Login item carrying OpsPulse's custom concealed field -
-// that the user has since annotated.
-const sshKeyItemFixture = `{
-  "id": "abc123",
-  "title": "opspulse_web_key",
-  "version": 3,
-  "vault": {"id": "vault-uuid"},
-  "category": "LOGIN",
-  "tags": ["infra"],
-  "fields": [
-    {"id": "username", "type": "STRING", "label": "username", "purpose": "USERNAME", "value": ""},
-    {"id": "password", "type": "CONCEALED", "label": "password", "purpose": "PASSWORD", "value": ""},
-    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": "rotate me"},
-    {"id": "opspulse_private_key", "type": "CONCEALED", "label": "private key", "value": "OLD-KEY"}
-  ]
-}`
-
-// loginTemplateFixture mirrors the document produced by
-// `op item template get Login`.
-const loginTemplateFixture = `{
-  "title": "",
-  "category": "LOGIN",
-  "fields": [
-    {"id": "username", "type": "STRING", "label": "username", "purpose": "USERNAME", "value": ""},
-    {"id": "password", "type": "CONCEALED", "label": "password", "purpose": "PASSWORD", "value": ""},
-    {"id": "notesPlain", "type": "STRING", "label": "notesPlain", "purpose": "NOTES", "value": ""}
-  ]
-}`
-
-// secureNoteTemplateFixture mirrors the document produced by
-// `op item template get "Secure Note"`.
-const secureNoteTemplateFixture = `{
-  "title": "",
-  "category": "SECURE_NOTE",
-  "fields": [
-    {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": ""}
-  ]
-}`
-
 func fieldValues(t *testing.T, payload []byte) map[string]string {
 	t.Helper()
 
@@ -210,146 +170,6 @@ func TestSSHKeyRefWithFormat(t *testing.T) {
 	}
 }
 
-func TestFillSSHKeyItemAppendsManagedField(t *testing.T) {
-	payload, err := FillSSHKeyItem([]byte(loginTemplateFixture), "opspulse_web_key", "PRIVATE-KEY-DATA")
-	if err != nil {
-		t.Fatalf("FillSSHKeyItem() error: %v", err)
-	}
-
-	parsed := decodeDocument(t, payload)
-	if parsed["title"] != "opspulse_web_key" {
-		t.Errorf("title = %v, want opspulse_web_key", parsed["title"])
-	}
-	if parsed["category"] != "LOGIN" {
-		t.Errorf("category = %v, want LOGIN", parsed["category"])
-	}
-	if _, present := parsed["vault"]; present {
-		t.Error("vault should never be left in the payload, the command line selects it")
-	}
-
-	values := fieldValues(t, payload)
-	if values[sshKeyManagedFieldID] != "PRIVATE-KEY-DATA" {
-		t.Errorf("%s = %q, want PRIVATE-KEY-DATA", sshKeyManagedFieldID, values[sshKeyManagedFieldID])
-	}
-	// The key must not be smuggled into the built-in password field: that is
-	// what the item's own Login semantics use, and clobbering it would surprise
-	// anyone who also keeps a password there.
-	if values[loginPasswordFieldID] != "" {
-		t.Errorf("password = %q, want it left empty", values[loginPasswordFieldID])
-	}
-	if _, present := values[sshKeyPrivateFieldID]; present {
-		t.Error("a Login item must not pretend to carry a real SSHKEY field")
-	}
-	if _, present := values["notesPlain"]; !present {
-		t.Error("unrelated built-in fields should be preserved")
-	}
-}
-
-func TestFillSSHKeyItemDoesNotDuplicateManagedField(t *testing.T) {
-	// A re-push must overwrite the managed field, not append a second one: op
-	// accepts duplicate ids and the reader would then depend on field order.
-	first, err := FillSSHKeyItem([]byte(loginTemplateFixture), "opspulse_web_key", "OLD-KEY")
-	if err != nil {
-		t.Fatalf("FillSSHKeyItem() error: %v", err)
-	}
-	second, err := FillSSHKeyItem(first, "opspulse_web_key", "NEW-KEY")
-	if err != nil {
-		t.Fatalf("FillSSHKeyItem() error on the second pass: %v", err)
-	}
-
-	parsed := decodeDocument(t, second)
-	fields, _ := parsed["fields"].([]any)
-	count := 0
-	for _, raw := range fields {
-		field, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if id, _ := field["id"].(string); id == sshKeyManagedFieldID {
-			count++
-			if value, _ := field["value"].(string); value != "NEW-KEY" {
-				t.Errorf("managed field value = %q, want NEW-KEY", value)
-			}
-		}
-	}
-	if count != 1 {
-		t.Errorf("managed field appears %d times, want exactly 1", count)
-	}
-}
-
-func TestFillSSHKeyItemPreservesExistingItem(t *testing.T) {
-	// Re-pushing a key must not wipe what the user added in 1Password, nor the
-	// item's identity: `op item edit` consumes the whole document.
-	payload, err := FillSSHKeyItem([]byte(sshKeyItemFixture), "opspulse_web_key", "NEW-KEY")
-	if err != nil {
-		t.Fatalf("FillSSHKeyItem() error: %v", err)
-	}
-
-	parsed := decodeDocument(t, payload)
-	if parsed["id"] != "abc123" {
-		t.Errorf("id = %v, want abc123 (the item's identity must survive)", parsed["id"])
-	}
-	if parsed["version"] == nil {
-		t.Error("version should be preserved so the update is not rejected as stale")
-	}
-	if _, present := parsed["vault"]; present {
-		t.Error("vault should be dropped so it cannot disagree with --vault")
-	}
-	if tags, _ := parsed["tags"].([]any); len(tags) != 1 || tags[0] != "infra" {
-		t.Errorf("tags = %v, want them preserved", parsed["tags"])
-	}
-
-	values := fieldValues(t, payload)
-	if values[sshKeyManagedFieldID] != "NEW-KEY" {
-		t.Errorf("%s = %q, want NEW-KEY", sshKeyManagedFieldID, values[sshKeyManagedFieldID])
-	}
-	if values["notesPlain"] != "rotate me" {
-		t.Errorf("notesPlain = %q, want the user's note preserved", values["notesPlain"])
-	}
-}
-
-func TestFillSSHKeyItemRejectsEmptyKeyOrInvalidJSON(t *testing.T) {
-	if _, err := FillSSHKeyItem([]byte(loginTemplateFixture), "t", "   "); err == nil {
-		t.Error("expected an error for an empty private key")
-	}
-	if _, err := FillSSHKeyItem([]byte("not json"), "t", "k"); err == nil {
-		t.Error("expected an error for an unparsable document")
-	}
-}
-
-func TestFillLoginItem(t *testing.T) {
-	payload, err := FillLoginItem([]byte(loginTemplateFixture), PasswordItemTitle("vps_01"), "root", "hunter2")
-	if err != nil {
-		t.Fatalf("FillLoginItem() error: %v", err)
-	}
-
-	parsed := decodeDocument(t, payload)
-	if parsed["title"] != "opspulse_vps_01_password" {
-		t.Errorf("title = %v", parsed["title"])
-	}
-	if _, present := parsed["vault"]; present {
-		t.Error("vault should have been removed")
-	}
-
-	values := fieldValues(t, payload)
-	if values[loginUsernameFieldID] != "root" {
-		t.Errorf("username = %q, want root", values[loginUsernameFieldID])
-	}
-	if values[loginPasswordFieldID] != "hunter2" {
-		t.Errorf("password = %q, want hunter2", values[loginPasswordFieldID])
-	}
-}
-
-func TestFillLoginItemRejectsMissingPasswordOrEmptyValue(t *testing.T) {
-	sparse := `{"title": "", "category": "LOGIN", "fields": [{"id": "username", "type": "STRING", "value": ""}]}`
-	if _, err := FillLoginItem([]byte(sparse), "t", "root", "pw"); err == nil {
-		t.Error("expected an error when the document has no password field")
-	}
-	if _, err := FillLoginItem([]byte(loginTemplateFixture), "t", "root", "  "); err == nil {
-		t.Error("expected an error for an empty password")
-	}
-}
-
 func TestItemTitles(t *testing.T) {
 	if got := SSHKeyItemTitle("web-01"); got != "opspulse_web-01_key" {
 		t.Errorf("SSHKeyItemTitle() = %q, want opspulse_web-01_key", got)
@@ -357,79 +177,64 @@ func TestItemTitles(t *testing.T) {
 }
 
 func TestBuildInventoryRef(t *testing.T) {
-	if got := BuildInventoryRef("Personal"); got != "op://Personal/opspulse_inventory/notesPlain" {
+	if got := BuildInventoryRef("Personal", InventoryItemTitleFor("box")); got != "op://Personal/opspulse_inventory_box/notesPlain" {
+		t.Errorf("BuildInventoryRef() = %q", got)
+	}
+	// The historical shared item is still readable, so its reference has to
+	// keep working.
+	if got := BuildInventoryRef("Personal", InventoryItemTitle); got != "op://Personal/opspulse_inventory/notesPlain" {
 		t.Errorf("BuildInventoryRef() = %q", got)
 	}
 }
 
-// The inventory payload is YAML with significant indentation and trailing
-// whitespace, so the round trip has to be byte-exact rather than "close enough".
-func TestFillInventoryItem(t *testing.T) {
-	yamlText := "servers:\n    - name: web\n      host: 10.0.0.10\n      user: ubuntu\n"
+// Every per-machine title has to stay recognisable as an inventory item: the
+// prefix is what restore uses to find backups, and what stops a backup item from
+// being reported as an orphaned credential.
+func TestInventoryItemTitles(t *testing.T) {
+	if got := InventoryItemTitleFor("box"); got != "opspulse_inventory_box" {
+		t.Errorf("InventoryItemTitleFor() = %q", got)
+	}
+	for _, title := range []string{InventoryItemTitle, InventoryItemTitleFor("box")} {
+		if !IsInventoryItemTitle(title) {
+			t.Errorf("IsInventoryItemTitle(%q) = false", title)
+		}
+	}
+	for _, title := range []string{SSHKeyItemTitle("web"), PasswordItemTitle("web"), "notes"} {
+		if IsInventoryItemTitle(title) {
+			t.Errorf("IsInventoryItemTitle(%q) = true", title)
+		}
+	}
+}
 
-	payload, err := FillInventoryItem([]byte(secureNoteTemplateFixture), yamlText)
+// The backup payload is YAML with significant indentation and trailing
+// whitespace, so the round trip has to be byte-exact rather than "close enough".
+func TestBuildInventoryItem(t *testing.T) {
+	payload := "version: 1\nservers:\n    - name: web\n      host: 10.0.0.10\n"
+	title := InventoryItemTitleFor("box")
+
+	doc, err := BuildInventoryItem(title, payload)
 	if err != nil {
-		t.Fatalf("FillInventoryItem() error: %v", err)
+		t.Fatalf("BuildInventoryItem() error: %v", err)
 	}
 
-	parsed := decodeDocument(t, payload)
-	if parsed["title"] != InventoryItemTitle {
-		t.Errorf("title = %v, want %v", parsed["title"], InventoryItemTitle)
+	parsed := decodeDocument(t, doc)
+	if parsed["title"] != title {
+		t.Errorf("title = %v, want %v", parsed["title"], title)
+	}
+	if parsed["category"] != inventoryItemCategoryID {
+		t.Errorf("category = %v, want %v", parsed["category"], inventoryItemCategoryID)
 	}
 	if _, present := parsed["vault"]; present {
-		t.Error("vault should have been removed")
+		t.Error("vault must never be left in the payload, the command line selects it")
 	}
-	if got := fieldValues(t, payload)[inventoryNoteFieldID]; got != yamlText {
-		t.Errorf("notesPlain = %q, want %q", got, yamlText)
-	}
-}
-
-// Re-using the item's own document on updates is what keeps user-added fields
-// alive, so the fill must touch notesPlain and nothing else.
-func TestFillInventoryItemPreservesExistingItem(t *testing.T) {
-	existing := `{
-	  "id": "abc123",
-	  "title": "opspulse_inventory",
-	  "version": 4,
-	  "vault": {"id": "vault-uuid"},
-	  "category": "SECURE_NOTE",
-	  "tags": ["infra"],
-	  "fields": [
-	    {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "label": "notesPlain", "value": "stale"}
-	  ]
-	}`
-
-	payload, err := FillInventoryItem([]byte(existing), "fresh")
-	if err != nil {
-		t.Fatalf("FillInventoryItem() error: %v", err)
-	}
-
-	parsed := decodeDocument(t, payload)
-	if parsed["id"] != "abc123" || parsed["version"] != float64(4) {
-		t.Errorf("identity was not preserved: id=%v version=%v", parsed["id"], parsed["version"])
-	}
-	tags, _ := parsed["tags"].([]any)
-	if len(tags) != 1 || tags[0] != "infra" {
-		t.Errorf("tags were not preserved: %v", parsed["tags"])
-	}
-	if got := fieldValues(t, payload)[inventoryNoteFieldID]; got != "fresh" {
-		t.Errorf("notesPlain = %q, want fresh", got)
+	if got := fieldValues(t, doc)[inventoryNoteFieldID]; got != payload {
+		t.Errorf("notesPlain = %q, want %q", got, payload)
 	}
 }
 
-func TestFillInventoryItemRejectsMissingNoteFieldOrEmptyValue(t *testing.T) {
-	// A Secure Note template always carries notesPlain, so its absence means the
-	// document is not what the caller assumed. Appending it would risk the exact
-	// silent-drop shape that made SSH Key items unusable.
-	sparse := `{"title": "", "category": "SECURE_NOTE", "fields": []}`
-	if _, err := FillInventoryItem([]byte(sparse), "servers: []"); err == nil {
-		t.Error("expected an error when the document has no notesPlain field")
-	}
-	if _, err := FillInventoryItem([]byte(secureNoteTemplateFixture), "   \n"); err == nil {
+func TestBuildInventoryItemRejectsEmptyPayload(t *testing.T) {
+	if _, err := BuildInventoryItem(InventoryItemTitleFor("box"), "   \n"); err == nil {
 		t.Error("expected an error for an empty inventory")
-	}
-	if _, err := FillInventoryItem([]byte("not json"), "servers: []"); err == nil {
-		t.Error("expected an error for an unparsable document")
 	}
 }
 

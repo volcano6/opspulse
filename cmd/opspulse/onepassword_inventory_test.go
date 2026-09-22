@@ -165,6 +165,55 @@ func TestMarshalInventoryRoundTripsThroughParseConfig(t *testing.T) {
 	}
 }
 
+func TestCollectBackupCredentials(t *testing.T) {
+	blobs := []backupBlob{
+		{
+			title: "opspulse_inventory_laptop",
+			file: server.BackupFile{
+				Servers: []server.Server{
+					{Name: "web", Host: "10.0.0.1", Password: "web-pass"},
+					{Name: "shared", Host: "10.0.0.2"},
+				},
+				Keys: map[string]string{"web": "laptop-key", "shared": "laptop-shared-key"},
+			},
+		},
+		{
+			title: "opspulse_inventory_desktop",
+			file: server.BackupFile{
+				Servers: []server.Server{
+					{Name: "shared", Host: "10.0.0.2"},
+					{Name: "db", Host: "10.0.0.3"},
+				},
+				Keys: map[string]string{"shared": "desktop-shared-key", "db": "desktop-db-key"},
+			},
+		},
+	}
+
+	creds := collectBackupCredentials(blobs)
+
+	if got := string(creds["web"].key); got != "laptop-key" {
+		t.Errorf("web key = %q, want the laptop's", got)
+	}
+	if got := creds["web"].password; got != "web-pass" {
+		t.Errorf("web password = %q, want the laptop's", got)
+	}
+	// The first blob in sorted order wins, so which machine's key a restore
+	// uses does not depend on map iteration order.
+	if got := string(creds["shared"].key); got != "laptop-shared-key" {
+		t.Errorf("shared key = %q, want the first blob's", got)
+	}
+	if got := string(creds["db"].key); got != "desktop-db-key" {
+		t.Errorf("db key = %q, want the desktop's", got)
+	}
+	// A server nobody backed up a password for simply has none.
+	if got := creds["db"].password; got != "" {
+		t.Errorf("db password = %q, want none", got)
+	}
+	if got := collectBackupCredentials(nil); len(got) != 0 {
+		t.Errorf("collectBackupCredentials(nil) = %v, want empty", got)
+	}
+}
+
 func TestWarnMissingLocalKeyFiles(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "present.key")
