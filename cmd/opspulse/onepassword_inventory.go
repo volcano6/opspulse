@@ -484,11 +484,17 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 		added    int
 		updated  int
 		keptFrom string
+		incoming = map[string]struct{}{}
 	)
 	if len(blobs) > 0 {
 		merged, added, updated, err = mergeBackupServers(local, blobs, prompt)
 		if err != nil {
 			return true, err
+		}
+		for _, blob := range blobs {
+			for _, srv := range blob.file.Servers {
+				incoming[srv.Name] = struct{}{}
+			}
 		}
 		keptFrom = fmt.Sprintf("%d backup item(s)", len(blobs))
 	} else {
@@ -509,6 +515,9 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 		}
 		if prompt.aborted {
 			return true, errInventoryAborted
+		}
+		for _, srv := range remote {
+			incoming[srv.Name] = struct{}{}
 		}
 		keptFrom = "the legacy shared item"
 	}
@@ -533,12 +542,30 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 	}
 
 	fmt.Printf("🎉 Restored the server list from vault %q (%s): %d server(s) total, %d added, %d updated.\n", vault, keptFrom, len(merged), added, updated)
-	if keptLocal := len(merged) - len(local); keptLocal > 0 {
+	if keptLocal := countLocalOnly(local, incoming); keptLocal > 0 {
 		fmt.Printf("   Kept %d server(s) that only this machine had; a restore never deletes.\n", keptLocal)
 	}
 	fmt.Println("   Note: a restore rewrites servers.yaml, so YAML comments in it are not preserved.")
 	warnMissingLocalKeyFiles(os.Stdout, merged)
 	return true, nil
+}
+
+// countLocalOnly counts the servers this machine's file holds that the incoming
+// backup does not mention at all. Those are the ones the merge deliberately kept,
+// so reporting how many there were is the reassurance that a restore never
+// deletes anything.
+//
+// It is deliberately not len(merged)-len(local): on a fresh machine every
+// restored server is new to the file, and that arithmetic would report the whole
+// backup as "only this machine had".
+func countLocalOnly(local []server.Server, incoming map[string]struct{}) int {
+	only := 0
+	for _, srv := range local {
+		if _, ok := incoming[srv.Name]; !ok {
+			only++
+		}
+	}
+	return only
 }
 
 // serversWithMissingKeyFiles returns the names of servers whose private key is
