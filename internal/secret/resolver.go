@@ -121,28 +121,6 @@ func (r *Resolver) ResolveSSHKey(ctx context.Context, ref string) (string, error
 	return strings.ReplaceAll(string(out), "\r\n", "\n"), nil
 }
 
-// MaterializeSSHKey resolves an op:// reference and writes the private key to a
-// 0600 file, returning its path and a cleanup function.
-//
-// This exists because some consumers cannot speak the op:// protocol at all:
-// the system ssh(1) binary, for instance, only accepts -i <file>. The file is
-// always placed in the local (POSIX) temp filesystem, since the consumers are
-// local processes rather than the Windows 1Password binary.
-func (r *Resolver) MaterializeSSHKey(ctx context.Context, ref string) (string, func(), error) {
-	key, err := r.ResolveSSHKey(ctx, ref)
-	if err != nil {
-		return "", func() {}, err
-	}
-	if !strings.HasSuffix(key, "\n") {
-		key += "\n"
-	}
-	path, cleanup, err := writeSecretTemp("", "opspulse-key-*", []byte(key))
-	if err != nil {
-		return "", func() {}, err
-	}
-	return path, cleanup, nil
-}
-
 // ResolveMap iterates over a map and resolves any op:// values.
 // Returns a new map with resolved values, leaving non-op:// values untouched.
 func (r *Resolver) ResolveMap(ctx context.Context, env map[string]string) (map[string]string, error) {

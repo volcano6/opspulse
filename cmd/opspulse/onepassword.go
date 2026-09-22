@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -57,6 +58,29 @@ Install the Windows build once, from Windows PowerShell:
 OpsPulse picks up op.exe automatically once it is installed. To stay on the Linux
 build instead, sign in manually with: op account add`
 
+// onePasswordStalledHint is shown when the CLI failed for a reason that is not a
+// sign-in problem. The auth hints above would send the user to re-check a setting
+// that is already correct, which is the misdiagnosis this text exists to prevent.
+//
+// The usual cause is an approval prompt nobody answered: `op` blocks until the
+// Desktop App responds, and the call then dies on a timeout. In WSL that timeout
+// is the interop relay giving up with "UtilAcceptVsock: accept4 failed 110". The
+// relay's message reaches OpsPulse as stderr on some runs and not at all on
+// others, so this text deliberately does not claim the CLI was silent.
+const onePasswordStalledHint = `The 1Password CLI did not complete this call, and what it reported does not
+point at a sign-in problem -- so re-checking your sign-in settings would not help.
+
+The usual cause is an approval prompt waiting in the 1Password Desktop App, or a
+locked app: 'op' blocks until someone answers it, and the call then dies on a
+timeout.
+
+  1. Open the 1Password Desktop App and answer any pending prompt
+  2. Make sure it is unlocked, then run the command again
+
+Inside WSL the Windows build reaches the Desktop App through the Windows/WSL
+relay, which gives up with "UtilAcceptVsock: accept4 failed 110" when the wait
+runs long. That message is this same timeout, not a separate fault.`
+
 // onePasswordAuthHint picks the right remediation text for the CLI in use.
 func onePasswordAuthHint(cli secret.CLI) string {
 	if platform.IsWSL() && !cli.IsWindowsBinary {
@@ -65,52 +89,176 @@ func onePasswordAuthHint(cli secret.CLI) string {
 	return onePasswordDesktopHint
 }
 
+// onePasswordFailureHint picks the remediation text for a failed CLI call.
+//
+// The two cases call for opposite reactions, so they must not share one message:
+// a real sign-in problem is fixed by enabling the Desktop App integration, while
+// a stalled call is fixed by answering the prompt that is already on screen.
+func onePasswordFailureHint(cli secret.CLI, err error) string {
+	if secret.AuthFailure(err) {
+		return onePasswordAuthHint(cli)
+	}
+	return onePasswordStalledHint
+}
+
+// Flags shared by 'ops 1p backup' and 'ops 1p restore'. The two commands never
+// run together, and both mean the same thing by every one of these, so sharing
+// them keeps the two flag surfaces from drifting apart.
 var (
-	onePasswordVault            string
-	onePasswordAll              bool
-	onePasswordFilter           string
-	onePasswordDeleteLocal      bool
-	onePasswordAccount          string
-	onePasswordPushFilter       string
-	onePasswordPushInclSkip     bool
-	onePasswordPushInventory    bool
-	onePasswordPushPreferLocal  bool
-	onePasswordPushPreferRemote bool
+	onePasswordVault        string
+	onePasswordAccount      string
+	onePasswordPreferLocal  bool
+	onePasswordPreferRemote bool
 )
 
-// Pull keeps its own flags rather than sharing push's. The two commands mean
-// different things by "all" and by "yes", and a shared variable would quietly
-// couple them the first time either grows a default.
+// onePasswordBackupParallel caps how many servers 'ops 1p backup' uploads at
+// once.
+//
+// Every op invocation costs a full round trip through the Desktop App, and the
+// Windows build has no cache, so a sequential batch spends nearly all of its
+// wall time waiting. Overlapping the servers is the only large win available:
+// measured on WSL, eight concurrent `op item get` calls take 20s against 90s
+// for the same eight run one after another. It is not linear - the Desktop App
+// queues authorisations - so the default stays deliberately low rather than
+// saturating it.
+var onePasswordBackupParallel int
+
+const defaultOnePasswordBackupParallel = 4
+
+// wslWindowsBackupParallel replaces the default when the CLI is the Windows
+// build driven from WSL.
+//
+// There the ceiling is not the Desktop App but the WSL interop relay, which
+// starts refusing spawns with "accept4 failed 110" (ETIMEDOUT) once enough
+// long-lived Windows processes are alive: measured from WSL, spawning op.exe is
+// clean with two such processes and fails intermittently at four. A four-wide
+// batch therefore lost servers outright, so the default is lowered on this path
+// alone. An explicit -p still wins, and secret.CLI retries a refused spawn.
+const wslWindowsBackupParallel = 2
+
+// backupParallel decides how many servers 'ops 1p backup' uploads at once.
+//
+// requested is the -p value: positive means the user chose it and it is taken
+// as given, while zero or less means the default for this CLI applies. The
+// result never exceeds the number of servers, so a small inventory does not
+// leave idle workers waiting on a semaphore nobody can fill.
+func backupParallel(requested int, cli secret.CLI, servers int) int {
+	if requested <= 0 {
+		requested = defaultOnePasswordBackupParallel
+		// The Windows build driven from WSL is limited by the interop relay,
+		// not by the Desktop App; see wslWindowsBackupParallel.
+		if cli.IsWindowsBinary && platform.IsWSL() {
+			requested = wslWindowsBackupParallel
+		}
+	}
+	if requested > servers {
+		requested = servers
+	}
+	return requested
+}
+
+// itemIndex memoises a vault's item titles for the duration of one command.
+//
+// `op item list` is a full round trip through the Desktop App, and a batch used
+// to pay it once per credential. A single snapshot is enough because OpsPulse
+// only ever looks up the items it creates itself, whose titles are unique per
+// server, so nothing can be created underneath the snapshot mid-run.
+type itemIndex struct {
+	mu      sync.Mutex
+	cli     secret.CLI
+	vault   string
+	loaded  bool
+	byTitle map[string]string
+}
+
+func newItemIndex(cli secret.CLI, vault string) *itemIndex {
+	return &itemIndex{cli: cli, vault: vault, byTitle: make(map[string]string)}
+}
+
+// load fetches the vault's item list once. The first caller pays for the round
+// trip; every later caller observes the same snapshot.
+func (ix *itemIndex) load(ctx context.Context) error {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+
+	if ix.loaded {
+		return nil
+	}
+	out, err := ix.cli.Run(ctx, "item", "list", "--vault", ix.vault, "--format", "json")
+	if err != nil {
+		return fmt.Errorf("%s\n\nlist items in 1Password vault %q: %w", onePasswordFailureHint(ix.cli, err), ix.vault, err)
+	}
+	var items []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(out, &items); err != nil {
+		return fmt.Errorf("parse 1Password item list: %w", err)
+	}
+	for _, item := range items {
+		ix.byTitle[item.Title] = item.ID
+	}
+	ix.loaded = true
+	return nil
+}
+
+// id returns the item ID for title, or "" when the vault holds no such item.
+func (ix *itemIndex) id(ctx context.Context, title string) (string, error) {
+	if err := ix.load(ctx); err != nil {
+		return "", err
+	}
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	return ix.byTitle[title], nil
+}
+
+// titles returns the set of item titles in the vault, sharing the same single
+// listing as id. Restore needs the whole set to match servers by item name, and
+// paying for a second `op item list` to get it would be a second Desktop App
+// authorisation on a platform that has no cache to absorb it.
+func (ix *itemIndex) titles(ctx context.Context) (map[string]struct{}, error) {
+	if err := ix.load(ctx); err != nil {
+		return nil, err
+	}
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	set := make(map[string]struct{}, len(ix.byTitle))
+	for title := range ix.byTitle {
+		set[title] = struct{}{}
+	}
+	return set, nil
+}
+
+// Flags that only make sense while writing values back onto this machine.
 var (
-	onePasswordPullAll          bool
-	onePasswordPullYes          bool
-	onePasswordPullForce        bool
-	onePasswordPullInclSkip     bool
-	onePasswordPullFilter       string
-	onePasswordPullFromVault    bool
-	onePasswordPullMaterialize  bool
-	onePasswordPullVault        string
-	onePasswordPullInventory    bool
-	onePasswordPullPreferLocal  bool
-	onePasswordPullPreferRemote bool
+	onePasswordRestoreYes   bool
+	onePasswordRestoreForce bool
 )
+
+// onePasswordFilter narrows 'ops 1p status'. It is the only command that still
+// needs a selector: backup is always the whole machine, and restore takes
+// server names positionally.
+var onePasswordFilter string
 
 var onePasswordCmd = &cobra.Command{
 	Use:     "1p",
 	Aliases: []string{"1password", "onepassword"},
-	Short:   "Move SSH private keys and passwords between local disk and 1Password",
-	Long: `Push local credentials into 1Password, or pull them back onto local disk.
+	Short:   "Back up local SSH credentials to 1Password, or restore them onto a new machine",
+	Long: `1Password is a backup and cross-machine sync target, not a runtime dependency.
 
-  ops 1p push <server>...   Upload local keys/passwords and rebind the servers to op:// references
-  ops 1p pull <server>...   Write 1Password-hosted credentials back onto local disk
-  ops 1p status             Show where each server's credentials currently live
+  ops 1p backup             Upload every local key/password and the whole servers.yaml
+  ops 1p restore            Write them back to local disk (and restore servers.yaml)
+  ops 1p status             Show which servers have local credentials
   ops 1p config             Show or change the remembered vault and account
+
+Credentials normally live on local disk: servers.yaml holds a key path or a
+plaintext password, and 'ops ssh' / 'ops exec' / 'ops cp' read them directly with
+no 1Password round trip. Nothing here runs during a normal connection, which is
+what keeps those commands from prompting.
 
 Keys are stored in Login items titled opspulse_<server>_key, inside a custom
 concealed field; passwords go into Login items titled opspulse_<server>_password.
-Once a credential has been pushed, servers.yaml keeps only an op:// reference and
-the value is resolved on demand at connection time, so it never has to stay on
-disk.
+servers.yaml itself is backed up as one shared item, opspulse_inventory.
 
 You normally do not have to name a vault at all: OpsPulse uses the one you
 remembered with 'ops 1p config --vault <name>', then $OP_VAULT, and otherwise the
@@ -118,138 +266,113 @@ only vault the account can see. The account works the same way, with $OP_ACCOUNT
 taking precedence over the remembered value.`,
 }
 
-var onePasswordPushCmd = &cobra.Command{
-	Use:   "push [server...]",
-	Short: "Upload local credentials to 1Password and rebind servers to op:// references",
-	Long: `Upload locally stored credentials into 1Password.
+var onePasswordBackupCmd = &cobra.Command{
+	Use:   "backup",
+	Short: "Upload every local credential and the whole servers.yaml to 1Password",
+	Long: `Back up this machine's credentials and server list to 1Password.
 
-A server's private key goes into a Login item's concealed field and its password
-into a Login item, and the server is rebound so that key_path/password become
-op:// references. Local key files are left in place unless --delete-local is
-given; a pushed password always stops being stored in servers.yaml, since keeping
-the plaintext next to an op:// reference would defeat the point.
+Every server with a local key file or a plaintext password is uploaded, and the
+whole servers.yaml is stored in the shared opspulse_inventory item. It is
+deliberately unconditional: no server selection, no skip list.
 
-The key is written and then read back before servers.yaml is rebound, so a push
-that 1Password silently discarded fails loudly instead of breaking a server that
-still worked.
+servers.yaml is NOT rewritten. Local disk stays the source of truth, so a backup
+never changes how 'ops ssh' connects and never turns a working server into one
+that depends on 1Password being unlocked.
 
-  ops 1p push web                  # one server
-  ops 1p push web db-01            # several
-  ops 1p push --all                # every server (equivalent to --filter all)
-  ops 1p push --filter prod        # by label, tag, or name
-  ops 1p push --all --delete-local # remove the local copies once uploaded
+  ops 1p backup
+  ops 1p backup --vault Private
+  ops 1p backup --prefer-remote    # the backup wins inventory conflicts
 
-servers.yaml itself is machine-local and never syncs, so a new machine cannot be
-bootstrapped from credentials alone - an item holds a key but no host. --inventory
-backs the whole file up into one shared item (opspulse_inventory), which
-'ops 1p pull --inventory' restores on another machine:
+A server still holding an 'op://' reference is refused outright: uploading it
+would push a stale reference into the backup. Run 'ops 1p restore' to migrate it
+to a local credential first.
 
-  ops 1p push --inventory                    # back up or refresh the whole file
-  ops 1p push --inventory --prefer-remote    # unattended: the backup wins conflicts
+The inventory backup merges rather than overwrites, so two machines can both
+back up without losing each other's servers. Deleting a server from the backup
+is therefore done by hand: remove it locally first, then edit the item.
 
-The backup merges rather than overwrites, so two machines can both push without
-losing each other's servers. Deleting a server from the backup is therefore done
-by hand: remove it locally first, then edit the item.`,
-	Args: cobra.ArbitraryArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPushToOnePassword(cmd.Context(), args)
+Servers are backed up several at a time because every op call is a round trip
+through the Desktop App. The default is 4, or 2 when OpsPulse is driving the
+Windows op.exe from WSL, where the interop relay starts refusing spawns before
+the Desktop App becomes the bottleneck. An explicit -p always wins.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runBackupToOnePassword(cmd.Context())
 	},
 }
 
-var onePasswordPullCmd = &cobra.Command{
-	Use:   "pull [server...]",
-	Short: "Copy 1Password-hosted credentials back onto local disk",
-	Long: `Write 1Password-hosted credentials back to local disk and rebind the servers.
+var onePasswordRestoreCmd = &cobra.Command{
+	Use:   "restore [server...]",
+	Short: "Write 1Password-hosted credentials back onto local disk",
+	Long: `Restore credentials from 1Password onto this machine.
 
-By default this only covers servers whose servers.yaml already references
-1Password, and it is the way out of 1Password: every credential such a server
-keeps is brought back - a private key to ~/.ssh/opspulse_<server>, a password
-into servers.yaml - so the configuration keeps working after the account is gone.
-A server that carries both is restored in full; the old single-credential
-behaviour would have left a dangling op:// reference behind.
+Without arguments this is the whole off-ramp: servers.yaml is restored from the
+shared opspulse_inventory item first, then every server's key is written to
+~/.ssh/opspulse_<server> and every password into servers.yaml. That is all a new
+machine needs after installing the 1Password CLI.
+
+  ops 1p restore               # the server list and every credential
+  ops 1p restore web db-01     # only these servers' credentials
+  ops 1p restore --yes         # unattended
+
+With arguments only the named servers' credentials are restored, and servers.yaml
+is left alone. A name that is not in servers.yaml is an error rather than a
+silent skip, since the usual cause is restoring credentials before the list.
 
 Because a password can only come back as plaintext, OpsPulse asks for
-confirmation whenever the pull would write one. In a non-interactive shell the
+confirmation whenever the restore would write one. In a non-interactive shell the
 command refuses instead of hanging, unless --yes says the answer up front.
 
-Note that a pull rewrites servers.yaml and thereby ends the 1Password
-management: the credentials are no longer op:// references, so a second pull has
-nothing to do. Push again to hand them back.
+A local key file is only replaced when it holds a different key. The comparison
+is by public key, so a key that 1Password returns in another format is recognised
+as the same key rather than treated as a conflict; --force overrides.
 
-  ops 1p pull web              # restore one server
-  ops 1p pull web db-01        # restore several
-  ops 1p pull --all            # restore everything (the off-ramp)
-  ops 1p pull --all --yes      # same, unattended
-
-servers.yaml is machine-local and never syncs, so credentials pushed on another
-machine are not referenced here. --from-vault finds them by the item names
-OpsPulse gives them (opspulse_<server>_key / _password) instead:
-
-  ops 1p pull --all --from-vault               # bind servers.yaml to 1Password, nothing on disk
-  ops 1p pull --all --from-vault --materialize # write local copies instead (the off-ramp)
-
-Without --materialize the values stay only in 1Password and 'ops ssh'
-materializes the key on demand, so that machine cannot connect while 1Password is
-unavailable.
-
---inventory restores the whole servers.yaml from the shared backup instead, which
-is what a new machine needs before any credential can be adopted:
-
-  ops 1p pull --inventory                    # restore the server list itself
-  ops 1p pull --inventory --prefer-local     # unattended: this machine wins conflicts
-
-It merges with whatever servers.yaml already holds and never deletes a server
-that only this machine knows about.`,
+Servers whose servers.yaml still holds 'op://' references are migrated to local
+credentials as part of the restore. That compatibility path is temporary.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runPullFromOnePassword(cmd.Context(), args)
+		return runRestoreFromOnePassword(cmd.Context(), args)
 	},
 }
+
+// legacyPushCmd and legacyPullCmd retire the old names loudly.
+//
+// They are not aliases: push/pull carried flags that no longer exist, and
+// forwarding would mean either parsing a dead flag set or silently ignoring it.
+// Their flags stay registered (hidden) so that 'ops 1p push --materialize'
+// reports the rename instead of Cobra's "unknown flag" error.
+var onePasswordLegacyPushCmd = &cobra.Command{
+	Use:    "push",
+	Short:  "Retired: use 'ops 1p backup'",
+	Hidden: true,
+	Args:   cobra.ArbitraryArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		return fmt.Errorf("'ops 1p push' has been retired; use 'ops 1p backup' instead")
+	},
+}
+
+var onePasswordLegacyPullCmd = &cobra.Command{
+	Use:    "pull",
+	Short:  "Retired: use 'ops 1p restore'",
+	Hidden: true,
+	Args:   cobra.ArbitraryArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		return fmt.Errorf("'ops 1p pull' has been retired; use 'ops 1p restore' instead")
+	},
+}
+
+var onePasswordStatusRemote bool
 
 var onePasswordStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show where each server's private key currently lives",
-	RunE: func(_ *cobra.Command, _ []string) error {
-		return runOnePasswordStatus()
-	},
-}
+	Short: "Show which servers have local credentials, and which are backed up",
+	Long: `Show where each server's credentials live.
 
-var onePasswordCleanupServer string
-
-var onePasswordCleanupCmd = &cobra.Command{
-	Use:     "cleanup [server]",
-	Aliases: []string{"clean", "purge"},
-	Short:   "Delete temporary materialized 1Password private keys from local disk",
-	Long: `Deletes temporary private key files from ~/.ssh/opspulse-1p that were
-materialized for external GUI SFTP clients (WinSCP, FileZilla, Cyberduck, etc.).
-
-If a server name is specified, only that server's key is removed.
-Otherwise, all materialized keys in ~/.ssh/opspulse-1p are removed.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: func(_ *cobra.Command, args []string) error {
-		targetServer := onePasswordCleanupServer
-		if len(args) > 0 {
-			targetServer = args[0]
-		}
-		deleted, err := sftp.PurgeMaterialized1PKeys(targetServer)
-		if err != nil {
-			return fmt.Errorf("failed to clean up materialized keys: %w", err)
-		}
-		if len(deleted) == 0 {
-			if targetServer != "" {
-				fmt.Printf("✨ No materialized key found for server %q in ~/.ssh/opspulse-1p.\n", targetServer)
-			} else {
-				fmt.Println("✨ No materialized 1Password keys found on disk (~/.ssh/opspulse-1p is clean).")
-			}
-			return nil
-		}
-		if targetServer != "" {
-			fmt.Printf("🧹 Successfully removed materialized 1Password key for %q.\n", targetServer)
-		} else {
-			fmt.Printf("🧹 Successfully removed %d materialized 1Password private key(s) from ~/.ssh/opspulse-1p: %s\n",
-				len(deleted), strings.Join(deleted, ", "))
-		}
-		return nil
+Offline by default: it only reads servers.yaml, so it never contacts 1Password
+and never prompts. Pass --remote to also ask the vault which servers have a
+backup, which does require authentication.`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		return runOnePasswordStatus(cmd.Context())
 	},
 }
 
@@ -257,6 +380,7 @@ var (
 	onePasswordConfigVault   string
 	onePasswordConfigAccount string
 	onePasswordConfigUnset   bool
+	onePasswordConfigOffline bool
 )
 
 var onePasswordConfigCmd = &cobra.Command{
@@ -265,141 +389,176 @@ var onePasswordConfigCmd = &cobra.Command{
 	Long: `Show or change the 1Password defaults OpsPulse remembers.
 
 Without flags it prints the effective target plus the accounts and vaults the
-current account can see. With flags it records a default so that plain
-'ops 1p push --all' stops asking for --vault/--account every time.`,
+current account can see. With flags it records a default so that 'ops 1p backup'
+stops asking for --vault/--account every time.
+
+Pass --offline to read or change the remembered defaults without contacting the
+CLI, which is what you want when the vault cannot be unlocked right now.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runOnePasswordConfig(cmd.Context())
 	},
 }
 
-func runPushToOnePassword(ctx context.Context, args []string) error {
-	// Flag validation comes first so that a contradictory invocation fails
-	// before OpsPulse touches 1Password or offers to install its CLI.
-	if err := validateInventoryPushFlags(args); err != nil {
+// runBackupToOnePassword uploads this machine's credentials and server list to
+// 1Password. It never writes servers.yaml: local disk stays the source of truth,
+// so a backup cannot change how 'ops ssh' connects.
+func runBackupToOnePassword(ctx context.Context) error {
+	if err := validatePreferFlags(onePasswordPreferLocal, onePasswordPreferRemote); err != nil {
 		return err
 	}
-	if err := validatePreferFlags(onePasswordPushInventory, onePasswordPushPreferLocal, onePasswordPushPreferRemote); err != nil {
+
+	store := server.NewDefaultStore()
+	servers, err := store.List()
+	if err != nil {
 		return err
+	}
+	if len(servers) == 0 {
+		return fmt.Errorf("nothing to back up: servers.yaml holds no servers")
+	}
+
+	// Fail fast, before 1Password is touched. A server that still holds an
+	// op:// reference would be uploaded as that reference, planting a pointer
+	// the runtime no longer resolves into the backup.
+	if legacy := serversWithLegacy1PRefs(servers); len(legacy) > 0 {
+		return fmt.Errorf("servers.yaml still holds 'op://' references for %d server(s): %s\n\nrun 'ops 1p restore' to migrate them to local credentials, then back up again",
+			len(legacy), strings.Join(legacy, ", "))
 	}
 
 	cli, err := ensure1PCLI()
 	if err != nil {
 		return err
 	}
-
-	if onePasswordPushInventory {
-		vault, err := resolveAndValidateVault(ctx, cli, onePasswordVault, true)
-		if err != nil {
-			return err
-		}
-		return pushInventoryToOnePassword(ctx, cli, vault)
-	}
-
-	store := server.NewDefaultStore()
-	targets, skippedByBatch, err := selectOnePasswordTargets(store, args)
-	if err != nil {
-		return err
-	}
-	if len(skippedByBatch) > 0 {
-		fmt.Printf("ℹ️  Skipped %d server(s) marked skip_batch: %s\n", len(skippedByBatch), strings.Join(skippedByBatch, ", "))
-		fmt.Println("   Pass --include-skipped to push them as well.")
-	}
-	if len(targets) == 0 {
-		if filter := strings.TrimSpace(onePasswordPushFilter); filter != "" {
-			fmt.Printf("No servers matched filter %q.\n", filter)
-		} else {
-			fmt.Println("Nothing to push: no server matched.")
-		}
-		return nil
-	}
-
 	vault, err := resolveAndValidateVault(ctx, cli, onePasswordVault, true)
 	if err != nil {
 		return err
 	}
 
-	pushed := 0
-	var failed []string
-	for _, srv := range targets {
-		changed, err := pushServerToOnePassword(ctx, cli, store, srv, vault)
-		if err != nil {
-			// One server's failure must not strand the rest of the batch. The
-			// servers are independent, and re-running finishes a partial push;
-			// aborting instead would leave the user guessing which ones were
-			// already rebound.
-			fmt.Printf("❌ %q: %v\n", srv.Name, err)
-			failed = append(failed, srv.Name)
-			continue
-		}
-		if changed {
-			pushed++
-		}
+	parallel := backupParallel(onePasswordBackupParallel, cli, len(servers))
+
+	// One snapshot of the vault, shared by every server, instead of an
+	// `op item list` per credential.
+	index := newItemIndex(cli, vault)
+
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, parallel)
+		backedUp int
+		failed   []string
+	)
+
+	for i := range servers {
+		wg.Add(1)
+		go func(srv *server.Server) {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				mu.Lock()
+				failed = append(failed, srv.Name)
+				mu.Unlock()
+				return
+			}
+
+			// Each server's report is built up privately and printed in one
+			// piece, so concurrent servers cannot interleave halfway through a
+			// line. The cost is that a server's progress only appears once it
+			// finishes; with several in flight that still lands regularly.
+			var report bytes.Buffer
+			uploaded, err := backupServerToOnePassword(ctx, cli, srv, vault, index, &report)
+
+			mu.Lock()
+			defer mu.Unlock()
+			_, _ = os.Stdout.Write(report.Bytes())
+			if err != nil {
+				// One server's failure must not strand the rest of the batch. The
+				// servers are independent, and re-running finishes a partial
+				// backup; aborting instead would leave the user guessing which
+				// ones were already uploaded.
+				fmt.Printf("❌ %q: %v\n", srv.Name, err)
+				failed = append(failed, srv.Name)
+				return
+			}
+			if uploaded {
+				backedUp++
+			}
+		}(&servers[i])
+	}
+	wg.Wait()
+
+	// The inventory goes last, so that a per-server failure has already been
+	// reported by the time the shared item is refreshed. It shares the same
+	// snapshot: the titles are disjoint, so one listing covers the whole run.
+	if err := backupInventoryToOnePassword(ctx, cli, vault, index); err != nil {
+		return err
 	}
 
 	fmt.Println()
-	if pushed == 0 && len(failed) == 0 {
-		fmt.Println("Nothing to push: no target server had a local private key or password.")
-		return nil
+	if backedUp > 0 {
+		fmt.Printf("🎉 Backed up credentials for %d server(s) to vault %q.\n", backedUp, vault)
 	}
-	if pushed > 0 {
-		fmt.Printf("🎉 Pushed credentials for %d server(s) into 1Password vault %q.\n", pushed, vault)
-		fmt.Println("💡 These servers now resolve their credentials through op://, so the values no longer live in servers.yaml.")
-		if !onePasswordDeleteLocal {
-			fmt.Println("   Run 'ops 1p push <server> --delete-local' if you want OpsPulse to remove the managed local key copies for you.")
-		}
-		fmt.Println("   Verify with: ops 1p status")
-		// servers.yaml changed, so any existing inventory backup is now behind.
-		// Best-effort: a push that worked must not fail over a side errand.
-		autoRefreshInventoryBackup(ctx, cli, vault)
+	if backedUp == 0 && len(failed) == 0 {
+		fmt.Println("Nothing to back up: no server has a local private key or password.")
 	}
+	fmt.Println("   servers.yaml was left unchanged: local disk stays the source of truth.")
 	if len(failed) > 0 {
-		return fmt.Errorf("failed to push %d of %d server(s): %s", len(failed), len(targets), strings.Join(failed, ", "))
+		return fmt.Errorf("failed to back up %d of %d server(s): %s", len(failed), len(servers), strings.Join(failed, ", "))
 	}
 	return nil
 }
 
-// pushServerToOnePassword uploads whatever local credentials a server still
-// keeps - a private key file, a plaintext password, or both - and rebinds the
-// server to the resulting op:// references. It reports whether anything changed.
-func pushServerToOnePassword(ctx context.Context, cli secret.CLI, store *server.Store, srv *server.Server, vault string) (bool, error) {
-	keyChanged, err := pushPrivateKeyToOnePassword(ctx, cli, store, srv, vault)
+// serversWithLegacy1PRefs lists the servers whose servers.yaml entry still
+// holds an op:// reference, which the runtime no longer resolves.
+func serversWithLegacy1PRefs(servers []server.Server) []string {
+	var names []string
+	for i := range servers {
+		if secret.Is1PRef(servers[i].KeyPath) || secret.Is1PRef(servers[i].Password) {
+			names = append(names, servers[i].Name)
+		}
+	}
+	return names
+}
+
+// backupServerToOnePassword uploads whatever local credentials a server keeps -
+// a private key file, a plaintext password, or both. It reports whether
+// anything was uploaded. Progress goes to out rather than stdout so that a
+// concurrent batch can print each server's report as one piece.
+func backupServerToOnePassword(ctx context.Context, cli secret.CLI, srv *server.Server, vault string, index *itemIndex, out io.Writer) (bool, error) {
+	keyUploaded, err := uploadPrivateKeyToOnePassword(ctx, cli, srv, vault, index, out)
 	if err != nil {
 		return false, err
 	}
-	passwordChanged, err := pushPasswordToOnePassword(ctx, cli, store, srv, vault)
+	passwordUploaded, err := uploadPasswordToOnePassword(ctx, cli, srv, vault, index, out)
 	if err != nil {
 		return false, err
 	}
-	if keyChanged || passwordChanged {
+	if keyUploaded || passwordUploaded {
 		return true, nil
 	}
 	if strings.TrimSpace(srv.KeyPath) == "" && strings.TrimSpace(srv.Password) == "" {
-		fmt.Printf("⏭️  Skipping %q: no private key and no password configured (it relies on the default SSH key).\n", srv.Name)
+		_, _ = fmt.Fprintf(out, "⏭️  Skipping %q: no private key and no password configured (it relies on the default SSH key).\n", srv.Name)
 	}
 	return false, nil
 }
 
-// pushPrivateKeyToOnePassword uploads a server's local key file into a Login
-// item's concealed field, and rebinds key_path to it.
+// uploadPrivateKeyToOnePassword copies a server's key file into a Login item's
+// concealed field, leaving servers.yaml alone.
 //
 // The item is a Login rather than an "SSH Key" because the 1Password CLI cannot
 // write SSH Key items: `op item create` drops the private_key field while
 // exiting 0, and `op item edit` refuses outright. See secret.sshKeyManagedFieldID.
-func pushPrivateKeyToOnePassword(ctx context.Context, cli secret.CLI, store *server.Store, srv *server.Server, vault string) (bool, error) {
-	switch {
-	case secret.Is1PRef(srv.KeyPath):
-		fmt.Printf("⏭️  %q: the private key already lives in 1Password (%s)\n", srv.Name, srv.KeyPath)
-		return false, nil
-	case strings.TrimSpace(srv.KeyPath) == "":
+func uploadPrivateKeyToOnePassword(ctx context.Context, cli secret.CLI, srv *server.Server, vault string, index *itemIndex, out io.Writer) (bool, error) {
+	if strings.TrimSpace(srv.KeyPath) == "" {
 		return false, nil
 	}
 
 	expanded := expandHome(srv.KeyPath)
-	localKeyPath := srv.KeyPath
 	keyData, err := os.ReadFile(filepath.Clean(expanded)) // #nosec G304 -- path comes from the user's own servers.yaml
 	if err != nil {
-		fmt.Printf("⚠️  Skipping the key for %q: cannot read %s: %v\n", srv.Name, srv.KeyPath, err)
+		_, _ = fmt.Fprintf(out, "⚠️  Skipping the key for %q: cannot read %s: %v\n", srv.Name, srv.KeyPath, err)
 		return false, nil
 	}
 
@@ -414,64 +573,39 @@ func pushPrivateKeyToOnePassword(ctx context.Context, cli secret.CLI, store *ser
 		expectedPublic = authorizedKeyFor(expanded, keyData)
 	}
 
-	fmt.Printf("⬆️  Pushing key for %q (%s) into 1Password vault %q...\n", srv.Name, srv.KeyPath, vault)
-	if err := writeOnePasswordItem(ctx, cli, vault, title, onePasswordLoginCategory, func(doc []byte) ([]byte, error) {
+	_, _ = fmt.Fprintf(out, "⬆️  Backing up key for %q (%s) into 1Password vault %q...\n", srv.Name, srv.KeyPath, vault)
+	if err := writeOnePasswordItem(ctx, cli, vault, title, onePasswordLoginCategory, index, func(doc []byte) ([]byte, error) {
 		return secret.FillSSHKeyItem(doc, title, string(keyData))
 	}); err != nil {
 		return false, err
 	}
 
 	// The CLI exits 0 on a write it silently discarded, so "no error" says
-	// nothing about whether the key is there. Read it back before touching
-	// servers.yaml: rebinding on top of an empty item breaks a connection that
-	// currently works, and leaves no local path to fall back to.
+	// nothing about whether the key is there. A backup that is quietly wrong is
+	// worse than no backup, because it is only discovered on the new machine.
 	if err := verifyPushedSSHKey(ctx, ref, string(keyData), expectedPublic); err != nil {
-		return false, fmt.Errorf("pushed the key for %q but could not read it back, so servers.yaml was left unchanged: %w", srv.Name, err)
+		return false, fmt.Errorf("uploaded the key for %q but could not read it back, so the backup is not trustworthy: %w", srv.Name, err)
 	}
-
-	srv.KeyPath = ref
-	if err := store.Save(*srv); err != nil {
-		return false, fmt.Errorf("rebind server %q to 1Password: %w", srv.Name, err)
-	}
-	fmt.Printf("✅ %q now resolves its private key from %s\n", srv.Name, srv.KeyPath)
-
-	if onePasswordDeleteLocal {
-		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, expanded, false); err != nil {
-			return true, err
-		}
-		if !isManagedKey(expanded) {
-			fmt.Printf("   ⚠️  %s lives outside OpsPulse's managed key directory, so it was left on disk; remove it manually once you have verified the connection works.\n", localKeyPath)
-		}
-	}
+	_, _ = fmt.Fprintf(out, "✅ %q: key backed up as %s\n", srv.Name, ref)
 	return true, nil
 }
 
-// pushPasswordToOnePassword uploads a server's plaintext password into a "Login"
-// item, and rebinds the password field to it.
-func pushPasswordToOnePassword(ctx context.Context, cli secret.CLI, store *server.Store, srv *server.Server, vault string) (bool, error) {
-	switch {
-	case secret.Is1PRef(srv.Password):
-		fmt.Printf("⏭️  %q: the password already lives in 1Password (%s)\n", srv.Name, srv.Password)
-		return false, nil
-	case strings.TrimSpace(srv.Password) == "":
+// uploadPasswordToOnePassword copies a server's plaintext password into a
+// "Login" item, leaving servers.yaml alone.
+func uploadPasswordToOnePassword(ctx context.Context, cli secret.CLI, srv *server.Server, vault string, index *itemIndex, out io.Writer) (bool, error) {
+	if strings.TrimSpace(srv.Password) == "" {
 		return false, nil
 	}
 
 	title := secret.PasswordItemTitle(srv.Name)
-	fmt.Printf("⬆️  Pushing password for %q (user %s) into 1Password vault %q...\n", srv.Name, srv.User, vault)
-	if err := writeOnePasswordItem(ctx, cli, vault, title, onePasswordLoginCategory, func(doc []byte) ([]byte, error) {
+	ref := secret.BuildPasswordRef(vault, title)
+	_, _ = fmt.Fprintf(out, "⬆️  Backing up password for %q (user %s) into 1Password vault %q...\n", srv.Name, srv.User, vault)
+	if err := writeOnePasswordItem(ctx, cli, vault, title, onePasswordLoginCategory, index, func(doc []byte) ([]byte, error) {
 		return secret.FillLoginItem(doc, title, srv.User, srv.Password)
 	}); err != nil {
 		return false, err
 	}
-
-	// Unlike a key file, the plaintext cannot stay behind: an op:// reference
-	// sitting next to the password it points at protects nothing.
-	srv.Password = secret.BuildPasswordRef(vault, title)
-	if err := store.Save(*srv); err != nil {
-		return false, fmt.Errorf("rebind server %q to 1Password: %w", srv.Name, err)
-	}
-	fmt.Printf("✅ %q now resolves its password from %s\n", srv.Name, srv.Password)
+	_, _ = fmt.Fprintf(out, "✅ %q: password backed up as %s\n", srv.Name, ref)
 	return true, nil
 }
 
@@ -532,8 +666,8 @@ func normaliseKeyText(key string) string {
 // is 1Password's documented workaround, and it has the pleasant side effect of
 // keeping the secret off the disk entirely. Note that `op item edit` only reads
 // stdin for this - unlike `op item create`, it takes no "-" argument.
-func writeOnePasswordItem(ctx context.Context, cli secret.CLI, vault, title, category string, build func(doc []byte) ([]byte, error)) error {
-	existingID, err := findOnePasswordItemID(ctx, cli, vault, title)
+func writeOnePasswordItem(ctx context.Context, cli secret.CLI, vault, title, category string, index *itemIndex, build func(doc []byte) ([]byte, error)) error {
+	existingID, err := index.id(ctx, title)
 	if err != nil {
 		return err
 	}
@@ -567,17 +701,16 @@ func writeOnePasswordItem(ctx context.Context, cli secret.CLI, vault, title, cat
 	return nil
 }
 
-// pullOutcome summarises what happened to one server, so that a batch can carry
-// on past a failure and still print an honest summary at the end.
-type pullOutcome struct {
-	name       string
-	keyPulled  bool
-	passPulled bool
-	// adopted marks a server that was rebound to 1Password without anything
-	// being written to disk (--from-vault without --materialize). It is kept
-	// apart from keyPulled/passPulled because "restored" would suggest a local
-	// copy now exists, which is exactly what adoption avoids.
-	adopted bool
+// restoreOutcome summarises what happened to one server, so that a batch can
+// carry on past a failure and still print an honest summary at the end.
+type restoreOutcome struct {
+	name         string
+	keyRestored  bool
+	passRestored bool
+	// migrated marks a server whose servers.yaml held an op:// reference that
+	// this run replaced with a local credential. It drives the one-time cleanup
+	// of the historical temp directory.
+	migrated bool
 	// reason explains a partial, blocked or skipped result. It is never a
 	// failure: an error is reported through err, which is what decides the exit
 	// code.
@@ -590,17 +723,23 @@ type pullOutcome struct {
 }
 
 // restored reports whether anything actually came back to local disk.
-func (o pullOutcome) restored() bool { return o.keyPulled || o.passPulled }
+func (o restoreOutcome) restored() bool { return o.keyRestored || o.passRestored }
 
-// pullPlan is what a pull will do for one server: the 1Password references to
-// read, and implicitly whether the result lands on disk.
-type pullPlan struct {
+// restorePlan is what a restore will do for one server: the 1Password
+// references to read, and whether each one is a legacy op:// reference taken
+// from servers.yaml rather than found by item name.
+type restorePlan struct {
 	server  *server.Server
 	keyRef  string
 	passRef string
+	// keyWasLegacy / passWasLegacy mark a reference that came from a legacy
+	// op:// entry in servers.yaml. Restoring one is a migration, and it is what
+	// makes the historical temp directory worth cleaning afterwards.
+	keyWasLegacy  bool
+	passWasLegacy bool
 }
 
-// vaultDiscovery is what --from-vault found in one vault: the set of item
+// vaultDiscovery is what item discovery found in one vault: the set of item
 // titles, so a server can be matched by the deterministic name OpsPulse gives
 // its items.
 type vaultDiscovery struct {
@@ -608,7 +747,7 @@ type vaultDiscovery struct {
 	titles map[string]struct{}
 }
 
-// keyRef returns the op:// reference to a server's managed private key, or ""
+// keyRef returns the op:// reference to a server's backed-up private key, or ""
 // when the vault holds no such item.
 func (d *vaultDiscovery) keyRef(serverName string) string {
 	if d == nil {
@@ -621,8 +760,8 @@ func (d *vaultDiscovery) keyRef(serverName string) string {
 	return secret.BuildSSHKeyRef(d.vault, title)
 }
 
-// passwordRef returns the op:// reference to a server's managed password, or ""
-// when the vault holds no such item.
+// passwordRef returns the op:// reference to a server's backed-up password, or
+// "" when the vault holds no such item.
 func (d *vaultDiscovery) passwordRef(serverName string) string {
 	if d == nil {
 		return ""
@@ -634,11 +773,16 @@ func (d *vaultDiscovery) passwordRef(serverName string) string {
 	return secret.BuildPasswordRef(d.vault, title)
 }
 
-func runPullFromOnePassword(ctx context.Context, args []string) error {
-	if err := validateInventoryPullFlags(args); err != nil {
-		return err
-	}
-	if err := validatePreferFlags(onePasswordPullInventory, onePasswordPullPreferLocal, onePasswordPullPreferRemote); err != nil {
+// runRestoreFromOnePassword is the off-ramp: it writes 1Password-hosted
+// credentials back onto local disk so that nothing depends on 1Password being
+// unlocked any more.
+//
+// Without arguments it restores the whole machine: servers.yaml first, then
+// every server's credentials. That is all a new machine needs after installing
+// the CLI. With arguments it restores only the named servers and leaves
+// servers.yaml alone.
+func runRestoreFromOnePassword(ctx context.Context, args []string) error {
+	if err := validatePreferFlags(onePasswordPreferLocal, onePasswordPreferRemote); err != nil {
 		return err
 	}
 
@@ -646,124 +790,162 @@ func runPullFromOnePassword(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	if onePasswordPullInventory {
-		vault, err := resolveAndValidateVault(ctx, cli, onePasswordPullVault, false)
-		if err != nil {
-			return err
-		}
-		return pullInventoryFromOnePassword(ctx, cli, vault)
-	}
-
-	store := server.NewDefaultStore()
-
-	var discovery *vaultDiscovery
-	if onePasswordPullFromVault {
-		vault, err := resolveAndValidateVault(ctx, cli, onePasswordPullVault, false)
-		if err != nil {
-			return err
-		}
-		if discovery, err = discoverVaultItems(ctx, cli, vault); err != nil {
-			return err
-		}
-	}
-
-	targets, explicit, skippedByBatch, err := selectOnePasswordPullTargets(store, args)
+	vault, err := resolveAndValidateVault(ctx, cli, onePasswordVault, false)
 	if err != nil {
 		return err
 	}
-	if len(skippedByBatch) > 0 {
-		fmt.Printf("ℹ️  Skipped %d server(s) marked skip_batch: %s\n", len(skippedByBatch), strings.Join(skippedByBatch, ", "))
-		fmt.Println("   Pass --include-skipped to pull them as well.")
-	}
-	if len(targets) == 0 {
-		if filter := strings.TrimSpace(onePasswordPullFilter); filter != "" {
-			fmt.Printf("No servers matched filter %q.\n", filter)
-		} else {
-			fmt.Println("Nothing to pull.")
+
+	store := server.NewDefaultStore()
+	explicit := len(args) > 0
+
+	// One vault listing for the whole command: the inventory restore and the
+	// credential matching below both read it, and a second `op item list` would
+	// be a second Desktop App authorisation on Windows, where nothing is cached.
+	index := newItemIndex(cli, vault)
+
+	if !explicit {
+		// The inventory comes first so that a fresh machine has the server
+		// names before anything tries to match item names against them.
+		found, err := restoreInventoryFromOnePassword(ctx, cli, vault, index)
+		if err != nil {
+			return err
 		}
-		return nil
+		if !found {
+			fmt.Printf("ℹ️  No inventory backup in vault %q; restoring credentials for the servers already in servers.yaml.\n", vault)
+		}
 	}
 
-	plans := make([]pullPlan, 0, len(targets))
+	targets, err := selectRestoreTargets(store, args)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("nothing to restore: servers.yaml holds no servers")
+	}
+
+	discovery, err := discoverVaultItems(ctx, index)
+	if err != nil {
+		return err
+	}
+
+	plans := make([]restorePlan, 0, len(targets))
 	for _, srv := range targets {
-		plans = append(plans, planPull(srv, discovery))
+		plans = append(plans, planRestore(srv, discovery))
 	}
 
 	// Ask up front rather than halfway through, so a declined confirmation
 	// cannot leave the batch half-applied.
-	if passwords := countPullablePasswords(plans); passwords > 0 {
-		if err := confirmPlaintextPull(os.Stdin, os.Stdout, passwords, stdinIsInteractive(), onePasswordPullYes); err != nil {
+	if passwords := countRestorePasswords(plans); passwords > 0 {
+		if err := confirmPlaintextRestore(os.Stdin, os.Stdout, passwords, stdinIsInteractive(), onePasswordRestoreYes); err != nil {
 			return err
 		}
 	}
 
-	outcomes := make([]pullOutcome, 0, len(plans))
+	outcomes := make([]restoreOutcome, 0, len(plans))
 	for _, plan := range plans {
-		outcomes = append(outcomes, pullOneServer(ctx, store, plan, explicit))
+		outcomes = append(outcomes, restoreOneServer(ctx, store, plan))
 	}
-	if err := reportPullOutcomes(os.Stdout, outcomes); err != nil {
+	if err := reportRestoreOutcomes(os.Stdout, outcomes); err != nil {
 		return err
 	}
-	if discovery != nil {
-		if all, err := store.List(); err == nil {
-			reportUnmatchedVaultItems(os.Stdout, discovery, all)
+
+	if all, err := store.List(); err == nil {
+		reportUnmatchedVaultItems(os.Stdout, discovery, all)
+	}
+
+	// The historical temp directory is only touched when this run actually
+	// migrated something: a routine restore has no residue to clean, and the
+	// purge is total, so it must not fire by accident.
+	if migrated := countMigratedServers(outcomes); migrated > 0 {
+		fmt.Printf("\n⚠️  Migrated %d server(s) from 'op://' references to local credentials. This compatibility path will be removed in a future release.\n", migrated)
+		if removed, err := sftp.PurgeMaterialized1PKeys(""); err == nil && len(removed) > 0 {
+			fmt.Printf("🧹 Cleaned up %d historical temporary private key(s) in ~/.ssh/opspulse-1p.\n", len(removed))
 		}
+		fmt.Println("ℹ️  If the ops daemon is running, restart it to load the new configuration.")
 	}
 	return nil
 }
 
-// planPull decides where a server's credentials should be read from.
+// selectRestoreTargets decides which servers a restore covers.
 //
-// Without --from-vault that is wherever servers.yaml already points. With it,
-// the vault's item titles take precedence, because they are the only thing that
-// survives a machine change: servers.yaml lives in the local config directory
-// and is never synced. The references in servers.yaml are still used as a
-// fallback, so --from-vault widens the search rather than replacing it.
-func planPull(srv *server.Server, discovery *vaultDiscovery) pullPlan {
-	plan := pullPlan{server: srv}
-	if secret.Is1PRef(srv.KeyPath) {
+// Naming a server is an instruction, so a name that is not in servers.yaml is
+// an error rather than a silent skip: the usual cause is restoring credentials
+// before the server list, which the no-argument form fixes.
+func selectRestoreTargets(store *server.Store, args []string) ([]*server.Server, error) {
+	if len(args) == 0 {
+		all, err := store.List()
+		if err != nil {
+			return nil, err
+		}
+		targets := make([]*server.Server, 0, len(all))
+		for i := range all {
+			targets = append(targets, &all[i])
+		}
+		return targets, nil
+	}
+
+	targets := make([]*server.Server, 0, len(args))
+	for _, name := range args {
+		srv, err := store.Get(name)
+		if err != nil {
+			return nil, fmt.Errorf("%w\n\nrun 'ops 1p restore' with no arguments first if the server list has not been restored yet", err)
+		}
+		targets = append(targets, srv)
+	}
+	return targets, nil
+}
+
+// planRestore decides where a server's credentials should be read from.
+//
+// A legacy op:// reference is used as-is, because it names the exact item the
+// old version pushed to and item-name discovery could miss a non-standard one.
+// Everything else is matched by the deterministic name OpsPulse gives its
+// items, which is the only thing that survives a machine change.
+//
+// A password is only restored when the local value is absent or a legacy
+// reference. The inventory backup already carries a plaintext password, so
+// rewriting it here would ask the user to approve a value they already have.
+func planRestore(srv *server.Server, discovery *vaultDiscovery) restorePlan {
+	plan := restorePlan{server: srv}
+
+	switch {
+	case secret.Is1PRef(srv.KeyPath):
 		plan.keyRef = srv.KeyPath
+		plan.keyWasLegacy = true
+	case strings.TrimSpace(srv.KeyPath) != "":
+		plan.keyRef = discovery.keyRef(srv.Name)
 	}
-	if secret.Is1PRef(srv.Password) {
+
+	switch {
+	case secret.Is1PRef(srv.Password):
 		plan.passRef = srv.Password
+		plan.passWasLegacy = true
+	case strings.TrimSpace(srv.Password) == "":
+		plan.passRef = discovery.passwordRef(srv.Name)
 	}
-	if ref := discovery.keyRef(srv.Name); ref != "" {
-		plan.keyRef = ref
-	}
-	if ref := discovery.passwordRef(srv.Name); ref != "" {
-		plan.passRef = ref
-	}
+
 	return plan
 }
 
-// discoverVaultItems lists the item titles in a vault once, so that matching a
-// whole batch of servers costs a single call rather than one per server.
-func discoverVaultItems(ctx context.Context, cli secret.CLI, vault string) (*vaultDiscovery, error) {
-	out, err := cli.Run(ctx, "item", "list", "--vault", vault, "--format", "json")
+// discoverVaultItems builds the vault's title set so that matching a whole
+// batch of servers costs no extra call. It reuses the snapshot held by index,
+// which a no-argument restore has usually already paid for when it restored the
+// inventory.
+func discoverVaultItems(ctx context.Context, index *itemIndex) (*vaultDiscovery, error) {
+	titles, err := index.titles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("%s\n\nlist items in 1Password vault %q: %w", onePasswordAuthHint(cli), vault, err)
+		return nil, err
 	}
-	var items []struct {
-		Title string `json:"title"`
-	}
-	if err := json.Unmarshal(out, &items); err != nil {
-		return nil, fmt.Errorf("parse 1Password item list: %w", err)
-	}
-	titles := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		titles[item.Title] = struct{}{}
-	}
-	return &vaultDiscovery{vault: vault, titles: titles}, nil
+	return &vaultDiscovery{vault: index.vault, titles: titles}, nil
 }
 
 // reportUnmatchedVaultItems tells the user about opspulse_* items that no server
 // in servers.yaml claims.
 //
 // The comparison is against every configured server, not just this run's
-// targets: an item belonging to a server that --filter or an explicit name left
-// out is still matched, and reporting it as orphaned would send the user looking
-// for a problem that does not exist.
+// targets: an item belonging to a server that an explicit name left out is
+// still matched, and reporting it as orphaned would send the user looking for a
+// problem that does not exist.
 //
 // The list is only ever a hint. Creating servers from it is deliberately not
 // done: an item carries no host or user, so OpsPulse would have to invent the
@@ -778,7 +960,7 @@ func reportUnmatchedVaultItems(w io.Writer, discovery *vaultDiscovery, servers [
 		claimed[secret.PasswordItemTitle(srv.Name)] = struct{}{}
 	}
 	// The inventory backup is not a credential, so no server ever claims it by
-	// name; without this it would be reported as orphaned on every pull.
+	// name; without this it would be reported as orphaned on every restore.
 	claimed[secret.InventoryItemTitle] = struct{}{}
 
 	var unmatched []string
@@ -795,20 +977,13 @@ func reportUnmatchedVaultItems(w io.Writer, discovery *vaultDiscovery, servers [
 		return
 	}
 	sort.Strings(unmatched)
-	fmt.Fprintf(w, "\nℹ️  %d opspulse item(s) in vault %q match no server in servers.yaml: %s\n", len(unmatched), discovery.vault, strings.Join(unmatched, ", "))
-	fmt.Fprintln(w, "   OpsPulse does not create servers from vault items, because an item carries no host or user.")
+	_, _ = fmt.Fprintf(w, "\nℹ️  %d opspulse item(s) in vault %q match no server in servers.yaml: %s\n", len(unmatched), discovery.vault, strings.Join(unmatched, ", "))
+	_, _ = fmt.Fprintln(w, "   OpsPulse does not create servers from vault items, because an item carries no host or user.")
 }
 
-// countPullablePasswords counts the servers whose password would land in
+// countRestorePasswords counts the servers whose password would land in
 // servers.yaml as plaintext, so the warning can name a number.
-//
-// Only a materializing pull writes plaintext: the default --from-vault mode
-// stores an op:// reference instead, which is no more sensitive than the
-// reference already in the file.
-func countPullablePasswords(plans []pullPlan) int {
-	if onePasswordPullFromVault && !onePasswordPullMaterialize {
-		return 0
-	}
+func countRestorePasswords(plans []restorePlan) int {
 	count := 0
 	for _, plan := range plans {
 		if plan.passRef != "" {
@@ -818,104 +993,44 @@ func countPullablePasswords(plans []pullPlan) int {
 	return count
 }
 
-// selectOnePasswordPullTargets decides which servers a pull covers.
-//
-// Naming a server is an instruction, so an explicit name is honoured even when
-// the server carries skip_batch: dropping it silently would look like the
-// argument was ignored. The bulk form follows the project's convention for
-// implicit batch operations (see 'ops doctor' and 'ops exec'), where servers are
-// narrowed by --filter and skip_batch servers are left out unless
-// --include-skipped asks for them.
-//
-// explicit reports which form was used, because the two treat "nothing is
-// managed in 1Password" differently.
-func selectOnePasswordPullTargets(store *server.Store, args []string) (targets []*server.Server, explicit bool, skipped []string, err error) {
-	filter, err := resolveBatchFilter(onePasswordPullFilter, onePasswordPullAll, len(args) > 0)
-	if err != nil {
-		return nil, false, nil, err
-	}
-	if len(args) > 0 {
-		targets = make([]*server.Server, 0, len(args))
-		for _, name := range args {
-			srv, getErr := store.Get(name)
-			if getErr != nil {
-				return nil, true, nil, getErr
-			}
-			targets = append(targets, srv)
-		}
-		return targets, true, nil, nil
-	}
-
-	all, err := store.List()
-	if err != nil {
-		return nil, false, nil, err
-	}
-	targets = make([]*server.Server, 0, len(all))
-	for i := range all {
-		if !all[i].MatchFilter(filter) {
-			continue
-		}
-		if all[i].SkipBatch && !onePasswordPullInclSkip {
-			skipped = append(skipped, all[i].Name)
-			continue
-		}
-		targets = append(targets, &all[i])
-	}
-	return targets, false, skipped, nil
-}
-
-// confirmPlaintextPull gates the one irreversible step of a pull: a password
-// can only come back as plaintext in servers.yaml.
+// confirmPlaintextRestore gates the one irreversible step of a restore: a
+// password can only come back as plaintext in servers.yaml.
 //
 // A non-interactive shell is refused rather than prompted at. Reading from a
 // pipe that never closes would hang a script, and defaulting to "yes" would
 // write a secret nobody agreed to. The I/O and the interactivity verdict are
 // parameters so the policy can be tested without touching the real terminal.
-func confirmPlaintextPull(in io.Reader, out io.Writer, count int, interactive, yes bool) error {
+func confirmPlaintextRestore(in io.Reader, out io.Writer, count int, interactive, yes bool) error {
 	if yes {
 		return nil
 	}
 	if !interactive {
 		return fmt.Errorf("refusing to write %d plaintext password(s) into servers.yaml without confirmation; re-run with --yes to accept this in a non-interactive shell", count)
 	}
-	prompt := fmt.Sprintf("⚠️  Warning: pulling will write %d plaintext password(s) into servers.yaml.\nAre you sure you want to proceed? [y/N]: ", count)
+	prompt := fmt.Sprintf("⚠️  Warning: restoring will write %d plaintext password(s) into servers.yaml.\nAre you sure you want to proceed? [y/N]: ", count)
 	if !promptConfirm(in, out, prompt, false) {
-		return fmt.Errorf("pull cancelled by user")
+		return fmt.Errorf("restore cancelled by user")
 	}
 	return nil
 }
 
-// pullOneServer brings back every credential a single server keeps in
-// 1Password, either as a local copy or as a reference.
+// restoreOneServer brings back every credential a single server keeps in
+// 1Password, writing it to local disk.
 //
-// Key and password are checked independently on purpose. A server can hold both
-// - 'ops server setup-key' deliberately leaves the password behind as a
-// fallback - and restoring only one of them would strand an op:// reference
-// once the 1Password account is gone.
-func pullOneServer(ctx context.Context, store *server.Store, plan pullPlan, explicit bool) pullOutcome {
+// Key and password are checked independently on purpose: a server can hold
+// both, and restoring only one of them would strand an op:// reference once the
+// 1Password account is gone.
+func restoreOneServer(ctx context.Context, store *server.Store, plan restorePlan) restoreOutcome {
 	srv := plan.server
-	out := pullOutcome{name: srv.Name}
+	out := restoreOutcome{name: srv.Name}
 
 	if plan.keyRef == "" && plan.passRef == "" {
-		if explicit {
-			// The user asked for this server by name, so having nothing to pull
-			// is a real failure rather than something to quietly skip past.
-			out.err = fmt.Errorf("keeps its credentials in servers.yaml, not in 1Password; run 'ops 1p push %s' to upload them first", srv.Name)
-			return out
-		}
-		out.reason = "no credential is managed in 1Password"
+		out.reason = "no credential is backed up in 1Password"
 		return out
 	}
 
-	// --from-vault without --materialize is the adoption mode: point
-	// servers.yaml at 1Password and leave the values there, so nothing new
-	// lands on disk.
-	if onePasswordPullFromVault && !onePasswordPullMaterialize {
-		return adoptOneServer(ctx, store, plan)
-	}
-
 	if plan.keyRef != "" {
-		written, err := pullKeyFromOnePassword(ctx, store, srv, plan.keyRef)
+		written, err := restoreKeyFromOnePassword(ctx, store, srv, plan.keyRef)
 		switch {
 		case err != nil:
 			out.err = err
@@ -924,128 +1039,72 @@ func pullOneServer(ctx context.Context, store *server.Store, plan pullPlan, expl
 			out.blocked = true
 			out.reason = "a different key already occupies the local path; re-run with --force to replace it"
 		default:
-			out.keyPulled = true
+			out.keyRestored = true
+			out.migrated = out.migrated || plan.keyWasLegacy
 		}
 	}
 	if plan.passRef != "" {
-		if err := pullPasswordFromOnePassword(ctx, store, srv, plan.passRef); err != nil {
+		if err := restorePasswordFromOnePassword(ctx, store, srv, plan.passRef); err != nil {
 			out.err = err
 			return out
 		}
-		out.passPulled = true
+		out.passRestored = true
+		out.migrated = out.migrated || plan.passWasLegacy
 	}
 	return out
 }
 
-// adoptOneServer points a server at its 1Password items without writing
-// anything to disk.
-//
-// Every reference is read and validated before servers.yaml is touched. A
-// rebind is a promise that the connection still works, so a reference that
-// turns out to be empty or unparsable would break a server that works today
-// while leaving no local copy to fall back to. Nothing is written unless all of
-// them resolved.
-func adoptOneServer(ctx context.Context, store *server.Store, plan pullPlan) pullOutcome {
-	srv := plan.server
-	out := pullOutcome{name: srv.Name}
-
-	if plan.keyRef != "" {
-		key, err := onePasswordResolver().ResolveSSHKey(ctx, plan.keyRef)
-		if err != nil {
-			out.err = err
-			return out
-		}
-		if err := validatePrivateKeyContent([]byte(key)); err != nil {
-			out.err = fmt.Errorf("the 1Password item behind %s does not hold a usable SSH private key: %w", plan.keyRef, err)
-			return out
+// countMigratedServers counts the servers whose op:// references were replaced
+// by local credentials during this run.
+func countMigratedServers(outcomes []restoreOutcome) int {
+	count := 0
+	for _, out := range outcomes {
+		if out.migrated {
+			count++
 		}
 	}
-	if plan.passRef != "" {
-		password, err := onePasswordResolver().ResolvePassword(ctx, plan.passRef)
-		if err != nil {
-			out.err = err
-			return out
-		}
-		if password == "" {
-			out.err = fmt.Errorf("the 1Password item behind %s returned an empty password", plan.passRef)
-			return out
-		}
-	}
-
-	changed := false
-	if plan.keyRef != "" && srv.KeyPath != plan.keyRef {
-		srv.KeyPath = plan.keyRef
-		changed = true
-	}
-	if plan.passRef != "" && srv.Password != plan.passRef {
-		srv.Password = plan.passRef
-		changed = true
-	}
-	if !changed {
-		out.reason = "already references 1Password"
-		return out
-	}
-	if err := store.Save(*srv); err != nil {
-		out.err = fmt.Errorf("rebind server %q to 1Password: %w", srv.Name, err)
-		return out
-	}
-
-	out.adopted = true
-	fmt.Printf("🔗 %q now resolves its credentials from 1Password.\n", srv.Name)
-	fmt.Printf("   Nothing was written to disk: 'ops ssh %s' materializes the key on demand.\n", srv.Name)
-	fmt.Println("   This machine cannot connect while 1Password is unavailable; re-run with --materialize for a local copy.")
-	return out
+	return count
 }
 
-// reportPullOutcomes prints the per-server detail and the batch summary, and
+// reportRestoreOutcomes prints the per-server detail and the batch summary, and
 // turns an incomplete restore into a non-zero exit.
 //
 // A blocked server counts towards the failure of the run even though nothing
-// went wrong technically: its credential is still in 1Password, so a caller who
-// asked for a complete off-ramp has not got one and must be told.
-func reportPullOutcomes(w io.Writer, outcomes []pullOutcome) error {
-	var restoredCount, adopted, skipped, blocked, failed, passwords int
+// went wrong technically: its credential is still only in 1Password, so a
+// caller who asked for a complete off-ramp has not got one and must be told.
+func reportRestoreOutcomes(w io.Writer, outcomes []restoreOutcome) error {
+	var restoredCount, skipped, blocked, failed, passwords int
 	for _, out := range outcomes {
 		if out.err != nil {
 			failed++
-			fmt.Fprintf(w, "❌ %q: %v\n", out.name, out.err)
+			_, _ = fmt.Fprintf(w, "❌ %q: %v\n", out.name, out.err)
 			continue
 		}
 		// Counted before the switch so that a server whose key is blocked still
 		// gets credit for the password that did come back.
-		if out.passPulled {
+		if out.passRestored {
 			passwords++
 		}
 
 		switch {
 		case out.blocked:
 			blocked++
-			fmt.Fprintf(w, "⚠️  %q: %s\n", out.name, out.reason)
-		case out.adopted:
-			adopted++
-			fmt.Fprintf(w, "🔗 %q: bound to 1Password (no local copy)\n", out.name)
+			_, _ = fmt.Fprintf(w, "⚠️  %q: %s\n", out.name, out.reason)
 		case out.restored():
 			restoredCount++
 		default:
 			skipped++
-			fmt.Fprintf(w, "⏭️  %q: %s\n", out.name, out.reason)
+			_, _ = fmt.Fprintf(w, "⏭️  %q: %s\n", out.name, out.reason)
 		}
 	}
 
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	if passwords > 0 {
-		fmt.Fprintf(w, "⚠️  Wrote %d plaintext password(s) into servers.yaml. Delete them (or re-run 'ops 1p push') once the local copy is no longer needed.\n", passwords)
+		_, _ = fmt.Fprintf(w, "⚠️  Wrote %d plaintext password(s) into servers.yaml. They are the local copy now.\n", passwords)
 	}
-	fmt.Fprintf(w, "Pull finished: %d restored, %d adopted, %d skipped, %d blocked, %d failed.\n", restoredCount, adopted, skipped, blocked, failed)
-	if skipped > 0 && restoredCount == 0 && adopted == 0 && blocked == 0 && failed == 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "💡 Every target keeps its credentials locally; none of them references 1Password.")
-		fmt.Fprintln(w, "   servers.yaml is machine-local and does not sync, so credentials pushed on another")
-		fmt.Fprintln(w, "   machine will not be referenced here. Run 'ops 1p pull --all --from-vault' to find")
-		fmt.Fprintln(w, "   them by their item names in the vault instead.")
-	}
+	_, _ = fmt.Fprintf(w, "Restore finished: %d restored, %d skipped, %d blocked, %d failed.\n", restoredCount, skipped, blocked, failed)
 	if failed > 0 {
-		return fmt.Errorf("%d server(s) could not be pulled", failed)
+		return fmt.Errorf("%d server(s) could not be restored", failed)
 	}
 	if blocked > 0 {
 		return fmt.Errorf("%d server(s) still need a decision before their credentials can be restored", blocked)
@@ -1053,14 +1112,14 @@ func reportPullOutcomes(w io.Writer, outcomes []pullOutcome) error {
 	return nil
 }
 
-// pullKeyFromOnePassword writes a 1Password-hosted private key back onto local
+// restoreKeyFromOnePassword writes a 1Password-hosted private key onto local
 // disk and rebinds the server to the file, leaving the item in 1Password alone.
 //
 // It reports whether the file was written: false with a nil error means the
 // destination already holds a different key and was deliberately left alone.
-func pullKeyFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server, ref string) (bool, error) {
+func restoreKeyFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server, ref string) (bool, error) {
 	vault, item, _, _ := secret.Parse1PRef(ref)
-	fmt.Printf("⬇️  Pulling key for %q from 1Password (%s/%s)...\n", srv.Name, vault, item)
+	fmt.Printf("⬇️  Restoring key for %q from 1Password (%s/%s)...\n", srv.Name, vault, item)
 
 	keyData, err := onePasswordResolver().ResolveSSHKey(ctx, ref)
 	if err != nil {
@@ -1096,13 +1155,14 @@ func pullKeyFromOnePassword(ctx context.Context, store *server.Store, srv *serve
 	}
 	writePublicKeyFile(expandedDest, body)
 
-	srv.KeyPath = storedDest
-	if err := store.Save(*srv); err != nil {
-		return false, fmt.Errorf("rebind server %q to the local key: %w", srv.Name, err)
+	if srv.KeyPath != storedDest {
+		srv.KeyPath = storedDest
+		if err := store.Save(*srv); err != nil {
+			return false, fmt.Errorf("rebind server %q to the local key: %w", srv.Name, err)
+		}
 	}
 
-	fmt.Printf("✅ %q: saved to %s and rebound to it.\n", srv.Name, storedDest)
-	fmt.Printf("   The 1Password item %q was left untouched.\n", item)
+	fmt.Printf("✅ %q: key restored to %s.\n", srv.Name, storedDest)
 	return true, nil
 }
 
@@ -1114,7 +1174,7 @@ func pullKeyFromOnePassword(ctx context.Context, store *server.Store, srv *serve
 // format - so a byte comparison would report a conflict for a key that is in
 // fact identical, and send the user to --force for no reason.
 func mayReplaceLocalKey(path string, incoming []byte) (bool, error) {
-	if onePasswordPullForce {
+	if onePasswordRestoreForce {
 		return true, nil
 	}
 	existing, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 -- OpsPulse's own managed key location
@@ -1145,11 +1205,11 @@ func publicKeyLine(keyData []byte) (string, bool) {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), true
 }
 
-// pullPasswordFromOnePassword writes a 1Password-hosted password back into
+// restorePasswordFromOnePassword writes a 1Password-hosted password back into
 // servers.yaml as plaintext, leaving the item in 1Password alone.
-func pullPasswordFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server, ref string) error {
+func restorePasswordFromOnePassword(ctx context.Context, store *server.Store, srv *server.Server, ref string) error {
 	vault, item, _, _ := secret.Parse1PRef(ref)
-	fmt.Printf("⬇️  Pulling password for %q from 1Password (%s/%s)...\n", srv.Name, vault, item)
+	fmt.Printf("⬇️  Restoring password for %q from 1Password (%s/%s)...\n", srv.Name, vault, item)
 
 	password, err := onePasswordResolver().ResolvePassword(ctx, ref)
 	if err != nil {
@@ -1164,55 +1224,8 @@ func pullPasswordFromOnePassword(ctx context.Context, store *server.Store, srv *
 		return fmt.Errorf("write the password back into servers.yaml: %w", err)
 	}
 
-	fmt.Printf("✅ %q: password written back into servers.yaml as plaintext.\n", srv.Name)
-	fmt.Printf("   The 1Password item %q was left untouched.\n", item)
+	fmt.Printf("✅ %q: password restored into servers.yaml as plaintext.\n", srv.Name)
 	return nil
-}
-
-// materializeOnePasswordKeys replaces op:// key references on the target server
-// (and on its jump host) with concrete 0600 files, because the system ssh(1)
-// client only understands file paths. The returned cleanup removes every file it
-// created and must run once the session has ended.
-//
-// jumpKeyPath is the materialised identity file of the jump host, if any.
-func materializeOnePasswordKeys(srv *server.Server, store *server.Store) (jumpKeyPath string, cleanup func(), err error) {
-	var cleanups []func()
-	restore := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			cleanups[i]()
-		}
-	}
-
-	resolve := func(name, ref string) (string, error) {
-		path, done, err := secret.NewResolver().MaterializeSSHKey(context.Background(), ref)
-		if err != nil {
-			return "", fmt.Errorf("resolve the 1Password key for %q: %w", name, err)
-		}
-		cleanups = append(cleanups, done)
-		return path, nil
-	}
-
-	if secret.Is1PRef(srv.KeyPath) {
-		path, err := resolve(srv.Name, srv.KeyPath)
-		if err != nil {
-			restore()
-			return "", func() {}, err
-		}
-		srv.KeyPath = path
-	}
-
-	if srv.JumpHost != "" {
-		if jumpSrv, err := store.Get(srv.JumpHost); err == nil && secret.Is1PRef(jumpSrv.KeyPath) {
-			path, err := resolve(jumpSrv.Name, jumpSrv.KeyPath)
-			if err != nil {
-				restore()
-				return "", func() {}, err
-			}
-			jumpKeyPath = path
-		}
-	}
-
-	return jumpKeyPath, restore, nil
 }
 
 // onePasswordAccountInfo mirrors the subset of `op account list --format json`
@@ -1284,6 +1297,12 @@ func printOnePasswordConfig(ctx context.Context, settings secret.Settings) error
 		fmt.Printf("  note    : $OP_ACCOUNT=%s overrides the remembered account\n", a)
 	}
 
+	// --offline stops here: the point of the flag is to inspect or set the
+	// remembered defaults without an unlock prompt.
+	if onePasswordConfigOffline {
+		return nil
+	}
+
 	cli := secret.Detect()
 	if !cli.Available() {
 		fmt.Println("\n⚠️  1Password CLI not found, so accounts and vaults cannot be listed.")
@@ -1308,7 +1327,7 @@ func printOnePasswordConfig(ctx context.Context, settings secret.Settings) error
 	fmt.Printf("\nVaults visible to the current account: %s\n", strings.Join(names, ", "))
 
 	if settings.IsZero() {
-		fmt.Println("\n💡 Remember a default so plain 'ops 1p push --all' needs no flags:")
+		fmt.Println("\n💡 Remember a default so 'ops 1p backup' needs no --vault:")
 		fmt.Println("   ops 1p config --vault <name> [--account <sign-in-address>]")
 	}
 	return nil
@@ -1356,7 +1375,13 @@ func settingsSummary(settings secret.Settings) string {
 	return strings.Join(parts, ", ")
 }
 
-func runOnePasswordStatus() error {
+// runOnePasswordStatus reports where each server's credentials live.
+//
+// It is offline by default: only servers.yaml is read, so it never contacts
+// 1Password and never prompts. That is the point of the command - checking
+// which servers still need migrating must not itself require an unlock. Pass
+// --remote to also ask the vault which servers have a backup.
+func runOnePasswordStatus(ctx context.Context) error {
 	store := server.NewDefaultStore()
 	servers, err := store.List()
 	if err != nil {
@@ -1374,39 +1399,84 @@ func runOnePasswordStatus() error {
 		return nil
 	}
 
+	var discovery *vaultDiscovery
+	if onePasswordStatusRemote {
+		if discovery, err = statusVaultDiscovery(ctx); err != nil {
+			return err
+		}
+	}
+
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tKEY\tPASSWORD")
-	managed := 0
+	if discovery == nil {
+		_, _ = fmt.Fprintln(tw, "NAME\tKEY\tPASSWORD")
+	} else {
+		_, _ = fmt.Fprintln(tw, "NAME\tLOCAL KEY\t1P BACKUP")
+	}
+	legacy := 0
 	for _, s := range filtered {
 		if secret.Is1PRef(s.KeyPath) || secret.Is1PRef(s.Password) {
-			managed++
+			legacy++
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, describeKeySource(s), describePasswordSource(s))
+		if discovery == nil {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, describeKeySource(s), describePasswordSource(s))
+			continue
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, describeKeySource(s), describeBackupState(discovery, s))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 
-	fmt.Printf("\n%d/%d server(s) keep at least one credential in 1Password.\n", managed, len(filtered))
-	fmt.Println("Tip: 'ops 1p pull <server>' writes a 1Password-hosted credential back into servers.yaml.")
+	fmt.Println()
+	// A server can be configured correctly and still be unusable: the key file
+	// it names may not be on this disk. Reporting "all local" without checking
+	// would be a green light that the first connection then disproves.
+	missingKeys := serversWithMissingKeyFiles(filtered)
+	if legacy > 0 {
+		fmt.Printf("⚠️  %d/%d server(s) still hold an 'op://' reference, which the runtime no longer resolves. Run 'ops 1p restore' to migrate them.\n", legacy, len(filtered))
+	} else if len(missingKeys) == 0 {
+		fmt.Printf("✅ All %d server(s) resolve their credentials from local disk.\n", len(filtered))
+	}
+	if len(missingKeys) > 0 {
+		fmt.Printf("⚠️  %d server(s) point at a private key file that is not on this machine: %s\n", len(missingKeys), strings.Join(missingKeys, ", "))
+		fmt.Println("   Run 'ops 1p restore <name>' to write the backed-up key to disk.")
+	}
 	if settings, err := secret.LoadSettings(); err == nil && !settings.IsZero() {
 		fmt.Printf("Remembered defaults: %s\n", settingsSummary(settings))
 	}
-	if cli := secret.Detect(); !cli.Available() {
-		fmt.Println("⚠️  1Password CLI was not found on this host, so op:// references cannot be resolved right now.")
+	if discovery == nil {
+		fmt.Println("Tip: pass --remote to also check which servers have a 1Password backup.")
 	}
+
 	if details, err := sftp.ListMaterialized1PKeyDetails(); err == nil && len(details) > 0 {
-		fmt.Printf("\n⚠️  Found %d materialized 1Password key(s) in ~/.ssh/opspulse-1p (created for GUI SFTP clients):\n", len(details))
+		fmt.Printf("\n⚠️  Found %d leftover key file(s) in ~/.ssh/opspulse-1p from the op:// era:\n", len(details))
 		for _, d := range details {
-			if d.IsStale {
-				fmt.Printf("   - %s (stale: >24h old, please run ops 1p cleanup)\n", d.Name)
-			} else {
-				fmt.Printf("   - %s\n", d.Name)
-			}
+			fmt.Printf("   - %s\n", d.Name)
 		}
-		fmt.Println("   Run 'ops 1p cleanup' to purge them from local disk.")
+		fmt.Println("   These are leftovers from the op:// era; 'ops 1p restore' purges them automatically.")
 	}
 	return nil
+}
+
+// statusVaultDiscovery lists the vault's items for the --remote column.
+func statusVaultDiscovery(ctx context.Context) (*vaultDiscovery, error) {
+	cli, err := ensure1PCLI()
+	if err != nil {
+		return nil, err
+	}
+	vault, err := resolveAndValidateVault(ctx, cli, onePasswordVault, false)
+	if err != nil {
+		return nil, err
+	}
+	return discoverVaultItems(ctx, newItemIndex(cli, vault))
+}
+
+// describeBackupState renders the --remote column for one server.
+func describeBackupState(discovery *vaultDiscovery, s server.Server) string {
+	if ref := discovery.keyRef(s.Name); ref != "" {
+		return "✅ " + onePasswordRefDisplay(ref)
+	}
+	return "❌ not backed up"
 }
 
 // onePasswordRefDisplay renders an op://<vault>/<item>/<field> reference in a
@@ -1419,10 +1489,13 @@ func onePasswordRefDisplay(ref string) string {
 }
 
 // describeKeySource renders where a server's private key comes from.
+//
+// A residual op:// reference is labelled "legacy" rather than "1password": the
+// runtime refuses it, so it is a problem to fix, not a working configuration.
 func describeKeySource(s server.Server) string {
 	switch {
 	case secret.Is1PRef(s.KeyPath):
-		return "1password (" + onePasswordRefDisplay(s.KeyPath) + ")"
+		return "legacy 1password ref (" + onePasswordRefDisplay(s.KeyPath) + ")"
 	case strings.TrimSpace(s.KeyPath) != "":
 		suffix := ""
 		if isManagedKey(s.KeyPath) {
@@ -1438,7 +1511,7 @@ func describeKeySource(s server.Server) string {
 func describePasswordSource(s server.Server) string {
 	switch {
 	case secret.Is1PRef(s.Password):
-		return "1password (" + onePasswordRefDisplay(s.Password) + ")"
+		return "legacy 1password ref (" + onePasswordRefDisplay(s.Password) + ")"
 	case strings.TrimSpace(s.Password) != "":
 		return "plaintext (servers.yaml)"
 	default:
@@ -1446,85 +1519,11 @@ func describePasswordSource(s server.Server) string {
 	}
 }
 
-// selectOnePasswordTargets decides which servers a push covers.
-//
-// Naming a server is an instruction, so an explicit name is honoured even when
-// the server carries skip_batch. The bulk form follows the project's convention
-// for implicit batch operations (see 'ops doctor' and 'ops exec'): servers are
-// narrowed by --filter, and skip_batch servers are left out unless
-// --include-skipped asks for them. skipped reports the latter so the caller can
-// say so rather than silently doing less than asked.
-func selectOnePasswordTargets(store *server.Store, args []string) (targets []*server.Server, skipped []string, err error) {
-	filter, err := resolveBatchFilter(onePasswordPushFilter, onePasswordAll, len(args) > 0)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(args) > 0 {
-		targets = make([]*server.Server, 0, len(args))
-		for _, name := range args {
-			srv, getErr := store.Get(name)
-			if getErr != nil {
-				return nil, nil, getErr
-			}
-			targets = append(targets, srv)
-		}
-		return targets, nil, nil
-	}
-
-	all, err := store.List()
-	if err != nil {
-		return nil, nil, err
-	}
-	targets = make([]*server.Server, 0, len(all))
-	for i := range all {
-		if !all[i].MatchFilter(filter) {
-			continue
-		}
-		if all[i].SkipBatch && !onePasswordPushInclSkip {
-			skipped = append(skipped, all[i].Name)
-			continue
-		}
-		targets = append(targets, &all[i])
-	}
-	return targets, skipped, nil
-}
-
-// resolveBatchFilter turns the positional-name / --filter / --all combination
-// into the selector to apply, or into an error when the combination does not
-// mean anything.
-//
-// Naming servers and filtering them are two different instructions, so asking
-// for both is a mistake rather than a precedence puzzle: letting one silently
-// win would target fewer or more servers than the user asked for. --all is
-// spelled out as an alias of --filter all, so combining them is only an error
-// when the two actually disagree.
-//
-// An empty filter counts as unset, matching how 'ops exec' treats it.
-func resolveBatchFilter(filter string, all, named bool) (string, error) {
-	trimmed := strings.TrimSpace(filter)
-	if named {
-		if trimmed != "" {
-			return "", fmt.Errorf("--filter cannot be combined with explicit server names; drop one of them")
-		}
-		return "", nil
-	}
-	if trimmed == "" {
-		if !all {
-			return "", fmt.Errorf("specify at least one server name, or pass --all (or --filter <selector>) to target several")
-		}
-		return "all", nil
-	}
-	if all && !strings.EqualFold(trimmed, "all") {
-		return "", fmt.Errorf("--all and --filter %q disagree: --all is equivalent to --filter all", trimmed)
-	}
-	return trimmed, nil
-}
-
 // listVaults returns the names of every vault the current account can see.
 func listVaults(ctx context.Context, cli secret.CLI) ([]string, error) {
 	out, err := cli.Run(ctx, "vault", "list", "--format", "json")
 	if err != nil {
-		return nil, fmt.Errorf("%s\n\n%w", onePasswordAuthHint(cli), err)
+		return nil, fmt.Errorf("%s\n\n%w", onePasswordFailureHint(cli, err), err)
 	}
 
 	var raw []struct {
@@ -1663,26 +1662,6 @@ func rememberOnePasswordSetting(field, value string) {
 		return
 	}
 	fmt.Printf("💡 Remembered %s %q; future runs use it without --%s.\n", field, value, field)
-}
-
-func findOnePasswordItemID(ctx context.Context, cli secret.CLI, vault, title string) (string, error) {
-	out, err := cli.Run(ctx, "item", "list", "--vault", vault, "--format", "json")
-	if err != nil {
-		return "", fmt.Errorf("list items in 1Password vault %q: %w", vault, err)
-	}
-	var items []struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-	}
-	if err := json.Unmarshal(out, &items); err != nil {
-		return "", fmt.Errorf("parse 1Password item list: %w", err)
-	}
-	for _, item := range items {
-		if item.Title == title {
-			return item.ID, nil
-		}
-	}
-	return "", nil
 }
 
 // authorizedKeyFor returns the OpenSSH "authorized_keys" line for a private key,
@@ -1895,39 +1874,77 @@ func installWindows1PCLIFromWSL() error {
 	return fmt.Errorf("winget is not reachable from WSL")
 }
 
+// legacyFlagNames are the flags the retired push/pull commands used to carry.
+// They are registered on the hidden stubs and never read: without them, an old
+// invocation like 'ops 1p push --materialize' would die on Cobra's "unknown
+// flag" error instead of reaching the message that names its replacement.
+var legacyFlagNames = []struct {
+	name      string
+	shorthand string
+	isBool    bool
+}{
+	{"vault", "", false},
+	{"all", "", true},
+	{"filter", "f", false},
+	{"include-skipped", "", true},
+	{"delete-local", "", true},
+	{"inventory", "", true},
+	{"prefer-local", "", true},
+	{"prefer-remote", "", true},
+	{"yes", "y", true},
+	{"force", "", true},
+	{"from-vault", "", true},
+	{"materialize", "", true},
+}
+
+// registerLegacyFlags mirrors the old flag surface onto a retired stub.
+func registerLegacyFlags(cmd *cobra.Command) {
+	for _, f := range legacyFlagNames {
+		if f.isBool {
+			cmd.Flags().BoolP(f.name, f.shorthand, false, "retired; ignored")
+		} else {
+			cmd.Flags().StringP(f.name, f.shorthand, "", "retired; ignored")
+		}
+		_ = cmd.Flags().MarkHidden(f.name)
+	}
+}
+
 func init() {
 	onePasswordCmd.PersistentFlags().StringVar(&onePasswordAccount, "account", "", "1Password account (sign-in address or ID); remembered for future runs")
-	onePasswordPushCmd.Flags().StringVar(&onePasswordVault, "vault", "", "Vault for new items (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordAll, "all", false, "Push every server that currently uses a local private key (equivalent to --filter all)")
-	onePasswordPushCmd.Flags().StringVarP(&onePasswordPushFilter, "filter", "f", "", "Push servers matching a label (key=val), tag, or name")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushInclSkip, "include-skipped", false, "Include servers configured with skip_batch when using --all/--filter")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordDeleteLocal, "delete-local", false, "Delete the managed local key file after a successful push")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushInventory, "inventory", false, "Back up the whole servers.yaml into one shared 1Password item (merges with what is already there)")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushPreferLocal, "prefer-local", false, "With --inventory, resolve every conflict in favour of this machine's servers.yaml")
-	onePasswordPushCmd.Flags().BoolVar(&onePasswordPushPreferRemote, "prefer-remote", false, "With --inventory, resolve every conflict in favour of the 1Password backup")
-	onePasswordPushCmd.ValidArgsFunction = completeServerNames
+
+	onePasswordBackupCmd.Flags().StringVar(&onePasswordVault, "vault", "", "Vault to back up into (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
+	// The default is left at 0 rather than 4 so that backupParallel can pick the
+	// right one for the CLI: a non-zero value is indistinguishable from a user
+	// who typed -p, and would silently disable the WSL reduction below.
+	onePasswordBackupCmd.Flags().IntVarP(&onePasswordBackupParallel, "parallel", "p", 0, "Maximum number of servers backed up concurrently (default 4, or 2 when driving the Windows op.exe from WSL)")
+	onePasswordBackupCmd.Flags().BoolVar(&onePasswordPreferLocal, "prefer-local", false, "Resolve every inventory conflict in favour of this machine's servers.yaml")
+	onePasswordBackupCmd.Flags().BoolVar(&onePasswordPreferRemote, "prefer-remote", false, "Resolve every inventory conflict in favour of the 1Password backup")
+
+	onePasswordRestoreCmd.Flags().StringVar(&onePasswordVault, "vault", "", "Vault to restore from (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
+	onePasswordRestoreCmd.Flags().BoolVarP(&onePasswordRestoreYes, "yes", "y", false, "Write plaintext passwords into servers.yaml without asking for confirmation")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordRestoreForce, "force", false, "Overwrite a local key file even when it holds a different key")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferLocal, "prefer-local", false, "Resolve every inventory conflict in favour of this machine's servers.yaml")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferRemote, "prefer-remote", false, "Resolve every inventory conflict in favour of the 1Password backup")
+	onePasswordRestoreCmd.ValidArgsFunction = completeServerNames
+
+	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
+	onePasswordStatusCmd.Flags().BoolVar(&onePasswordStatusRemote, "remote", false, "Also ask 1Password which servers have a backup (requires authentication)")
 
 	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigVault, "vault", "", "Remember this vault as the default target")
 	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigAccount, "account", "", "Remember this account as the default")
 	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigUnset, "unset", false, "Forget the remembered vault and account")
+	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigOffline, "offline", false, "Only read or write the local config; do not contact the 1Password CLI")
 
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullAll, "all", false, "Pull every server that keeps a credential in 1Password (equivalent to --filter all)")
-	onePasswordPullCmd.Flags().StringVarP(&onePasswordPullFilter, "filter", "f", "", "Pull servers matching a label (key=val), tag, or name")
-	onePasswordPullCmd.Flags().BoolVarP(&onePasswordPullYes, "yes", "y", false, "Write plaintext passwords into servers.yaml without asking for confirmation")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullForce, "force", false, "Overwrite a local key file even when it holds a different key")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullInclSkip, "include-skipped", false, "Include servers configured with skip_batch when using --all/--filter")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullFromVault, "from-vault", false, "Find credentials by their 1Password item name instead of by the references in servers.yaml")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullMaterialize, "materialize", false, "With --from-vault, write credentials to local disk instead of just rebinding to op:// references")
-	onePasswordPullCmd.Flags().StringVar(&onePasswordPullVault, "vault", "", "Vault to search with --from-vault (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullInventory, "inventory", false, "Restore servers.yaml from the shared 1Password backup (merges with this machine's servers)")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullPreferLocal, "prefer-local", false, "With --inventory, resolve every conflict in favour of this machine's servers.yaml")
-	onePasswordPullCmd.Flags().BoolVar(&onePasswordPullPreferRemote, "prefer-remote", false, "With --inventory, resolve every conflict in favour of the 1Password backup")
-	onePasswordPullCmd.ValidArgsFunction = completeServerNames
-	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
+	registerLegacyFlags(onePasswordLegacyPushCmd)
+	registerLegacyFlags(onePasswordLegacyPullCmd)
 
-	onePasswordCleanupCmd.Flags().StringVarP(&onePasswordCleanupServer, "server", "s", "", "Only remove the materialized key for this specific server")
-	onePasswordCleanupCmd.ValidArgsFunction = completeServerNames
-
-	onePasswordCmd.AddCommand(onePasswordPushCmd, onePasswordPullCmd, onePasswordStatusCmd, onePasswordConfigCmd, onePasswordCleanupCmd)
+	onePasswordCmd.AddCommand(
+		onePasswordBackupCmd,
+		onePasswordRestoreCmd,
+		onePasswordStatusCmd,
+		onePasswordConfigCmd,
+		onePasswordLegacyPushCmd,
+		onePasswordLegacyPullCmd,
+	)
 	rootCmd.AddCommand(onePasswordCmd)
 }

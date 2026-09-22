@@ -26,7 +26,7 @@
 - **🚀 服务器清单与标签管理**：使用简洁的 YAML (`servers.yaml`) 统一管理所有服务器，支持键值 Labels、标签、SSH 密钥认证、密码备选与自定义端口，支持 `--filter` 快速筛选。
 - **🔍 Agentless 系统与硬件探测**：内置 `server info` 命令，单次 SSH 聚合采集 OS、Kernel、CPU 规格、内存/Swap 已用量、磁盘空间、开机时长、Docker 容器统计与 BBR 启用状态。
 - **⚡ 原生交互式 SSH 直连**：`ops ssh <name>` 免记 IP/端口/密钥，自动桥接密码认证与原生密钥直连，100% 支持 vim/tmux/htop/resize。
-- **🔑 自动化密钥配对注入**：`ops server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成。
+- **🔑 自动化密钥配对注入**：`ops server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成；`--remove-password` 在验证新密钥可用后清除 `servers.yaml` 中的明文密码。
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
 - **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
@@ -35,7 +35,7 @@
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🔒 零信任凭证流转与安全边界**：支持在 `backups.yaml` 中使用 `op://` 协议，运行时自动调用 1Password 解析凭证、不落盘；`ops 1p push/pull/status` 可将 SSH 私钥与密码整体托管至 1Password 并以 `op://` 引用按需取用（私钥存于 Login 条目的 concealed 字段，因为 1Password CLI 无法写入 SSH Key 条目），本地无需保留私钥文件，写入后自动回读校验；`ops 1p pull --all` 可随时把凭据完整取回本地、整体脱离 1Password，`ops 1p pull --all --from-vault` 可按条目名跨机器发现凭据（默认只改绑引用、不落盘）；`ops 1p push/pull --inventory` 可把整份 `servers.yaml` 备份进一个共享条目、在新机器上一键还原（并集合并、写入后回读校验，绝不删除本机独有的服务器）；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。默认强制启用严格主机密钥校验（Strict Host Key Checking，未知主机输出密钥类型与 SHA256 指纹提示阻断中间人攻击），支持 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式声明首次连接自动受信（等价于 `accept-new` 并通过日志/终端线程安全告警），全模式严密阻断任何主机密钥不匹配与篡改。私钥绝不主动离机，无任何外部遥测上报。
+- **🔒 本地优先的凭证与安全边界**：SSH 凭据平时存放在本地（`servers.yaml` 中的私钥路径或明文密码），`ops ssh` / `ops exec` / `ops cp` 直接读取、全程不与 1Password 交互，因此不会弹授权框；1Password 降级为**备份与跨机同步目标**，仅由 `ops 1p backup` 上传本机凭据与整份 `servers.yaml`（**绝不改写 `servers.yaml`**，写入后回读校验；多台并发上传、默认 4 台（WSL 下驱动 Windows `op.exe` 时降为 2 台，规避 interop 中继的 spawn 超时），`-p` 可调；整批只列一次保险库，避免在无缓存的 Windows `op.exe` 上逐台重复授权），`ops 1p restore` 在新机器上一条命令还原清单与全部凭据、或按需整体脱离 1Password（清单并集合并、绝不删除本机独有的服务器，私钥覆盖按公钥比对）；`servers.yaml` 中残留的 `op://` 引用在运行时快速失败并指向 `ops 1p restore`；`backups.yaml` 任务的 `env:` 仍支持 `op://` 运行时解析注入、不落盘；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。默认强制启用严格主机密钥校验（Strict Host Key Checking，未知主机输出密钥类型与 SHA256 指纹提示阻断中间人攻击），支持 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式声明首次连接自动受信（等价于 `accept-new` 并通过日志/终端线程安全告警），全模式严密阻断任何主机密钥不匹配与篡改。私钥绝不主动离机，无任何外部遥测上报。
 
 ---
 
@@ -221,19 +221,16 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server list [--filter <key=val>]` | 格式化表格列出所有已配置的服务器 |
 | `ops server set <name> [--host] [--port] [--key]` | 增量修改已有服务器配置字段 |
 | `ops server edit <name>` | 用本地编辑器安全打开并编辑服务器配置 |
-| `ops server setup-key <name>` | 自动为指定服务器生成并安装专用 SSH 密钥对 |
+| `ops server setup-key <name> [--remove-password]` | 自动为指定服务器生成并安装专用 SSH 密钥对；`--remove-password` 在验证新密钥可用后清除 `servers.yaml` 中的明文密码 |
 | `ops server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
 | `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
 | `ops server remove <name>` | 从清单中删除指定服务器 |
-| `ops 1p push <server>... [--all] [--filter <k=v>] [--include-skipped] [--vault <vault>] [--delete-local]` | 把本地私钥/密码推送到 1Password，并把服务器改绑为 `op://` 引用（保险库只有一个时自动选中） |
-| `ops 1p push --inventory [--prefer-local\|--prefer-remote]` | 把**整份 `servers.yaml`** 备份进共享条目 `opspulse_inventory`（Secure Note，并集合并、写入后回读校验）；已有该条目时普通 push 会自动刷新它 |
-| `ops 1p pull <server>... [--all] [--filter <k=v>] [--from-vault] [--materialize] [--vault <v>] [--yes] [--force] [--include-skipped]` | 取回 1Password 中的凭据：默认只把 `servers.yaml` 改绑为 `op://` 引用（不落盘），`--materialize` 才完整取回本地；`--from-vault` 按条目名跨机发现凭据 |
-| `ops 1p pull --inventory [--prefer-local\|--prefer-remote]` | 从 `opspulse_inventory` 还原整份服务器清单（新机器初始化第一步）；与本机已有清单**并集**合并，绝不删除本机独有的服务器 |
-| `ops 1p status [--filter <key=val>]` | 查看每台服务器的私钥当前存放在哪里（含本地材质化临时副本告警） |
-| `ops 1p config [--vault <v>] [--account <a>] [--unset]` | 查看/记住默认保险库与账号，之后 `push` 无需重复传参 |
-| `ops 1p cleanup` | 彻底清理本地 `~/.ssh/opspulse-1p` 遗留的材质化 1Password 私钥临时副本 |
+| `ops 1p backup [--vault <v>] [-p <n>] [--prefer-local\|--prefer-remote]` | 备份本机全部凭据 + 整份 `servers.yaml` 到 1Password（**绝不改写 `servers.yaml`**；清单并集合并、写入后回读校验；有 `op://` 残留时拒绝，需先 `restore`；默认 4 台并发，`-p` 可调；WSL 驱动 Windows `op.exe` 时默认 2 台） |
+| `ops 1p restore [server...] [--vault <v>] [--yes] [--force] [--prefer-local\|--prefer-remote]` | 从 1Password 还原：无参=先还原清单再还原全部凭据（新机器一条命令起步），具名=只还原这几台的凭据；密码明文写回需确认，私钥覆盖按公钥比对 |
+| `ops 1p status [--filter <key=val>] [--remote]` | 查看每台服务器的凭据当前存放在哪里（默认**离线**、不弹授权框；`--remote` 额外查询备份） |
+| `ops 1p config [--vault <v>] [--account <a>] [--unset] [--offline]` | 查看/记住默认保险库与账号（`--offline` 不联系 CLI）；之后 `backup`/`restore` 无需重复传参 |
 | `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
-| `ops sftp [server] [--app <app>] [--path <path>] [--cli] [--cleanup]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
+| `ops sftp [server] [--app <app>] [--path <path>] [--cli]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
 | `ops ps <server> [-a]` | 快速列出远端主机上的 Docker 容器看板 |
 | `ops logs <server> <container> [-f] [--tail <n>]` | 实时流式追踪远端 Docker 容器运行日志 |
 | `ops doctor` | 一键体检本地运行环境与外部依赖可用性（SSH/restic/1Password/SFTP 等） |
@@ -267,7 +264,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 * [跨端环境备份与无损还原指南 (WSL/1Password)](docs/tutorial/wsl_env_backup.md)
 * [容器备份与跨机无缝迁移实战指南](docs/tutorial/container_migration.md)
 * [日常服务器管理指南](docs/reference/server_ops.md)
-* [1Password 私钥托管指南](docs/reference/onepassword.md)
+* [1Password 备份与跨机同步指南](docs/reference/onepassword.md)
 * [业务资产模型指南](docs/reference/asset.md)
 * [备份管理指南](docs/reference/backup.md)
 * [还原管理指南](docs/reference/restore.md)
