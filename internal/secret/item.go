@@ -6,22 +6,13 @@ import (
 	"strings"
 )
 
-// SSHKeyItemLabel is the label OpsPulse gives the concealed field that holds a
-// managed server's private key.
-const SSHKeyItemLabel = "private key"
-
 // PasswordItemLabel is the 1Password built-in field label holding a password.
 const PasswordItemLabel = "password"
 
-// Field ids inside the 1Password item categories OpsPulse writes to.
+// Field ids inside the 1Password item categories OpsPulse reads from.
 const (
-	// sshKeyPrivateFieldID is the built-in "private key" field of a real
-	// 1Password SSH Key item. OpsPulse reads such items when a user points a
-	// key_path at one, but never writes them - see sshKeyManagedFieldID.
-	sshKeyPrivateFieldID = "private_key"
-
-	// sshKeyManagedFieldID is the custom concealed field OpsPulse creates on a
-	// Login item to hold a managed server's private key.
+	// sshKeyManagedFieldID is the custom concealed field OpsPulse used to create
+	// on a Login item to hold a managed server's private key.
 	//
 	// It exists because the 1Password CLI cannot write SSH Key items at all.
 	// Verified against op 2.34.1:
@@ -32,47 +23,69 @@ const (
 	//     not yet supported."
 	//   - `op item get <id> --format json` fails on the resulting empty item.
 	//
-	// A concealed field on a Login item is the only CLI-writable home for a
-	// private key, so the id deliberately differs from the built-in
+	// Nothing writes this field any more - credentials travel inside the
+	// per-machine backup item now - but restore still reads items an older
+	// OpsPulse created. The id deliberately differs from the built-in
 	// private_key: SSHKeyRefWithFormat uses that difference to decide whether an
 	// op:// reference wants the ssh-format=openssh parameter, which real SSHKEY
 	// fields require and a concealed text field rejects.
 	sshKeyManagedFieldID = "opspulse_private_key"
 
-	loginUsernameFieldID = "username"
-	loginPasswordFieldID = "password"
-
 	// inventoryNoteFieldID is the built-in notes field of a Secure Note, and
-	// the home of the servers.yaml backup.
+	// the home of the backup payload.
 	inventoryNoteFieldID = "notesPlain"
 )
 
-// InventoryItemCategory is the 1Password category of the inventory backup item.
+// InventoryItemCategory is the human-readable name of the 1Password category of
+// the inventory backup item.
 //
-// A Secure Note rather than a Login: the payload is a YAML document, not a
+// A Secure Note rather than a Login: the payload is a document, not a
 // credential, and the built-in notes field is the only CLI-writable home for
 // free text. Unlike a real SSH Key item (see sshKeyManagedFieldID), a Secure
-// Note round-trips byte for byte through the CLI - verified against op 2.34.1
+// Note round-trips byte for byte through the CLI - verified against op 2.39.0
 // for both `op item create` and `op item edit`, including a value with no
 // trailing newline, so the read-back comparison can be exact.
 const InventoryItemCategory = "Secure Note"
 
-// InventoryItemTitle is the deterministic title of the single item holding the
-// servers.yaml backup.
+// inventoryItemCategoryID is the category as the CLI's JSON documents spell it.
+const inventoryItemCategoryID = "SECURE_NOTE"
+
+// InventoryItemTitle is the title of the historical shared inventory item, and
+// the prefix of every per-machine title.
 //
-// There is deliberately one shared item rather than one per machine: the backup
-// is a union of every machine that has pushed, so a new machine can restore the
-// whole inventory from a single place.
+// It is still read, as the fallback for a vault that only holds the old format,
+// but it is no longer written: a shared item has to be merged on every backup,
+// which means reading it first, which means the backup could not be a single
+// write. See InventoryItemTitleFor.
 const InventoryItemTitle = "opspulse_inventory"
 
-// SSHKeyItemTitle returns the deterministic 1Password item title used to store a
-// managed server's SSH key.
+// InventoryItemTitleFor returns the title of one machine's backup item.
+//
+// One item per machine rather than one shared item: the payload is the whole
+// servers.yaml plus every private key this machine holds (~14KB), and 1Password
+// stores a single field of that size without complaint. Keeping it in one item
+// makes a backup one write plus one read-back check instead of a per-credential
+// round trip through the Desktop App.
+//
+// machine must already be sanitised; see cmd/opspulse's machineName.
+func InventoryItemTitleFor(machine string) string {
+	return InventoryItemTitle + "_" + machine
+}
+
+// IsInventoryItemTitle reports whether a vault item title belongs to an
+// inventory backup, of either the per-machine or the historical shared shape.
+func IsInventoryItemTitle(title string) bool {
+	return strings.HasPrefix(title, InventoryItemTitle)
+}
+
+// SSHKeyItemTitle returns the deterministic 1Password item title an older
+// OpsPulse stored a managed server's SSH key under.
 func SSHKeyItemTitle(serverName string) string {
 	return "opspulse_" + serverName + "_key"
 }
 
-// PasswordItemTitle returns the deterministic 1Password item title used to store
-// a managed server's password.
+// PasswordItemTitle returns the deterministic 1Password item title an older
+// OpsPulse stored a managed server's password under.
 //
 // It deliberately differs from SSHKeyItemTitle: a server that carries both a key
 // and a password would otherwise have its credentials competing for one item,
@@ -98,9 +111,9 @@ func BuildPasswordRef(vault, title string) string {
 }
 
 // BuildInventoryRef builds the op:// reference pointing at the body of the
-// inventory backup item.
-func BuildInventoryRef(vault string) string {
-	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, InventoryItemTitle, inventoryNoteFieldID)
+// inventory backup item with the given title.
+func BuildInventoryRef(vault, title string) string {
+	return fmt.Sprintf("%s%s/%s/%s", Prefix1P, vault, title, inventoryNoteFieldID)
 }
 
 // Parse1PRef splits an op://<vault>/<item>/<field> reference. The field part is
@@ -133,133 +146,37 @@ func ParseSSHKeyRef(ref string) (vault, item string, ok bool) {
 	return vault, item, ok
 }
 
-// FillSSHKeyItem writes a private key onto a Login item document.
+// BuildInventoryItem returns a Secure Note document holding payload, ready to be
+// piped into `op item create -` or `op item edit <title>`.
 //
-// doc may be either a fresh template (`op item template get Login`) for a create,
-// or the current item (`op item get <item> --format json`) for an update. Re-using
-// the item's own document on updates matters: `op item edit` consumes a whole
-// item, so uploading a bare template would drop every field the user added by
-// hand along with the item's identity.
+// The document is built here rather than fetched with `op item template get`
+// because every op call is a full round trip through the Desktop App (measured
+// at 3-9s, uncached on Windows), and spending as few of them as possible is the
+// entire point of the backup's design. The template's only contribution is an
+// empty notesPlain field, which this reproduces exactly. Verified against op
+// 2.39.0: create accepts it, and edit accepts it while updating the existing item
+// in place rather than creating a second one.
 //
-// The key lands in a custom concealed field (sshKeyManagedFieldID) instead of a
-// real SSH Key item's private_key, because the CLI cannot write those at all -
-// see that constant's comment. A fresh Login template carries no such field, so
-// one is appended; on updates the existing field is overwritten in place.
-func FillSSHKeyItem(doc []byte, title, privateKey string) ([]byte, error) {
-	if strings.TrimSpace(privateKey) == "" {
-		return nil, fmt.Errorf("refusing to write an empty private key into 1Password")
-	}
-
-	item, err := decodeItem(doc, "Login")
-	if err != nil {
-		return nil, err
-	}
-	prepareItem(item, title)
-
-	fields, _ := item["fields"].([]any)
-	if updated, found := setItemField(fields, sshKeyManagedFieldID, privateKey); found {
-		item["fields"] = updated
-		return encodeItem(item)
-	}
-
-	item["fields"] = append(fields, map[string]any{
-		"id":    sshKeyManagedFieldID,
-		"label": SSHKeyItemLabel,
-		"type":  "CONCEALED",
-		"value": privateKey,
-	})
-	return encodeItem(item)
-}
-
-// FillLoginItem writes a username and password onto a 1Password Login item
-// document, ready to be piped into `op item create` or `op item edit`.
-func FillLoginItem(doc []byte, title, username, password string) ([]byte, error) {
-	if strings.TrimSpace(password) == "" {
-		return nil, fmt.Errorf("refusing to write an empty password into 1Password")
-	}
-
-	item, err := decodeItem(doc, "Login")
-	if err != nil {
-		return nil, err
-	}
-	prepareItem(item, title)
-
-	fields, _ := item["fields"].([]any)
-	if strings.TrimSpace(username) != "" {
-		fields, _ = setItemField(fields, loginUsernameFieldID, username)
-	}
-	fields, found := setItemField(fields, loginPasswordFieldID, password)
-	if !found {
-		return nil, fmt.Errorf("the 1Password Login item has no %q field, so the password cannot be stored", loginPasswordFieldID)
-	}
-	item["fields"] = fields
-
-	return encodeItem(item)
-}
-
-// FillInventoryItem writes the servers.yaml backup onto a Secure Note document.
-//
-// doc may be either a fresh template (`op item template get "Secure Note"`) for a
-// create, or the current item (`op item get <id> --format json`) for an update,
-// matching FillSSHKeyItem.
-//
-// Unlike the key field, notesPlain is a built-in field of the Secure Note
-// template, so a missing one means the document is not what the caller assumed.
-// Appending it is deliberately not attempted: a field the template does not
-// define is exactly the shape that gets silently dropped on write.
-func FillInventoryItem(doc []byte, yamlText string) ([]byte, error) {
-	if strings.TrimSpace(yamlText) == "" {
+// The trade-off is that a field the user added to the backup item by hand is not
+// carried over on an update. The item is OpsPulse's own and the payload is
+// machine-generated, so there is nothing of the user's to lose.
+func BuildInventoryItem(title, payload string) ([]byte, error) {
+	if strings.TrimSpace(payload) == "" {
 		return nil, fmt.Errorf("refusing to write an empty inventory into 1Password")
 	}
-
-	item, err := decodeItem(doc, InventoryItemCategory)
-	if err != nil {
-		return nil, err
-	}
-	prepareItem(item, InventoryItemTitle)
-
-	fields, _ := item["fields"].([]any)
-	fields, found := setItemField(fields, inventoryNoteFieldID, yamlText)
-	if !found {
-		return nil, fmt.Errorf("the 1Password %s item has no %q field, so the inventory cannot be stored", InventoryItemCategory, inventoryNoteFieldID)
-	}
-	item["fields"] = fields
-
-	return encodeItem(item)
-}
-
-func decodeItem(doc []byte, category string) (map[string]any, error) {
-	var item map[string]any
-	if err := json.Unmarshal(doc, &item); err != nil {
-		return nil, fmt.Errorf("parse 1Password %s item: %w", category, err)
-	}
-	return item, nil
-}
-
-// prepareItem sets the fields common to both documents and drops the vault
-// placeholder: the vault is always chosen explicitly on the command line, so
-// leaving one in the payload only creates a way for the two to disagree.
-func prepareItem(item map[string]any, title string) {
-	item["title"] = title
-	delete(item, "vault")
-}
-
-// setItemField writes value onto the field with the given id. It reports whether
-// the field was present: the documents are produced by the CLI, so a missing
-// field means the document is not what the caller assumed, and silently
-// appending one could produce an item 1Password rejects or ignores.
-func setItemField(fields []any, id, value string) ([]any, bool) {
-	for _, raw := range fields {
-		field, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if fieldID, _ := field["id"].(string); fieldID == id {
-			field["value"] = value
-			return fields, true
-		}
-	}
-	return fields, false
+	return encodeItem(map[string]any{
+		"title":    title,
+		"category": inventoryItemCategoryID,
+		"fields": []any{
+			map[string]any{
+				"id":      inventoryNoteFieldID,
+				"type":    "STRING",
+				"label":   inventoryNoteFieldID,
+				"purpose": "NOTES",
+				"value":   payload,
+			},
+		},
+	})
 }
 
 func encodeItem(item map[string]any) ([]byte, error) {

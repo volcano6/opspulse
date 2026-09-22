@@ -102,33 +102,6 @@ func TestDescribeCredentialSources(t *testing.T) {
 	}
 }
 
-func TestAuthorizedKeyForPrefersPubFile(t *testing.T) {
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "opspulse_web")
-	if err := os.WriteFile(keyPath, []byte("not a real private key"), 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	want := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample opspulse:web"
-	if err := os.WriteFile(keyPath+".pub", []byte(want+"\nsecond line ignored\n"), 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	if got := authorizedKeyFor(keyPath, []byte("not a real private key")); got != want {
-		t.Errorf("authorizedKeyFor() = %q, want %q", got, want)
-	}
-}
-
-func TestAuthorizedKeyForReturnsEmptyForInvalidKey(t *testing.T) {
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "junk")
-
-	// No sibling .pub file and unparsable key material: must not panic, and must
-	// signal "unknown" with an empty string so the caller can omit the field.
-	if got := authorizedKeyFor(keyPath, []byte("definitely not a key")); got != "" {
-		t.Errorf("authorizedKeyFor() = %q, want an empty string", got)
-	}
-}
-
 func TestWritePublicKeyFileIgnoresInvalidMaterial(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "junk")
@@ -357,16 +330,15 @@ func TestOnePasswordCommandWiring(t *testing.T) {
 }
 
 func TestOnePasswordBackupCommandFlags(t *testing.T) {
-	for _, flag := range []string{"vault", "parallel", "prefer-local", "prefer-remote"} {
+	for _, flag := range []string{"vault"} {
 		if onePasswordBackupCmd.Flags().Lookup(flag) == nil {
 			t.Errorf("ops 1p backup should expose --%s", flag)
 		}
 	}
-	if onePasswordBackupCmd.Flags().ShorthandLookup("p") == nil {
-		t.Error("ops 1p backup should expose -p as a shorthand for --parallel")
-	}
-	// backup is deliberately unconditional: no selector, no skip list.
-	for _, flag := range []string{"all", "filter", "include-skipped", "delete-local", "inventory"} {
+	// backup is deliberately unconditional: no selector, no skip list, no
+	// concurrency knob (a machine's whole inventory goes up in one item), and
+	// no conflict flags (it merges nothing - only restore does).
+	for _, flag := range []string{"all", "filter", "include-skipped", "delete-local", "inventory", "parallel", "prefer-local", "prefer-remote"} {
 		if onePasswordBackupCmd.Flags().Lookup(flag) != nil {
 			t.Errorf("ops 1p backup should not expose --%s", flag)
 		}
@@ -474,7 +446,7 @@ func TestPlanRestore(t *testing.T) {
 
 	t.Run("a local key path is matched by item name", func(t *testing.T) {
 		srv := &server.Server{Name: "web", KeyPath: "~/.ssh/opspulse_web"}
-		plan := planRestore(srv, discovery)
+		plan := planRestore(srv, discovery, nil)
 
 		if want := "op://Personal/opspulse_web_key/opspulse_private_key"; plan.keyRef != want {
 			t.Errorf("keyRef = %q, want %q", plan.keyRef, want)
@@ -486,7 +458,7 @@ func TestPlanRestore(t *testing.T) {
 
 	t.Run("a legacy key reference is used verbatim", func(t *testing.T) {
 		srv := &server.Server{Name: "web", KeyPath: "op://Other/opspulse_web_key/opspulse_private_key"}
-		plan := planRestore(srv, discovery)
+		plan := planRestore(srv, discovery, nil)
 
 		if want := "op://Other/opspulse_web_key/opspulse_private_key"; plan.keyRef != want {
 			t.Errorf("keyRef = %q, want the servers.yaml reference as-is", want)
@@ -498,21 +470,21 @@ func TestPlanRestore(t *testing.T) {
 
 	t.Run("an empty key path is not restored", func(t *testing.T) {
 		srv := &server.Server{Name: "web"}
-		if plan := planRestore(srv, discovery); plan.keyRef != "" {
+		if plan := planRestore(srv, discovery, nil); plan.keyRef != "" {
 			t.Errorf("keyRef = %q, want none for a server on the default key", plan.keyRef)
 		}
 	})
 
 	t.Run("a plaintext password is left alone", func(t *testing.T) {
 		srv := &server.Server{Name: "web", Password: "plaintext"}
-		if plan := planRestore(srv, discovery); plan.passRef != "" {
+		if plan := planRestore(srv, discovery, nil); plan.passRef != "" {
 			t.Errorf("passRef = %q, want none: the local value is already the source of truth", plan.passRef)
 		}
 	})
 
 	t.Run("a missing password is restored from the vault", func(t *testing.T) {
 		srv := &server.Server{Name: "web"}
-		plan := planRestore(srv, discovery)
+		plan := planRestore(srv, discovery, nil)
 
 		if want := "op://Personal/opspulse_web_password/password"; plan.passRef != want {
 			t.Errorf("passRef = %q, want %q", plan.passRef, want)
@@ -524,7 +496,7 @@ func TestPlanRestore(t *testing.T) {
 
 	t.Run("a legacy password reference is used verbatim", func(t *testing.T) {
 		srv := &server.Server{Name: "web", Password: "op://Other/opspulse_web_password/password"}
-		plan := planRestore(srv, discovery)
+		plan := planRestore(srv, discovery, nil)
 
 		if want := "op://Other/opspulse_web_password/password"; plan.passRef != want {
 			t.Errorf("passRef = %q, want the servers.yaml reference as-is", want)
@@ -536,8 +508,55 @@ func TestPlanRestore(t *testing.T) {
 
 	t.Run("no discovery still restores legacy references", func(t *testing.T) {
 		srv := &server.Server{Name: "web", KeyPath: "op://Personal/opspulse_web_key/opspulse_private_key"}
-		if plan := planRestore(srv, nil); plan.keyRef == "" {
+		if plan := planRestore(srv, nil, nil); plan.keyRef == "" {
 			t.Error("an existing op:// reference should still be restored")
+		}
+	})
+
+	t.Run("the backup document is preferred over a per-server item", func(t *testing.T) {
+		srv := &server.Server{Name: "web", KeyPath: "~/.ssh/opspulse_web"}
+		creds := map[string]backupCredentials{
+			"web": {key: []byte("KEY MATERIAL"), password: "from-blob"},
+		}
+		plan := planRestore(srv, discovery, creds)
+
+		if string(plan.keyFromBlob) != "KEY MATERIAL" {
+			t.Errorf("keyFromBlob = %q, want the document's key", plan.keyFromBlob)
+		}
+		if plan.keyRef != "" {
+			t.Errorf("keyRef = %q, want none: the document already carries the key", plan.keyRef)
+		}
+		if plan.passFromBlob != "from-blob" {
+			t.Errorf("passFromBlob = %q, want the document's password", plan.passFromBlob)
+		}
+		if plan.passRef != "" {
+			t.Errorf("passRef = %q, want none: the document already carries the password", plan.passRef)
+		}
+	})
+
+	t.Run("a document without the key falls back to item discovery", func(t *testing.T) {
+		srv := &server.Server{Name: "web", KeyPath: "~/.ssh/opspulse_web"}
+		creds := map[string]backupCredentials{"web": {password: "from-blob"}}
+		plan := planRestore(srv, discovery, creds)
+
+		if len(plan.keyFromBlob) != 0 {
+			t.Errorf("keyFromBlob = %q, want none: the document has no key for this server", plan.keyFromBlob)
+		}
+		if want := "op://Personal/opspulse_web_key/opspulse_private_key"; plan.keyRef != want {
+			t.Errorf("keyRef = %q, want %q", plan.keyRef, want)
+		}
+	})
+
+	t.Run("a legacy reference outranks the backup document", func(t *testing.T) {
+		srv := &server.Server{Name: "web", KeyPath: "op://Other/opspulse_web_key/opspulse_private_key"}
+		creds := map[string]backupCredentials{"web": {key: []byte("KEY MATERIAL")}}
+		plan := planRestore(srv, discovery, creds)
+
+		if len(plan.keyFromBlob) != 0 {
+			t.Error("a legacy op:// reference must be honoured rather than replaced by the document")
+		}
+		if !plan.keyWasLegacy {
+			t.Error("the legacy reference must still be flagged as a migration")
 		}
 	})
 }
@@ -577,25 +596,6 @@ func TestReportUnmatchedVaultItems(t *testing.T) {
 	reportUnmatchedVaultItems(&out, nil, nil)
 	if out.Len() != 0 {
 		t.Errorf("with no discovery nothing should be printed, got %q", out.String())
-	}
-}
-
-// TestNormaliseKeyText pins the fallback comparison used when a key is in a
-// format crypto/ssh cannot parse. Line endings are the one difference that must
-// not count: a key that travelled through Windows comes back with CRLF, and
-// treating that as a mismatch would fail a restore that worked.
-func TestNormaliseKeyText(t *testing.T) {
-	unixForm := "-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----\n"
-	dosForm := "-----BEGIN KEY-----\r\nabc\r\ndef\r\n-----END KEY-----\r\n"
-
-	if normaliseKeyText(unixForm) != normaliseKeyText(dosForm) {
-		t.Errorf("CRLF must not count as a difference:\n%q\n%q", normaliseKeyText(unixForm), normaliseKeyText(dosForm))
-	}
-	if normaliseKeyText(unixForm) == normaliseKeyText("-----BEGIN KEY-----\nabc\nghi\n-----END KEY-----\n") {
-		t.Error("different key material must not normalise to the same text")
-	}
-	if got := normaliseKeyText("  spaced  \n"); got != "spaced" {
-		t.Errorf("normaliseKeyText() = %q, want surrounding whitespace dropped", got)
 	}
 }
 
@@ -736,9 +736,12 @@ func TestCountRestorePasswords(t *testing.T) {
 		{server: &server.Server{Name: "b"}},
 		{server: &server.Server{Name: "c"}, keyRef: "op://Private/opspulse_c_key/opspulse_private_key"},
 		{server: &server.Server{Name: "d"}, passRef: "op://Private/opspulse_d_password/password"},
+		// A password from the backup document lands in servers.yaml just as
+		// plaintext as one read from an item, so it must be counted too.
+		{server: &server.Server{Name: "e"}, passFromBlob: "hunter2"},
 	}
-	if got := countRestorePasswords(plans); got != 2 {
-		t.Errorf("countRestorePasswords() = %d, want 2", got)
+	if got := countRestorePasswords(plans); got != 3 {
+		t.Errorf("countRestorePasswords() = %d, want 3", got)
 	}
 	if got := countRestorePasswords(nil); got != 0 {
 		t.Errorf("countRestorePasswords(nil) = %d, want 0", got)
@@ -928,81 +931,4 @@ func TestReportRestoreOutcomes(t *testing.T) {
 			t.Errorf("no password was restored, so none should be announced:\n%s", got)
 		}
 	})
-}
-
-// TestBackupParallel covers the concurrency a batch runs at. The WSL branch is
-// the one that matters in practice: driving the Windows op.exe from WSL is
-// limited by the interop relay, which starts refusing spawns once enough
-// long-lived Windows processes are alive, so the default has to come down on
-// that path alone.
-func TestBackupParallel(t *testing.T) {
-	windowsInWSL := secret.CLI{Path: "/mnt/c/tools/op.exe", IsWindowsBinary: true}
-	linuxNative := secret.CLI{Path: "/usr/bin/op"}
-
-	// Every case is written so its answer does not depend on whether the host
-	// running the test is itself WSL: the Windows-binary cases name WSL through
-	// WSL_DISTRO_NAME, which platform.IsWSL consults first, and the Linux-binary
-	// cases never take the branch at all.
-	tests := []struct {
-		name      string
-		wsl       bool
-		requested int
-		cli       secret.CLI
-		servers   int
-		want      int
-	}{
-		{
-			name: "the default applies to a Linux CLI", requested: 0,
-			cli: linuxNative, servers: 13, want: defaultOnePasswordBackupParallel,
-		},
-		{
-			name: "the default is lowered for the Windows CLI under WSL", wsl: true,
-			requested: 0, cli: windowsInWSL, servers: 13, want: wslWindowsBackupParallel,
-		},
-		{
-			name: "an explicit -p is honoured even under WSL", wsl: true,
-			requested: 8, cli: windowsInWSL, servers: 13, want: 8,
-		},
-		{
-			name: "a Linux CLI under WSL keeps the default", wsl: true,
-			requested: 0, cli: linuxNative, servers: 13, want: defaultOnePasswordBackupParallel,
-		},
-		{
-			name: "the default never exceeds the server count", requested: 0,
-			cli: linuxNative, servers: 2, want: 2,
-		},
-		{
-			name: "an explicit -p never exceeds the server count", wsl: true,
-			requested: 9, cli: windowsInWSL, servers: 3, want: 3,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.wsl {
-				t.Setenv("WSL_DISTRO_NAME", "Ubuntu")
-			} else {
-				t.Setenv("WSL_DISTRO_NAME", "")
-			}
-			if got := backupParallel(tt.requested, tt.cli, tt.servers); got != tt.want {
-				t.Errorf("backupParallel(%d, %s, %d) = %d, want %d",
-					tt.requested, tt.cli.Path, tt.servers, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestBackupParallelFlagLeavesTheDefaultUnset guards a regression that made the
-// WSL reduction dead code. The -p flag used to default to 4, which is
-// indistinguishable from a user who typed -p 4, so backupParallel saw a
-// positive request and never applied the lower WSL default. The flag must
-// therefore register 0 and let backupParallel own the choice.
-func TestBackupParallelFlagLeavesTheDefaultUnset(t *testing.T) {
-	flag := onePasswordBackupCmd.Flags().Lookup("parallel")
-	if flag == nil {
-		t.Fatal("the backup command has no -p/--parallel flag")
-	}
-	if flag.DefValue != "0" {
-		t.Fatalf("-p default = %q, want \"0\": a non-zero default pre-empts backupParallel and disables the WSL reduction",
-			flag.DefValue)
-	}
 }

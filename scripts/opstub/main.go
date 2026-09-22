@@ -170,15 +170,35 @@ func handleItem(args []string, stdin []byte) {
 
 	case "create":
 		// item create --vault V -
+		// A create for a title that already exists is refused here, although
+		// the real CLI would silently make a second item with the same name.
+		// OpsPulse is written to edit first for exactly that reason, so a
+		// regression that swaps the order is a duplicate item in a real vault -
+		// and, in this harness, a loud failure instead of a silent one.
+		title := documentTitle(stdin)
+		if itemExists(title) {
+			fatalf("item %q already exists; the real CLI would have created a duplicate, so OpsPulse must try `item edit` first", title)
+		}
 		assertItemDocument(stdin, "create")
 		storeNoteDocument(stdin)
 		writeJSON(map[string]string{"id": "item-created"})
 
 	case "edit":
-		// item edit <id> --vault V  (payload arrives on stdin)
+		// item edit <id|title> --vault V  (payload arrives on stdin)
+		// The target is a title for the backup document, which is what lets a
+		// backup update an item without listing the vault first. A missing item
+		// must fail with the message the real CLI uses, because that text is the
+		// only signal OpsPulse has for "this is a first backup, create it".
+		target := ""
+		if len(args) > 1 {
+			target = args[1]
+		}
+		if !itemExists(target) {
+			fatalf("unable to process line 1: could not find item to edit")
+		}
 		assertItemDocument(stdin, "edit")
 		storeNoteDocument(stdin)
-		writeJSON(map[string]string{"id": "item-existing"})
+		writeJSON(map[string]string{"id": "item-" + target})
 
 	default:
 		fatalf("stub: unsupported item subcommand %q", args[0])
@@ -212,6 +232,40 @@ func handleRead(args []string) {
 		fatalf("stub: read key: %v", err)
 	}
 	fmt.Print(string(key))
+}
+
+// itemExists reports whether STUB_OP_EXISTING names this item, accepting either
+// the title or the synthetic id `item list` hands out for it.
+//
+// STUB_OP_EXISTING is the harness's whole model of the vault's contents: it is
+// what `item list` returns, and therefore also what decides whether an `item
+// edit` finds anything. Keeping the two on one source is what lets a single
+// variable drive both "the backup document is already there" and "it is not".
+func itemExists(idOrTitle string) bool {
+	if idOrTitle == "" {
+		return false
+	}
+	for _, title := range strings.Split(os.Getenv("STUB_OP_EXISTING"), ",") {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		if title == idOrTitle || "item-"+title == idOrTitle {
+			return true
+		}
+	}
+	return false
+}
+
+// documentTitle reads the title out of an item document on stdin, for the
+// existence check that has to happen before the document is validated.
+func documentTitle(stdin []byte) string {
+	var doc map[string]any
+	if err := json.Unmarshal(stdin, &doc); err != nil {
+		return ""
+	}
+	title, _ := doc["title"].(string)
+	return title
 }
 
 // assertItemDocument fails the command when no usable item JSON arrived on

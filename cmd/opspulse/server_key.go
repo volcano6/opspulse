@@ -122,16 +122,44 @@ func setupKeyPath(serverName string) (storedPath, expandedPath string, err error
 	if err != nil {
 		return "", "", fmt.Errorf("resolve home directory: %w", err)
 	}
-	var name strings.Builder
-	for _, r := range serverName {
+	name := sanitiseName(serverName)
+	storedPath = "~/.ssh/opspulse_" + name
+	return storedPath, filepath.Join(home, ".ssh", "opspulse_"+name), nil
+}
+
+// sanitiseName reduces a name to the characters that are safe in a filename and
+// in a 1Password item title. Everything else becomes an underscore rather than
+// being dropped, so two different names cannot collapse into the same one.
+func sanitiseName(name string) string {
+	var out strings.Builder
+	for _, r := range name {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '.' {
-			name.WriteRune(r)
+			out.WriteRune(r)
 		} else {
-			name.WriteByte('_')
+			out.WriteByte('_')
 		}
 	}
-	storedPath = "~/.ssh/opspulse_" + name.String()
-	return storedPath, filepath.Join(home, ".ssh", "opspulse_"+name.String()), nil
+	return out.String()
+}
+
+// machineName identifies this machine in the vault, as the suffix of its backup
+// item's title.
+//
+// The hostname is the only stable thing a machine knows about itself, and it is
+// sanitised because it ends up in an item title and in every error message about
+// the backup. A machine that cannot report a hostname still has to be able to
+// back up, so the empty case gets a name rather than an error - the worst outcome
+// is an item titled opspulse_inventory_unknown, which is still restorable.
+func machineName() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = ""
+	}
+	name := sanitiseName(strings.TrimSpace(host))
+	if name == "" {
+		return "unknown"
+	}
+	return name
 }
 
 func ensureSSHKeyPair(privateKeyPath, serverName string) error {
