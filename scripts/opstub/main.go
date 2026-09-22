@@ -1,7 +1,7 @@
 // Command opstub is a stand-in for the 1Password CLI. It exists so that the
-// `ops 1p push` / `ops 1p pull` paths can be exercised end to end without a real
-// 1Password account and without interactive authorisation: the real `op` needs a
-// Desktop App approval that a non-interactive harness can never satisfy.
+// `ops 1p backup` / `ops 1p restore` paths can be exercised end to end without a
+// real 1Password account and without interactive authorisation: the real `op`
+// needs a Desktop App approval that a non-interactive harness can never satisfy.
 //
 // It is a local verification fixture, not part of the shipped product, and it is
 // created and deleted by the verification run.
@@ -140,7 +140,7 @@ func handleItem(args []string, stdin []byte) {
 	case "list":
 		// item list --vault V --format json
 		// STUB_OP_EXISTING is a comma-separated list of titles, so a single run
-		// can exercise both the update path and --from-vault discovery.
+		// can exercise both the update path and restore's item-name discovery.
 		var items []map[string]string
 		for _, title := range strings.Split(os.Getenv("STUB_OP_EXISTING"), ",") {
 			if title = strings.TrimSpace(title); title == "" {
@@ -200,7 +200,7 @@ func handleRead(args []string) {
 		return
 	}
 
-	// A key reference: serve a real key so the pull path can validate it.
+	// A key reference: serve a real key so the restore path can validate it.
 	// STUB_OP_READ_KEY overrides what reads return, which is how the harness
 	// simulates a write that silently stored something else.
 	keyPath := envOr("STUB_OP_READ_KEY", os.Getenv("STUB_OP_KEY"))

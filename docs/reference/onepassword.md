@@ -1,7 +1,20 @@
-# 1Password 私钥托管指南
+# 1Password 备份与跨机同步指南
 
-OpsPulse 可以把 SSH 私钥托管到 1Password，本地只在 `servers.yaml` 里保留一条 `op://` 引用。
-连接时按需调用 1Password CLI 取回私钥，用完即弃，私钥不必长期留在磁盘上。
+在 OpsPulse 里，**1Password 是备份与跨机器同步的目标，不是运行时依赖**。
+
+凭据平时就放在本地磁盘：`servers.yaml` 里存私钥路径或明文密码，`ops ssh` / `ops exec` /
+`ops cp` 直接读取，**不与 1Password 发生任何交互**。这正是这些命令不会弹授权框的原因——
+普通连接全程不碰 1Password，哪怕它没解锁、没安装、甚至已经卸载。
+
+1Password 只在两条命令里被触碰：
+
+```bash
+ops 1p backup     # 把本机凭据与整份 servers.yaml 上传到 1Password
+ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
+```
+
+> ⚠️ 如果你在 `servers.yaml` 里看到 `op://` 引用，说明那是旧版本留下的残留。
+> 现在的运行时**不会再解析它**，`ops ssh` 会直接报错并让你跑 `ops 1p restore` 迁移到本地凭据。
 
 ## 前提
 
@@ -23,179 +36,103 @@ OpsPulse 可以把 SSH 私钥托管到 1Password，本地只在 `servers.yaml` �
 如果确实想用 Linux 版 `op`，则必须用 `op account add` 登录，或配置 Service Account Token
 （`OP_SERVICE_ACCOUNT_TOKEN`），此时不会有桌面端生物识别解锁。
 
-## 命令
+## 命令速览
 
 ```bash
-ops 1p status                      # 先看每台服务器的私钥现在放在哪儿
-ops 1p push web vps-01             # 推送指定服务器
-ops 1p push --all                  # 推送所有使用本地私钥的服务器（等价于 --filter all）
-ops 1p push --filter env=prod      # 按 label / tag / 服务器名筛选
-ops 1p push web --delete-local     # 推送成功后顺带删掉本地托管副本
-ops 1p pull web                    # 取回本地，写回 ~/.ssh/opspulse_web
-ops 1p pull web db-01              # 一次取回多台
-ops 1p pull --all                  # 取回全部（脱困通道，见下节）
-ops 1p pull --all --yes            # 同上，跳过明文密码确认
-ops 1p pull --all --from-vault     # 按条目名从保险库发现凭据，只改绑引用、不落盘
-ops 1p push --inventory            # 把整份 servers.yaml 备份进一个共享条目（新机器初始化用）
-ops 1p pull --inventory            # 从该条目还原整份清单，与本机已有的合并
-ops 1p config                      # 查看当前生效的账号/保险库，并列出可选项
-ops 1p config --vault Employee     # 记住默认保险库，以后不用再传 --vault
-ops 1p config --unset              # 忘掉记住的默认值
+ops 1p backup                     # 备份本机全部凭据 + 整份 servers.yaml
+ops 1p backup --vault Private     # 指定保险库
+ops 1p backup --prefer-remote     # 清单合并冲突时，以备份为准
+ops 1p backup -p 8                # 并发备份 8 台（默认 4；WSL 驱动 op.exe 时默认 2）
+ops 1p restore                    # 还原清单与全部凭据（新机器一条命令起步）
+ops 1p restore web db-01          # 只还原这几台服务器的凭据（不动 servers.yaml）
+ops 1p restore --yes              # 无人值守（跳过明文密码确认）
+ops 1p restore --force            # 本地已有另一把私钥时强制覆盖
+ops 1p status                     # 看每台服务器的凭据现在放在哪儿（离线）
+ops 1p status --remote            # 额外查询保险库里哪些服务器有备份（需授权）
+ops 1p config                     # 查看当前生效的账号/保险库，并列出可选项
+ops 1p config --vault Employee    # 记住默认保险库，以后不用再传 --vault
+ops 1p config --offline           # 只读写本地记忆的默认值，不联系 1Password
+ops 1p config --unset             # 忘掉记住的默认值
 ```
 
-### 选择器：精确名、`--filter`、`--all`
-
-| 写法 | 语义 |
-|------|------|
-| `ops 1p push web` | 精确服务器名，**不受** `skip_batch` 限制（指名即指令） |
-| `ops 1p push --filter env=prod` | 批量筛选（label `key=val`、label 名/值、tag、服务器名），走批量语义 |
-| `ops 1p push --all` | 等价于 `--filter all`，走批量语义 |
-
-批量语义 = 先按 filter 筛选，再跳过带 `skip_batch` 的服务器（除非给 `--include-skipped`）。
-两种写法**不能混用**：`ops 1p push web --filter env=prod` 会直接报错，`--all` 配一个非 `all`
-的 `--filter` 同样报错——静默让其中一个生效，等于targeting了另一组服务器。
-
-`push` 与 `pull` 都遵循同一套规则。
-
-### 从 1Password 撤离（脱困通道）
-
-不再续费 1Password、或者要把凭据收回本地时，一条命令就能整体脱离：
+## 备份：`ops 1p backup`
 
 ```bash
-ops 1p pull --all
+ops 1p backup
 ```
 
-它会把每台服务器托管在 1Password 里的凭据**完整**还原：私钥写回 `~/.ssh/opspulse_<server>`，
-密码写回 `servers.yaml`。一个条目同时有私钥和密码时（`ops server setup-key` 会留下这种状态），
-两者都会被取回——只取一个会留下一条永远解析不了的 `op://` 引用。
+它做两件事：
 
-密码只能以明文形式回到 `servers.yaml`，所以只要本次拉取涉及密码，OpsPulse 会先要求确认：
+1. 把**每台有本地私钥文件或明文密码**的服务器上传到 1Password；
+2. 把**整份 `servers.yaml`** 存进共享条目 `opspulse_inventory`。
 
-```
-⚠️  Warning: pulling will write 2 plaintext password(s) into servers.yaml.
-Are you sure you want to proceed? [y/N]:
-```
+几个关键性质：
 
-- `--yes`（`-y`）跳过确认，适合脚本；
-- 非交互环境（管道、CI）**不给 `--yes` 就直接拒绝退出**，不会挂住，也不会偷偷落盘；
-- 结束后会再汇总一次"写入了 N 条明文密码"，提醒你用完删除。
+- **绝不改写 `servers.yaml`。** 本地磁盘始终是唯一真相源，所以备份**不会**改变
+  `ops ssh` 的连接方式，也**不会**把一台本来能连的服务器变成依赖 1Password 解锁的服务器。
+  这是与旧版 `ops 1p push` 最根本的区别。
+- **无条件全量。** 没有服务器选择、没有 `skip_batch` 跳过列表——要么全备份，要么不备份。
+- **并发上传，但有上界。** 默认 4 台同时上传，`-p/--parallel` 可调。多台同时进行时，进度行会
+  **交错打印**（每台一开始就打出 `⬆️` 行），不会等整批跑完再一起吐——所以看到的先后顺序
+  不代表完成顺序。中途若 1Password 被锁，只有那台失败，整批继续，最后汇总到 `failed` 列表。
+- **WSL 下默认降到 2 台。** 当 OpsPulse 驱动的是 Windows 版 `op.exe` 时，瓶颈不是桌面端，
+  而是 WSL 的 interop 中继：**同时存活的长命 Windows 进程一多，中继就开始拒绝新进程**，
+  报 `<3>WSL ... ERROR: UtilAcceptVsock:273: accept4 failed 110`（errno 110 = ETIMEDOUT，
+  固定 10 秒 accept 窗口后放弃）。实测 2 个存活进程时干净，4 个起开始间歇失败，而 4 路并发
+  恰好落在失败区——原先会**整台丢失**。所以这条路径的默认值单独降为 2；显式 `-p` 仍然优先。
+  另外 `op` 调用本身也带重试：中继拒绝属于「进程根本没起来」，没有副作用，重试安全。
+- **整批只列一次保险库。** 所有服务器共享一份「标题 → 条目 ID」索引，`op item list` 从
+  「每台一次」降到「整批一次」。这在 Windows 上尤其值钱：`op.exe` **没有缓存**
+  （`op --help` 原文：Caching is not available on Windows），每次调用都是一次桌面端授权往返
+  （实测 10~102s）。**索引砍掉的是调用次数，并发摊掉的是每次的耗时**——两者解决的是不同问题。
+- **遇到 `op://` 残留直接拒绝。** 如果 `servers.yaml` 里还有服务器持有 `op://` 引用，
+  `backup` 会在**触碰 1Password 之前**就报错退出：
 
-### pull 的真实语义
+  ```
+  servers.yaml still holds 'op://' references for 1 server(s): web
 
-`pull` 不是"取回一份副本"，而是**一次性撤离 / 解除托管**：它会**改写 `servers.yaml`**，
-把 `key_path` / `password` 从 `op://` 引用换成具体的本地值。因此：
+  run 'ops 1p restore' to migrate them to local credentials, then back up again
+  ```
 
-- **pull 之后不能再 pull**——那些字段已经不是 `op://` 引用了，第二次跑会被跳过。
-  想重新托管就再 `ops 1p push` 一次。
-- 私钥落盘路径固定是 `~/.ssh/opspulse_<server>`（0600），**不是**当初的原始路径，
-  旁边会派生一个 `.pub`。
-- 1Password 里的条目**原样保留**，所以这个过程是可逆的、不会误删任何东西。
-- 私钥覆盖判断按**公钥**比对，不是按字节。1Password 取回时会把密钥规范化
-  （例如以传统 PEM 上传的 RSA 密钥会以 OpenSSH 格式返回），按字节比会误判成冲突，
-  让人白白去加 `--force`。只有本地那把确实是**另一把**密钥时才会拦下来。
+  否则上传上去的就是一条陈旧的引用，备份本身就不可信了。先 `ops 1p restore` 迁移，再备份。
 
-几个细节：
+条目命名是确定性的：
 
-| 参数 | 作用 |
-|------|------|
-| `--all` | 拉取全部服务器；默认跳过带 `skip_batch` 的服务器并列出它们 |
-| `--filter <k=v>` | 按 label / tag / 服务器名筛选，与 `--all` 同属批量语义 |
-| `--include-skipped` | 配合 `--all` / `--filter`，把 `skip_batch` 的服务器也一起拉 |
-| `--force` | 本地已有**另一把**私钥时强制覆盖 |
-| `--yes` / `-y` | 跳过明文密码确认 |
-| `--from-vault` | 不按 `servers.yaml` 的引用找，而是按条目名去保险库发现凭据（见下节） |
-| `--materialize` | 配合 `--from-vault`：落盘成完整本地副本；不给则只改绑引用 |
-| `--vault <v>` | 配合 `--from-vault`：指定去哪个库找 |
+| 内容 | 条目类型 | 标题 | 字段 |
+|------|----------|------|------|
+| 私钥 | Login | `opspulse_<server>_key` | 自定义 CONCEALED 字段 `opspulse_private_key` |
+| 密码 | Login | `opspulse_<server>_password` | 内置 `password` 字段 |
+| 服务器清单 | Secure Note | `opspulse_inventory` | 内置正文 `notesPlain` |
 
-单台失败（1Password 不可达、条目被删）不会中断整批，收尾会打印
-`N restored, M adopted, K skipped, B blocked, F failed`，只要有失败或阻塞就以非 0 退出。
+已经存在同名条目时走更新，不会重复创建。
 
-### 跨机器取回凭据：`--from-vault`
+### 清单备份是并集，不是覆盖
 
-**`servers.yaml` 是机器本地文件，不会跨机同步。** 所以在 A 机 `push` 之后，B 机上的同名
-服务器仍然指向本地 `key_path`——此时在 B 机直接 `ops 1p pull --all` 会得到
-`0 restored, N skipped`，全部提示 `no credential is managed in 1Password`。
-
-这不是数据损坏，但"1Password 是中枢、任意机器都能取回"是很自然的预期。因此 `pull` 提供了
-`--from-vault`：不去看 `servers.yaml` 里的引用，而是**按 OpsPulse 的确定性条目名**去保险库里找。
-
-```bash
-ops 1p pull --all --from-vault               # 只改绑引用，不落盘（推荐）
-ops 1p pull --all --from-vault --materialize # 完整落盘（不再续期 1Password 时用）
-```
-
-两种模式的区别：
-
-| 模式 | 行为 | 适用场景 |
-|------|------|----------|
-| **默认（不落盘）** | 把 `key_path` / `password` 写成 `op://` 引用，**不写任何本地文件、不写明文密码**。`ops ssh` 连接时按需 materialize，连接照常可用。 | 日常：1Password 仍是唯一真相源，凭据不散落到磁盘 |
-| **`--materialize`** | 私钥写 `~/.ssh/opspulse_<server>`（0600）+ `.pub`，密码以明文写回 `servers.yaml`（触发确认门）。 | 不再续期 1Password，要把凭据完整收回本地 |
-
-> ⚠️ 默认模式会把 `servers.yaml` 从本地路径**改成 `op://` 引用**：如果这台机器的 1Password
-> 不可用，它就**连不上了**。要离线也能用，请加 `--materialize`。
-
-两种模式都会先**校验凭据确实可用**（私钥走 `ResolveSSHKey` + 私钥内容校验，密码走非空校验），
-全部通过才改写 `servers.yaml`，避免半应用状态把一台本来能连的服务器改坏。
-
-`--from-vault` 只处理**本地已存在的服务器**：保险库里多出来的条目不会自动变成服务器
-（条目里没有 host / user，凭空造不出来），结束时只会提示「有 N 个 `opspulse_*` 条目没有
-匹配到本地服务器」。
-
-### 新机器初始化：清单备份 `--inventory`
-
-`--from-vault` 解决的是"服务器已经在 `servers.yaml` 里，只是凭据不在本机"。
-但一台**全新机器**上连 `servers.yaml` 都没有，`ops 1p pull --all` 什么也做不了——
-保险库里的凭据条目只带私钥/密码，**没有 host / user / port / jump_host / tags**，
-凭空反推不出一台可用的服务器。一台台 `ops server add` 又太麻烦。
-
-`--inventory` 把**整个 `servers.yaml`** 存进一个共享条目 `opspulse_inventory`
-（Secure Note 类型，正文放在内置的 `notesPlain` 字段里），新机器一条命令还原：
-
-```bash
-# A 机：备份（或刷新）整份清单
-ops 1p push --inventory
-
-# B 机：还原清单，再用 --from-vault 把凭据改成引用
-ops 1p pull --inventory
-ops 1p pull --all --from-vault
-```
-
-> 条目类型是 **Secure Note** 而不是 Login，这是实测选的：`notesPlain` 在
-> op 2.34.1 上写入和回读**逐字节一致**（多行 YAML、有无结尾换行都验过），
-> 而 SSHKEY 字段是 CLI 写不了的（见「设计上的几个关键点」）。
-> 写入后同样会**回读校验**，不一致就报错，不会留下一个"看起来成功"的备份。
-
-> ⚠️ 备份是 `servers.yaml` 的**逐字副本**，所以文件里如果还有**明文密码**
-> （还没 push 过的服务器），它也会被一起写进保险库条目，并且还原时**不会**
-> 触发 `pull` 那道明文确认门。想让备份里只有 `op://` 引用，就先
-> `ops 1p push --all` 把凭据托管掉，再 `push --inventory`。
-> 反过来看，明文进的是 1Password 的加密条目，安全性不比留在 0600 的
-> `servers.yaml` 里差——这里只是提醒你它确实会被复制过去。
-
-#### 两边都是并集，永远不删
-
-`push --inventory` 和 `pull --inventory` 都是**合并（并集）**，不是覆盖：
+`opspulse_inventory` 的合并**只增不减**：
 
 | 情况 | 结果 |
 |------|------|
-| 只有保险库有 | 加入（`push` 时加进备份，`pull` 时加进本机） |
+| 只有保险库有 | 加入备份 |
 | 只有本机有 | **保留**，绝不删除 |
 | 同名、清单字段全等 | 不动 |
 | 同名、清单字段有差异 | **冲突**，问你（见下） |
-| 同名、只有凭据字段不同 | 不算冲突：**`op://` 引用优先**于本地路径 |
+| 同名、只有凭据字段不同 | 不算冲突：凭据字段不参与冲突判定，本机已有的值保留 |
 
-所以公司电脑有 `vps1`、家里电脑有 `vps2`，两边先后 `push --inventory`，
-备份里最终是 `vps1 + vps2`，谁都不会丢。
+所以公司电脑有 `vps1`、家里电脑有 `vps2`，两边先后 `backup`，备份里最终是 `vps1 + vps2`，
+谁都不会丢。
 
-凭据字段（`key_path` / `password`）单独走一套规则，因为它们在托管机器上是 `op://`
-引用、在非托管机器上是本地路径——**同名服务器在两台机器上天然长得不一样**，
-按"值不同"判冲突会每次 push 都吵。规则是：
+凭据字段（`key_path` / `password`）单独走一套规则，且**永远不会**构成冲突：它们天然是
+机器本地的——这台机器存一个密钥文件路径，那台机器存一个明文密码——按"值不同"判冲突会
+每次备份都吵。规则是：
 
-- 只有一边是 `op://` → 用 `op://` 那边（可移植，新机器才用得上）；
-- 两边都是 `op://` 且指向不同条目 → **冲突**，问你；
-- 两边都是本地路径 → 保留原有的，不来回 churn。
+- 只有一边有值 → 用有值的那边；
+- 两边都有值且不同 → **保留本机的**，不来回 churn；
+- 两边都没有 → 都不写。
 
-#### 冲突：交互问，非交互拒绝
+注意即使清单字段冲突、你选了 `--prefer-remote`（主机定义听备份的），凭据字段**仍然保留
+本机的**：主机怎么连是一回事，本机用哪把密钥是另一回事。
+
+### 冲突：交互问，非交互拒绝
 
 交互环境下逐台打印字段级差异，再问一次：
 
@@ -209,11 +146,104 @@ ops 1p pull --all --from-vault
 非交互环境（管道、CI）**不会挂住**：直接报错并列出全部冲突，要求你显式表态：
 
 ```bash
-ops 1p push --inventory --prefer-local    # 本机赢
-ops 1p push --inventory --prefer-remote   # 备份赢
+ops 1p backup --prefer-local    # 本机赢
+ops 1p backup --prefer-remote   # 备份赢
 ```
 
-#### 怎么删除一台服务器（重要）
+`--prefer-local` / `--prefer-remote` 是**显式选择**，没有"默认本地赢"这回事——
+静默替你选一个，等于谎称另一个选项不存在。两者不能同时给。
+
+> `--prefer-local` / `--prefer-remote` 只在 `ops 1p backup` 与 `ops 1p restore` 上有效，
+> 且都作用于清单合并。凭据本身没有"冲突"一说。
+
+## 还原：`ops 1p restore`
+
+`restore` 是**唯一的脱困通道**：它把 1Password 里的凭据写回本地磁盘，让整台机器不再依赖
+1Password 解锁。
+
+### 无参数：整机还原（新机器起步）
+
+```bash
+ops 1p restore
+```
+
+顺序是固定的，且很重要：
+
+1. **先还原 `servers.yaml`**（从 `opspulse_inventory` 条目，与本机已有的并集合并）；
+2. **再还原每台服务器的凭据**：私钥写到 `~/.ssh/opspulse_<server>`，密码写进 `servers.yaml`。
+
+先清单、后凭据，是因为凭据要靠服务器名去匹配条目——没有清单就没有名字可匹配。
+一台全新机器装好 1Password CLI 后，这一条命令就够了。
+
+如果保险库里根本没有 `opspulse_inventory` 条目，不会报错退出，而是提示一句
+`No inventory backup in vault ...; restoring credentials for the servers already in servers.yaml.`
+然后继续用本机已有的 `servers.yaml` 还原凭据。
+
+### 具名参数：只还原这几台的凭据
+
+```bash
+ops 1p restore web db-01
+```
+
+只还原指定服务器的凭据，**不动 `servers.yaml`**。名字不存在于 `servers.yaml` 时是**报错**，
+而不是静默跳过——最常见的成因就是"清单还没还原就先还原凭据"，报错会直接告诉你先跑
+无参数的 `ops 1p restore`。
+
+### 明文密码确认
+
+密码只能以明文形式回到 `servers.yaml`，所以只要本次还原会写入密码，OpsPulse 会先要求确认：
+
+```
+⚠️  Warning: restoring will write 2 plaintext password(s) into servers.yaml.
+Are you sure you want to proceed? [y/N]:
+```
+
+- `--yes`（`-y`）跳过确认，适合脚本；
+- 非交互环境（管道、CI）**不给 `--yes` 就直接拒绝退出**，不会挂住，也不会偷偷落盘。
+
+确认发生在**批量开始之前**，所以拒绝不会留下一个"改了一半"的状态。
+
+### 私钥覆盖判断按公钥比对
+
+本地 `~/.ssh/opspulse_<server>` 已经躺着一把**不同的**密钥时，OpsPulse 不会替你覆盖，
+需要 `--force`。
+
+比对的是**公钥**而不是字节。1Password 取回时会把密钥规范化（例如以传统 PEM 上传的 RSA
+密钥会以 OpenSSH 格式返回），按字节比会把同一把密钥误判成冲突，让人白白去加 `--force`。
+
+### 遗留 `op://` 迁移（临时兼容路径）
+
+如果 `servers.yaml` 里某台服务器的 `key_path` / `password` 还是 `op://` 引用，
+`restore` 会把它当作"迁移"处理：
+
+- 引用按**原样**使用（它精确指向旧版推送时用的那个条目，按条目名反查反而可能漏掉非标准命名）；
+- 迁移完成后打印一行 `⚠️  Migrated N server(s) from 'op://' references to local credentials.`，
+  并顺手清理旧版本遗留在 `~/.ssh/opspulse-1p` 的临时私钥副本；
+- 如果 `ops` 守护进程（daemon）正在运行，会提示你重启它以加载新配置。
+
+> 这条兼容路径是临时的，会在未来的版本里移除。日常 `restore` 若没有迁移发生，
+> 就不会去碰那个历史临时目录——清理是**全量**的，绝不能误触发。
+
+### 结果汇总
+
+每台服务器都会打印一行明细，收尾再给一行汇总：
+
+```
+Restore finished: N restored, M skipped, K blocked, B failed.
+```
+
+- `restored`：确实有凭据落回本地；
+- `skipped`：本机已有可用凭据，无需改动；
+- `blocked`：需要人工决策才能继续（例如本地已有另一把密钥、又没给 `--force`）；
+- `failed`：1Password 不可达、条目被删等硬失败。
+
+只要有 `failed` 或 `blocked`，命令就以非 0 退出。单台失败不会中断整批。
+
+`restore` 结束后还会检查保险库里有没有 `opspulse_*` 条目**没有**匹配到本机的任何服务器，
+列出提示。它**不会**据此凭空创建服务器——条目里没有 host / user / port / tags，
+造不出一台可用的服务器。
+
+### 怎么删除一台服务器（重要）
 
 因为是并集，**备份里的服务器只能手工删**。顺序不能反：
 
@@ -221,40 +251,42 @@ ops 1p push --inventory --prefer-remote   # 备份赢
 2. 最后在 1Password 里手工编辑 `opspulse_inventory`，删掉那一段。
 
 > ⚠️ 只做第 2 步没用：只要还有任何一台机器的 `servers.yaml` 留着这台服务器，
-> 下一次 `push --inventory`（或自动刷新）就会把它加回备份。
+> 下一次 `ops 1p backup` 就会把它加回备份。
 
-#### 自动刷新：push 之后的副作用
+## `ops 1p status`：凭据现在放在哪儿
 
-任何一次**改动了 `servers.yaml`** 的 `ops 1p push`（例如 push 凭据把 `key_path` 改成
-`op://`）之后，如果 `opspulse_inventory` 条目**已经存在**，OpsPulse 会顺带把备份刷新一遍，
-打印一行 `🔄 Refreshed the inventory backup (N server(s)).`。
+```bash
+ops 1p status
+ops 1p status --filter env=prod
+ops 1p status --remote
+```
 
-- 条目**不存在时不会创建**——普通 push 不会在你背后凭空多出一个条目；
-- 自动刷新**绝不弹交互提示**。遇到冲突就只打印告警、不写入，让你手动跑
-  `ops 1p push --inventory` 去处理；
-- 它**不会让 push 失败**：这是顺手做的事，做不成只提示。
+**默认离线**：只读 `servers.yaml`，因此**从不联系 1Password、从不弹授权框**。
+查看"哪些服务器还需要迁移"这件事本身，不应该要求先解锁 1Password。
 
-> ⚠️ 因此**手工从保险库删掉的服务器可能被某次自动刷新加回**。真要删就按上面
-> 两步走，先清理所有机器的 `servers.yaml`。
+输出是一个表：
 
-#### `--inventory` 与其它参数互斥
+```
+NAME     KEY                          PASSWORD
+web      local file (~/.ssh/id_ed25519, managed)   -
+legacy   legacy 1password ref (Private/opspulse_legacy_key)   -
+```
 
-`--inventory` 是**整文件**操作，所以不能和"选一部分服务器"的参数混用：
+残留的 `op://` 引用会明确标注为 `legacy 1password ref (...)`，而不是"1password"——
+运行时已经拒绝它，它是一个**待修复的问题**，不是一种可用的配置。
 
-| 命令 | 不能搭配 |
-|------|----------|
-| `push --inventory` | 具名服务器、`--all`、`--filter` |
-| `pull --inventory` | 具名服务器、`--all`、`--filter`、`--from-vault`、`--materialize` |
-| `--prefer-local` / `--prefer-remote` | 必须配 `--inventory`（且两者不能同时给） |
+加 `--remote` 会额外查询保险库，把表换成 `LOCAL KEY` / `1P BACKUP` 两列，
+告诉你哪些服务器在 1Password 里有备份（这一步需要授权）。
 
-混用会直接报错而不是静默忽略——只合并一个子集，等于要么丢掉其余的服务器、
-要么谎称已经覆盖了它们，两种后果你都看不见。
+`status` 还会检查每个 `local file` 指向的密钥文件**是否真的在这台机器上**。缺失就点名
+告警，并**不再**打印"全部本地"的确认——否则那句绿字会被第一次连接失败当场推翻。
+（重装、改名、或者 `~/.ssh` 里一个手滑的 `rm` 都会造成这种状态。）
 
-`pull --inventory` 还原后会检查：有服务器指向**本机不存在的本地密钥文件**时给出提示
-（清单跨机器同步了，密钥文件没有），并告诉你可以用
-`ops 1p pull <name> --from-vault` 认领。
+如果 `~/.ssh/opspulse-1p` 里还有旧版本遗留的临时私钥，`status` 会列出来。这些是
+`op://` 时代的残留，`ops 1p restore` 会自动清理。`ops sftp --cleanup` 已废弃：
+仍然可用，但已从帮助里隐藏，将来会移除。
 
-### 不用每次都传 --vault / --account
+## `ops 1p config`：记住默认的保险库与账号
 
 OpsPulse 只在**真正有歧义**的时候才要求你选。取值优先级从强到弱：
 
@@ -265,54 +297,60 @@ OpsPulse 只在**真正有歧义**的时候才要求你选。取值优先级从�
 | 3 | `ops 1p config --vault` 记住的值 | `ops 1p config --account` 记住的值 |
 | 4 | 该账号下**唯一**可访问的保险库（自动选中） | `op` 自己的默认账号 |
 
-所以只有 `Personal` 一个库时，`ops 1p push --all` 直接就能跑，不需要任何参数。
+所以只有 `Personal` 一个库时，`ops 1p backup` 直接就能跑，不需要任何参数。
 如果账号下有多个库，才会报错并列出候选。
 
 `--vault` / `--account` 一旦显式传过，就会被记住（配置文件
 `<配置目录>/onepassword.yaml`，0600）：
 
 ```bash
-# 这个月用个人账号
 ops 1p config --vault Personal --account example.1password.com
-
-# 下个月个人账号到期，一条命令整体切到团队账号
 ops 1p config --vault Employee --account acme.1password.com
 ```
 
-切换后**连接时**解析 `op://` 也会跟着走同一个账号，不用改 shell profile。
-如果某次只想临时换一下，直接 `OP_ACCOUNT=xxx ops 1p push --all` 即可——
-环境变量优先于记住的值。
+`ops 1p config --offline` 只读写本地记忆的默认值，**完全不联系 1Password CLI**——
+在保险库暂时解不开锁、但又想查看或修改记住的默认值时用它。
 
 > 记住的保险库如果以后被删掉，命令会**告警并自动回退**到剩余可用的库，不会一直卡住；
 > 而显式传 `--vault` 传错名字是硬报错。
 
-`push` 会为每台服务器创建一个 **Login** 类型的条目，标题固定为 `opspulse_<服务器名>_key`，
-私钥放在一个自定义的 **CONCEALED** 字段里（字段 id `opspulse_private_key`，label `private key`）。
-密码同样是 Login 条目，标题 `opspulse_<服务器名>_password`，用内置 `password` 字段。
-已经存在同名条目时走更新，不会重复创建。
+## 已退役的 `push` / `pull`
 
-**写入后会立刻回读校验**：把引用读回来、算出公钥、与本地私钥比对；为空或不一致就报错，
-并且**不改写 `servers.yaml`**。这一步不是多余的——1Password CLI 会接受一次实际什么都没存进去的
-写入并返回成功（见下节），没有回读校验的话，一次"成功"的 push 会把一台本来能连的服务器改坏，
-而本地路径已经没了。
+旧版的 `ops 1p push` 与 `ops 1p pull` 已经**退役**。它们是隐藏命令，运行只会得到明确的
+迁移指引：
 
-## 托管之后发生了什么
+```
+$ ops 1p push --all
+Error: 'ops 1p push' has been retired; use 'ops 1p backup' instead
 
-`servers.yaml` 里的 `key_path` 会从本地路径变成 1Password 引用：
-
-```yaml
-servers:
-  - name: web
-    host: 10.0.0.8
-    user: root
-    key_path: op://Private/opspulse_web_key/opspulse_private_key
+$ ops 1p pull --all --materialize
+Error: 'ops 1p pull' has been retired; use 'ops 1p restore' instead
 ```
 
-之后所有走 SSH 的功能——`ops ssh`、`ops exec`、`ops server test`、`ops server info`、
-`ops doctor`、`ops backup`、`ops cp`——都会在连接时解析这条引用，本地不落盘。
+它们的旧参数（如 `--materialize`、`--delete-local`）仍然被注册为**隐藏参数**，
+所以 `ops 1p push --materialize` 会得到上面的重命名提示，而不是 Cobra 的
+`unknown flag` 报错。
 
-`ops 1p status` 与 `ops server list` 的 AUTH 列都会显示 `1password: <vault>/<item>`，
-所以一眼就能看出私钥到底在哪。
+为什么不能简单地把 `push` 当成 `backup` 的别名？因为 `push` 的语义是**改写 `servers.yaml`
+为 `op://` 引用**，而 `backup` 恰恰相反——它绝不改写 `servers.yaml`。两者不是同一个动作，
+悄悄转发等于在你背后改变了本机配置。
+
+## 仍然保留：`backups.yaml` 里的 `env: op://`
+
+一个**独立**的运行时特性：`backups.yaml` 的备份任务 `env:` 字段里可以使用 `op://` 协议，
+运行时按需调用 1Password 解析并注入环境变量（不落盘）：
+
+```yaml
+jobs:
+  - name: nightly-db-dump
+    server: db-01
+    env:
+      MYSQL_PWD: op://Private/mysql-prod/password
+```
+
+这与 SSH 凭据是两码事：SSH 凭据必须本地化（否则每次连接都弹授权框），
+而备份任务里的 `op://` 只在**该任务执行的那一刻**解析一次，属于可接受的运行时开销。
+`ops backup run` / `ops restore run` 都会经过同一条解析路径。
 
 ## 设计上的几个关键点
 
@@ -339,29 +377,75 @@ servers:
   内置正文是 CLI 可写的：op 2.34.1 上多行 YAML 写入/回读逐字节一致（含"末尾无换行"的情形）。
   条目名固定 `opspulse_inventory`，全机器共享一个——每台机器一个条目就又要引入"机器名"
   这一层身份，而服务器清单本来就该是同一份。
+- **写入后回读校验。** 1Password CLI 接受过一次实际什么都没存进去的写入并返回成功
+  （见上），所以 `backup` 写完会立刻把内容读回来比对；不一致就报错，
+  **不会留下一个"看起来成功"的备份**。一个悄悄出错的备份比没有备份更糟——
+  你只会在新机器上才发现，而那时已经无从回退。
 - **WSL 下不走 `cmd.exe` 传参。** 多行私钥经过 Windows 命令解释器会被转义破坏，
   所以 OpsPulse 只用 `cmd.exe` 定位 `op.exe`，实际执行直接调该可执行文件。
 - **共享私钥按服务器各存一份，不做去重。** 多台服务器用同一把私钥时（很常见，
   例如同一把 GCP 下发的 key），1Password 里就会有多个内容相同的条目——这是**预期行为**，
   不是 bug，不要手动去删。好处是命名完全由服务器名决定（`opspulse_<name>_key`），
   不需要引入"密钥实体"这一层抽象，`~/.ssh/` 下本来就每台一份副本。
-  代价是**轮换密钥后要把用到它的服务器都 push 一遍**（`ops 1p push --filter <tag>` 一次搞定）。
-
 
 ## 已知边界
 
 | 场景 | 行为 |
 |------|------|
-| `ops ssh` / `ops exec` 等 | 私钥在连接时解析，`ops ssh` 会写成 0600 临时文件，会话结束立即删除 |
-| GUI SFTP（`ops sftp --app winscp`） | GUI 客户端只认文件，私钥会落到 `~/.ssh/opspulse-1p/<server>`（0600）并保留 |
-| `ops export ssh-config` | 系统 `ssh` 读不了 `op://`，因此该主机不会写出 `IdentityFile`，只留注释指引 |
-| `ops 1p pull` | 私钥写回 `~/.ssh/opspulse_<server>`（0600）并**保留**；密码以**明文**写回 `servers.yaml`，需确认或 `--yes`。会改写 `servers.yaml` 从而解除托管，pull 之后不能再 pull |
-| `ops 1p pull --from-vault` | 默认**不落盘**，只把 `servers.yaml` 改绑为 `op://` 引用；加 `--materialize` 才落盘 |
-| `ops 1p push --inventory` | 整份 `servers.yaml` 写进共享条目 `opspulse_inventory`（Secure Note）；并集合并，写入后回读校验 |
-| `ops 1p pull --inventory` | 从 `opspulse_inventory` 还原整份清单，与本机已有的**并集**合并，绝不删除本机独有的服务器；会改写 `servers.yaml`（YAML 注释不保留） |
-| 普通 `ops 1p push` 之后 | 若 `opspulse_inventory` 已存在且 `servers.yaml` 被改动，会**自动刷新**备份；有冲突时只告警不写入 |
+| `ops ssh` / `ops exec` / `ops cp` | **完全不碰 1Password**，直接读本地 `servers.yaml`；残留的 `op://` 引用会快速失败并指向 `ops 1p restore` |
+| `ops 1p backup` | 上传全部本地凭据 + 整份 `servers.yaml`；**不改写 `servers.yaml`**；有 `op://` 残留时先报错拒绝 |
+| `ops 1p restore`（无参数） | 先还原清单、再还原全部凭据；密码以**明文**写回 `servers.yaml`（需确认或 `--yes`） |
+| `ops 1p restore <name>...` | 只还原指定服务器的凭据，不动 `servers.yaml`；名字不存在则报错 |
+| `ops 1p restore` 遇到遗留 `op://` | 原样使用该引用并迁移为本地凭据，顺带清理 `~/.ssh/opspulse-1p`；提示重启 daemon |
+| `ops 1p status` | **离线**，只读 `servers.yaml`，从不弹授权框 |
+| `ops 1p status --remote` | 额外查询保险库，需授权 |
+| `ops 1p config --offline` | 只读写本地记忆的默认值，不联系 CLI |
+| `ops 1p push` / `ops 1p pull` | 已退役（隐藏命令），运行只给出重命名指引 |
+| `ops export ssh-config` | 系统 `ssh` 读不了 `op://`；若某主机仍是引用，则不写 `IdentityFile`，只留注释指引 |
+| `backups.yaml` 的 `env: op://` | **仍然支持**：任务执行时按需解析注入，属独立的运行时特性 |
 
 ## 常见问题
+
+**`ops ssh` 报 `uses an 'op://' ... which is no longer supported at runtime`**
+说明 `servers.yaml` 里还有旧版本留下的 `op://` 引用。跑一次 `ops 1p restore`
+把它迁移成本地凭据即可（引用会原样从 1Password 取回并落盘）。
+
+**`ops 1p backup` 报 `servers.yaml still holds 'op://' references for N server(s)`**
+同上——备份会拒绝上传陈旧的引用。先 `ops 1p restore` 迁移，再 `ops 1p backup`。
+
+**全新机器上连 `servers.yaml` 都没有，怎么起步？**
+装好 1Password CLI 后直接 `ops 1p restore`：它会先还原整份清单，再还原全部凭据。
+前提是**已经有一台机器跑过 `ops 1p backup`**，否则它会提示没有清单备份、并改用本机
+（空的）`servers.yaml` 继续。详见「还原：`ops 1p restore`」。
+
+**`ops 1p restore` 报 "no inventory backup in vault ..."**
+这不是错误，只是一句提示：保险库里还没有 `opspulse_inventory` 条目，于是它退回到
+"用本机已有的 `servers.yaml` 还原凭据"。到一台已经有 `servers.yaml` 的机器上先跑
+`ops 1p backup` 即可建立备份条目。
+
+**`ops 1p backup` 报 "did not store the inventory verbatim"**
+写入后回读校验没通过：1Password 存进去的正文与刚写的不是同一份。
+这是 CLI 静默丢字段那一类故障的兜底（见「设计上的几个关键点」），
+此时备份**不可信**，命令以非 0 退出。排查：`ops 1p config` 看鉴权，
+确认 `opspulse_inventory` 确实是 OpsPulse 建的 Secure Note 条目；必要时删掉它重跑。
+
+**删了一台服务器，下次备份又回来了**
+这是并集语义的预期结果。正确顺序是先在**所有**还持有它的机器上
+`ops server remove <name>`，最后再手工编辑 `opspulse_inventory` 删掉那一段。
+详见「怎么删除一台服务器」。
+
+**`ops 1p restore` 之后某台服务器连不上，说密钥文件不存在**
+如果它不在本次还原的目标里（具名还原只处理你点名的服务器），就不会落盘。
+跑一次无参数的 `ops 1p restore` 即可覆盖全部服务器。
+
+**`--prefer-local` 报 "contradict each other"**
+这两个参数是互斥的显式选择，同时给会被拒绝：
+
+```
+Error: --prefer-local and --prefer-remote contradict each other; pick one
+```
+
+只给一个，或者两个都不给（交互环境下会逐台问你）。
 
 **OpsPulse 能用，但 shell 里的 `op item get` 报 `No accounts configured`**
 说明 shell 里的 `op` 和 OpsPulse 用的**不是同一个二进制**。WSL 下 PATH 上通常是 Linux 版
@@ -375,48 +459,22 @@ ops 1p config             # OpsPulse 实际驱动哪个，以及鉴权是否通�
 `ops 1p config` 会打印 OpsPulse 探测到的 CLI 路径、构建类型（Windows / Linux）以及是否处于
 WSL，并给出鉴权结论。用 `OPSPULSE_OP_PATH=/path/to/op.exe` 可以强制指定。
 
-**WSL 里报 `No accounts configured for use with 1Password CLI`**
-说明当前跑的是 Linux 版 `op`（哪怕桌面端已经勾了「与 1Password CLI 集成」）。
-Linux 版连不上 Windows 桌面端，按「前提」装 Windows 版即可；OpsPulse 会自动改用 `op.exe`。
-用 `OP_SERVICE_ACCOUNT_TOKEN` 或 `op account add` 也是一种出路，但没有生物识别解锁。
-
-**另一台机器 `ops 1p pull --all` 全是 `no credential is managed in 1Password`**
-`servers.yaml` 是机器本地文件，不跨机同步；A 机 push 只会改绑 A 机的配置。
-用 `ops 1p pull --all --from-vault` 按条目名从保险库发现凭据，详见
-「跨机器取回凭据」。
-
-**全新机器上连 `servers.yaml` 都没有，怎么起步？**
-先 `ops 1p pull --inventory` 还原整份清单（保险库里的 `opspulse_inventory` 条目），
-再 `ops 1p pull --all --from-vault` 把凭据改绑成 `op://` 引用。前提是**已经有一台机器
-跑过 `ops 1p push --inventory`**，否则会明确报错提示你先去备份。详见
-「新机器初始化：清单备份」。
-
-**`pull --inventory` 报 "no inventory backup in vault ..."**
-保险库里还没有 `opspulse_inventory` 条目。到一台已经有 `servers.yaml` 的机器上先跑
-`ops 1p push --inventory`。注意备份条目只会在 `push --inventory` 时创建，
-普通 `ops 1p push` 的自动刷新**不会**凭空建它。
-
-**`push --inventory` 报 "did not store the inventory verbatim"**
-写入后回读校验没通过：1Password 存进去的正文与刚写的不是同一份。
-这是 CLI 静默丢字段那一类故障的兜底（见「设计上的几个关键点」），
-此时备份**不可信**，命令以非 0 退出。排查：`ops 1p config` 看鉴权，
-确认 `opspulse_inventory` 确实是 OpsPulse 建的 Secure Note 条目；必要时删掉它重跑。
-
-**删了一台服务器，下次 push 又回来了**
-这是并集语义的预期结果。正确顺序是先在**所有**还持有它的机器上
-`ops server remove <name>`，最后再手工编辑 `opspulse_inventory` 删掉那一段。
-详见「怎么删除一台服务器」。
-
-**`pull --inventory` 之后某台服务器连不上，说密钥文件不存在**
-清单跨机器同步了，私钥文件没有——这是新机器的正常现象。用
-`ops 1p pull <name> --from-vault` 认领保险库里的凭据（加 `--materialize` 会同时落盘）。
-
-**`--prefer-local` 报 "only apply to --inventory"**
-这两个参数只对清单合并有意义（决定冲突时听谁的）。普通的凭据 push/pull 没有"冲突"
-这一说，所以不配 `--inventory` 时它们会被拒绝，而不是静默忽略。
-
 **报 "1Password CLI is installed but not authorised"**
 桌面端集成没打开，按上面「前提」的步骤开启；或改用 `op account add` 登录。
+这句提示只在 CLI 确实报出登录/鉴权类错误（`not signed in`、`No accounts configured`
+等）时才会出现。如果 CLI 报的是别的原因，看到的是下面那条。
+
+**报 "The 1Password CLI did not complete this call"**
+这条提示的意思是：CLI 这次没跑完，而它给出的原因**不指向登录问题**，所以去检查登录设置没用。
+
+最常见的成因是 1Password 桌面端弹了授权框却没人点：`op` 会一直等桌面端应答，等到超时为止。
+WSL 下这个等待超时就是 Windows/WSL 中继放弃，报 `UtilAcceptVsock: accept4 failed 110`
+（被 `timeout` 杀掉时则是 `exit status 124`）。中继这条消息有时落在 stderr 上，有时干脆不落，
+所以提示里不假定它一定说了什么。处理办法：打开 1Password 桌面端、把待处理的弹窗点掉、
+确认已解锁，再重跑。
+
+OpsPulse 特意区分这两类失败：只有 stderr 真的出现登录/鉴权字样时才提示去开桌面端集成。
+把"人离开了、没人点弹窗"误报成"去改集成开关"，会让人去修一个本来就没坏的东西。
 
 **报 "vault \"X\" was not found"**
 先跑 `ops 1p config` 看当前账号能访问哪些库。只有一个库时会自动选中；有多个时用
@@ -428,26 +486,10 @@ Linux 版连不上 Windows 桌面端，按「前提」装 Windows 版即可；Op
 在同样情况下也会这样报。解锁 1Password 桌面端、确认弹窗后重跑即可。
 注意 `op account list` 不需要授权，所以"能列出账号"不代表授权可用。
 
-**想退回本地私钥**
-`ops 1p pull <server>` 会把私钥写回 `~/.ssh/opspulse_<server>` 并重新绑定到本地路径，
-1Password 里的条目不会被删除。要整体脱离 1Password 用 `ops 1p pull --all`，见
-「从 1Password 撤离（脱困通道）」；跨机场景见「跨机器取回凭据」。
-
-**`pull` 说"no credential is managed in 1Password"**
-说明这台机器的 `servers.yaml` 里没有 `op://` 引用——凭据可能是在**另一台机器**上 push 的。
-用 `ops 1p pull --all --from-vault` 从保险库按条目名取回。
-
-**`push` 报 "could not read it back"**
-写入后回读校验没通过（条目为空、读不到、或读回来的公钥与本地私钥不一致）。
-`servers.yaml` **没有被改写**，服务器仍然指向原来的本地私钥，可以直接排查：
-确认 `ops 1p config` 里鉴权正常，以及该条目确实是 OpsPulse 建的 Login 条目。
-如果是迁移前遗留的旧 **SSH Key 空壳条目**（标题 `opspulse_<name>`，没有 `_key` 后缀），
-删掉它再 push 即可——OpsPulse 不会再写这种条目。
-
-**`pull` 说本地有一把不同的密钥**
+**`ops 1p restore` 说本地有一把不同的密钥**
 说明 `~/.ssh/opspulse_<server>` 里已经躺着**另一把**密钥，OpsPulse 不会替你覆盖它。
-确认那把密钥不再需要之后再跑 `ops 1p pull <server> --force`。
+确认那把密钥不再需要之后再跑 `ops 1p restore <server> --force`。
 
-**`pull` 报 "refusing to write ... without confirmation"**
+**`ops 1p restore` 报 "refusing to write ... without confirmation"**
 说明当前是非交互环境，OpsPulse 拒绝在没人确认的情况下把明文密码写进 `servers.yaml`。
 确认无误后加 `--yes` 即可。

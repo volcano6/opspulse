@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/platform"
 )
@@ -75,15 +76,123 @@ func (c CLI) Exec(ctx context.Context, args ...string) *exec.Cmd {
 	}
 	// #nosec G204 -- c.Path is a resolved executable path; args are built by callers, never interpolated from raw input
 	cmd := exec.CommandContext(ctx, c.Path, args...)
-	if len(c.Env) > 0 {
-		cmd.Env = append(os.Environ(), c.Env...)
+	if env := c.childEnv(); env != nil {
+		cmd.Env = env
 	}
 	return cmd
+}
+
+// wslInteropEnv is the variable WSL exports so that a Windows binary spawned
+// from a Linux process can find the Windows side.
+const wslInteropEnv = "WSL_INTEROP"
+
+// childEnv returns the environment for the spawned CLI, or nil to inherit the
+// parent's environment untouched.
+//
+// The only entry it ever removes is a WSL_INTEROP that names a socket no longer
+// on disk. WSL exports that variable pointing at the interop socket of the
+// session that started the process, so a process that outlives its session
+// (tmux, screen, a long-running shell, a `sudo` subshell) can keep a value
+// naming a socket nobody is listening on, and a Windows binary spawned through
+// a dead socket is the documented cause of the relay giving up with
+// "UtilAcceptVsock: accept4 failed 110".
+//
+// A live socket is left alone. On the WSL builds tested the value is only a
+// hint, and a wrong-but-present value is tolerated, so rewriting a working entry
+// would trade a good session for nothing.
+func (c CLI) childEnv() []string {
+	dropInterop := c.IsWindowsBinary && platform.IsWSL() && deadWSLInterop()
+	if len(c.Env) == 0 && !dropInterop {
+		return nil
+	}
+	base := os.Environ()
+	if dropInterop {
+		base = dropEnvEntry(base, wslInteropEnv)
+	}
+	return append(base, c.Env...)
+}
+
+// deadWSLInterop reports whether WSL_INTEROP names an interop socket that is
+// gone. A missing variable is not dead: there is nothing stale to drop.
+func deadWSLInterop() bool {
+	path := strings.TrimSpace(os.Getenv(wslInteropEnv))
+	if path == "" {
+		return false
+	}
+	// os.Stat, not platform.FileExists: the interop endpoint is a socket, and
+	// FileExists only accepts regular files. Stat also follows the symlink WSL
+	// uses for its first session, so a dangling link reads as dead.
+	_, err := os.Stat(path) // #nosec G304 -- the path comes from WSL itself, not from user input
+	return err != nil
+}
+
+// dropEnvEntry returns env without any assignment to key.
+func dropEnvEntry(env []string, key string) []string {
+	prefix := key + "="
+	kept := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	return kept
 }
 
 // Run executes the CLI and returns its stdout.
 func (c CLI) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return c.RunWithStdin(ctx, nil, args...)
+}
+
+// wslInteropRetryDelays are the pauses before re-spawning after the WSL interop
+// relay failed to start the Windows process. The first failure costs a full
+// 10s accept window, so by the time the retry runs the other invocations that
+// were crowding the relay have usually finished and the retry lands clean.
+var wslInteropRetryDelays = []time.Duration{250 * time.Millisecond, time.Second}
+
+// wslInteropFailureMarkers are the fragments the WSL interop relay prints when
+// it cannot hand a spawn across to Windows at all, as opposed to op running and
+// reporting a failure of its own.
+//
+// The relay gives up after a fixed accept window and reports errno 110
+// (ETIMEDOUT), so the signature is a 10s duration plus one of these strings.
+// The race is a function of how many long-lived Windows processes already sit
+// in the relay, not of what was asked for: measured from WSL, spawning op.exe
+// is clean with two such processes alive and starts timing out at four, which
+// is why `ops 1p backup`'s default concurrency is lowered on this path.
+//
+// A spawn that never reached Windows has done nothing, so repeating it cannot
+// double-apply a write. That is what makes a retry safe here, unlike retrying a
+// call that ran and failed.
+var wslInteropFailureMarkers = []string{
+	"UtilAcceptVsock",
+	"accept4 failed 110",
+}
+
+// WSLInteropFailure reports whether err is the WSL interop relay refusing to
+// start the process, rather than the process running and failing on its own.
+//
+// The markers are emitted by WSL's own interop init, so a match means the
+// Windows binary never started. It is deliberately narrow: a false positive
+// would re-run an invocation that had already taken effect.
+func WSLInteropFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range wslInteropFailureMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// retryableInteropFailure narrows WSLInteropFailure to the only CLI that can
+// hit it. No platform check is needed: these markers come from WSL's interop
+// init, so nothing else can produce them.
+func (c CLI) retryableInteropFailure(err error) bool {
+	return c.IsWindowsBinary && WSLInteropFailure(err)
 }
 
 // RunWithStdin executes the CLI, feeding stdin to the child process, and
@@ -100,10 +209,39 @@ func (c CLI) Run(ctx context.Context, args ...string) ([]byte, error) {
 //
 // A side benefit is that the private key never touches the disk on its way to
 // 1Password.
+//
+// A spawn the WSL interop relay refused is retried; see wslInteropFailureMarkers.
 func (c CLI) RunWithStdin(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	if !c.Available() {
 		return nil, ErrCLINotFound
 	}
+	out, err := c.runOnce(ctx, stdin, args...)
+	for attempt := 0; err != nil && attempt < len(wslInteropRetryDelays) && c.retryableInteropFailure(err); attempt++ {
+		if !waitForRetry(ctx, wslInteropRetryDelays[attempt]) {
+			break
+		}
+		out, err = c.runOnce(ctx, stdin, args...)
+	}
+	return out, err
+}
+
+// waitForRetry pauses for d, reporting false if ctx was cancelled first.
+func waitForRetry(ctx context.Context, d time.Duration) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// runOnce performs a single op invocation.
+func (c CLI) runOnce(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	cmd := c.Exec(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -119,40 +257,68 @@ func (c CLI) RunWithStdin(ctx context.Context, stdin []byte, args ...string) ([]
 		if platform.IsWSL() && (errors.Is(err, os.ErrPermission) || strings.Contains(err.Error(), "permission denied")) {
 			return nil, fmt.Errorf("1Password CLI at %s cannot be executed (permission denied).\n💡 Fix: Run 'sudo chmod +x %s' or change 'fmask=011' to 'fmask=000' in /etc/wsl.conf: %w", c.Path, c.Path, err)
 		}
+		if msg == "" {
+			// A silent failure is not a sign-in problem. `op` prints a reason
+			// whenever it refuses on its own, so an exit with no output at all
+			// means it never got to answer -- the shape of an approval prompt
+			// nobody responded to, or the WSL interop relay timing out while it
+			// waited. Say that, instead of letting the empty stderr render as
+			// "(stderr: )".
+			return stdout.Bytes(), fmt.Errorf("op %s: %w (no output)", strings.Join(args, " "), err)
+		}
 		return stdout.Bytes(), fmt.Errorf("op %s: %w (stderr: %s)", strings.Join(args, " "), err, msg)
 	}
 	return stdout.Bytes(), nil
 }
 
-// writeSecretTemp writes data to a freshly created 0600 file inside dir (the
-// system temp directory when dir is empty) and returns its path plus a cleanup
-// function.
-func writeSecretTemp(dir, pattern string, data []byte) (string, func(), error) {
-	f, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return "", func() {}, fmt.Errorf("create temporary file: %w", err)
-	}
-	name := f.Name()
-	cleanup := func() { _ = os.Remove(name) }
+// authFailureMarkers are the fragments `op` prints when it refuses to run
+// because no usable account is signed in. Matching is case-insensitive.
+//
+// The list is deliberately narrow, and a silent failure is absent on purpose:
+// see AuthFailure. Every entry is a wording the CLI is known to use, not a
+// guess at a pattern, because the cost of widening it is a confident wrong
+// answer rather than a missed one.
+var authFailureMarkers = []string{
+	// Nobody is signed in, in the several wordings the CLI uses.
+	"not signed in",
+	"not currently signed in",
+	"no accounts configured",
+	"no account configured",
+	// A session that existed and no longer does.
+	"session expired",
+	"session has expired",
+	"invalid access token",
+	// The Desktop App integration is off or unreachable, which is exactly what
+	// the Desktop App hint tells the user to enable.
+	"not authorised",
+	"not authorized",
+	"connect to the 1password desktop app",
+	"desktop app integration",
+	// A raw rejection from the API.
+	"unauthorized",
+	"unauthorised",
+}
 
-	// CreateTemp already uses 0600, but make the intent explicit: this file may
-	// hold a private key.
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("secure temporary file: %w", err)
+// AuthFailure reports whether err is the CLI refusing to run because nobody is
+// signed in, as opposed to any other reason a call can fail: a timeout, a locked
+// Desktop App, an item that does not exist, a vault the account cannot see.
+//
+// Callers use this to choose between two mutually exclusive remedies, so a false
+// positive costs more than a false negative. An unrecognised failure falls
+// through to the generic "the CLI did not answer" text, which still tells the
+// user to check the approval prompt -- and never tells someone who merely walked
+// away from a prompt to go re-check a setting that was already correct.
+func AuthFailure(err error) bool {
+	if err == nil {
+		return false
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		cleanup()
-		return "", func() {}, fmt.Errorf("write temporary file: %w", err)
+	msg := strings.ToLower(err.Error())
+	for _, marker := range authFailureMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
 	}
-	if err := f.Close(); err != nil {
-		cleanup()
-		return "", func() {}, fmt.Errorf("close temporary file: %w", err)
-	}
-
-	return name, cleanup, nil
+	return false
 }
 
 // Detect locates the 1Password CLI.

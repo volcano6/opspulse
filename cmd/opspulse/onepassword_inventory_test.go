@@ -11,117 +11,25 @@ import (
 	"github.com/volcano6/opspulse/internal/server"
 )
 
-func withInventoryPushFlags(t *testing.T, inventory, preferLocal, preferRemote bool, all bool, filter string) {
-	t.Helper()
-	prevInventory, prevLocal, prevRemote := onePasswordPushInventory, onePasswordPushPreferLocal, onePasswordPushPreferRemote
-	prevAll, prevFilter := onePasswordAll, onePasswordPushFilter
-	onePasswordPushInventory, onePasswordPushPreferLocal, onePasswordPushPreferRemote = inventory, preferLocal, preferRemote
-	onePasswordAll, onePasswordPushFilter = all, filter
-	t.Cleanup(func() {
-		onePasswordPushInventory, onePasswordPushPreferLocal, onePasswordPushPreferRemote = prevInventory, prevLocal, prevRemote
-		onePasswordAll, onePasswordPushFilter = prevAll, prevFilter
-	})
-}
-
-func withInventoryPullFlags(t *testing.T, inventory, preferLocal, preferRemote bool, all bool, filter string, fromVault, materialize bool) {
-	t.Helper()
-	prevInventory, prevLocal, prevRemote := onePasswordPullInventory, onePasswordPullPreferLocal, onePasswordPullPreferRemote
-	prevAll, prevFilter := onePasswordPullAll, onePasswordPullFilter
-	prevFromVault, prevMaterialize := onePasswordPullFromVault, onePasswordPullMaterialize
-	onePasswordPullInventory, onePasswordPullPreferLocal, onePasswordPullPreferRemote = inventory, preferLocal, preferRemote
-	onePasswordPullAll, onePasswordPullFilter = all, filter
-	onePasswordPullFromVault, onePasswordPullMaterialize = fromVault, materialize
-	t.Cleanup(func() {
-		onePasswordPullInventory, onePasswordPullPreferLocal, onePasswordPullPreferRemote = prevInventory, prevLocal, prevRemote
-		onePasswordPullAll, onePasswordPullFilter = prevAll, prevFilter
-		onePasswordPullFromVault, onePasswordPullMaterialize = prevFromVault, prevMaterialize
-	})
-}
-
-func TestValidateInventoryPushFlags(t *testing.T) {
-	tests := []struct {
-		name      string
-		inventory bool
-		args      []string
-		all       bool
-		filter    string
-		wantErr   bool
-	}{
-		{name: "inventory alone is fine", inventory: true},
-		{name: "without inventory the other flags are unrelated", args: []string{"web"}, all: true},
-		{name: "inventory rejects server names", inventory: true, args: []string{"web"}, wantErr: true},
-		{name: "inventory rejects --all", inventory: true, all: true, wantErr: true},
-		{name: "inventory rejects --filter", inventory: true, filter: "prod", wantErr: true},
-		{name: "blank filter is not a filter", inventory: true, filter: "  "},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withInventoryPushFlags(t, tt.inventory, false, false, tt.all, tt.filter)
-			err := validateInventoryPushFlags(tt.args)
-			if tt.wantErr != (err != nil) {
-				t.Fatalf("validateInventoryPushFlags() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil && !strings.Contains(err.Error(), "--inventory") {
-				t.Errorf("error %q should name --inventory", err)
-			}
-		})
-	}
-}
-
-func TestValidateInventoryPullFlags(t *testing.T) {
-	tests := []struct {
-		name        string
-		inventory   bool
-		args        []string
-		all         bool
-		filter      string
-		fromVault   bool
-		materialize bool
-		wantErr     bool
-	}{
-		{name: "inventory alone is fine", inventory: true},
-		{name: "without inventory the credential flags are unrelated", fromVault: true, materialize: true, all: true},
-		{name: "inventory rejects server names", inventory: true, args: []string{"web"}, wantErr: true},
-		{name: "inventory rejects --all", inventory: true, all: true, wantErr: true},
-		{name: "inventory rejects --filter", inventory: true, filter: "prod", wantErr: true},
-		{name: "inventory rejects --from-vault", inventory: true, fromVault: true, wantErr: true},
-		{name: "inventory rejects --materialize", inventory: true, materialize: true, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withInventoryPullFlags(t, tt.inventory, false, false, tt.all, tt.filter, tt.fromVault, tt.materialize)
-			err := validateInventoryPullFlags(tt.args)
-			if tt.wantErr != (err != nil) {
-				t.Fatalf("validateInventoryPullFlags() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if err != nil && !strings.Contains(err.Error(), "--inventory") {
-				t.Errorf("error %q should name --inventory", err)
-			}
-		})
-	}
-}
-
+// TestValidatePreferFlags pins the one combination that means nothing: asking
+// for both sides to win. backup and restore both carry the inventory, so there
+// is no longer an "--inventory" prerequisite to check for.
 func TestValidatePreferFlags(t *testing.T) {
 	tests := []struct {
 		name         string
-		inventory    bool
 		preferLocal  bool
 		preferRemote bool
 		wantErr      string
 	}{
 		{name: "no preference is fine"},
-		{name: "prefer-local with inventory is fine", inventory: true, preferLocal: true},
-		{name: "prefer-remote with inventory is fine", inventory: true, preferRemote: true},
-		{name: "prefer-local without inventory is rejected", preferLocal: true, wantErr: "only apply to --inventory"},
-		{name: "prefer-remote without inventory is rejected", preferRemote: true, wantErr: "only apply to --inventory"},
-		{name: "contradictory preferences are rejected", inventory: true, preferLocal: true, preferRemote: true, wantErr: "contradict"},
+		{name: "prefer-local is fine", preferLocal: true},
+		{name: "prefer-remote is fine", preferRemote: true},
+		{name: "contradictory preferences are rejected", preferLocal: true, preferRemote: true, wantErr: "contradict"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validatePreferFlags(tt.inventory, tt.preferLocal, tt.preferRemote)
+			err := validatePreferFlags(tt.preferLocal, tt.preferRemote)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
