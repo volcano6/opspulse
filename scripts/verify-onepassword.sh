@@ -221,12 +221,16 @@ echo "==> a repeat backup is two calls: one edit, one read-back"
 # call per key and one per password, plus a listing; a large fleet took dozens of
 # calls and over two minutes. Here the whole inventory is refreshed by editing
 # the document in place, which needs no listing and no read-before-write.
+#
+# No --vault is passed, which is the point: the vault the first backup had to
+# discover is remembered, so the steady state never lists vaults again. Paying
+# for that listing on every run would make this three calls, not two.
 : > "$STUB_OP_LOG"
-STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p backup --vault Personal > "$WORK_NATIVE/backup2.out" 2>&1
+STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p backup > "$WORK_NATIVE/backup2.out" 2>&1
 check "the whole backup costs two calls" 2 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
 check "the document is updated in place" 1 "$(grep -c 'item edit opspulse_inventory_.* --vault Personal | stdin=[1-9]' "$STUB_OP_LOG")"
 check "nothing is re-created" 0 "$(grep -c 'item create' "$STUB_OP_LOG")"
-check "the vault is not listed at all when --vault names it" 0 "$(grep -c 'vault list' "$STUB_OP_LOG")"
+check "the discovered vault was remembered, so nothing is listed" 0 "$(grep -c 'vault list' "$STUB_OP_LOG")"
 check "the update is verified by reading it back" 1 "$(grep -c 'op read op://Personal/opspulse_inventory_.*/notesPlain' "$STUB_OP_LOG")"
 
 echo

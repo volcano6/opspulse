@@ -40,7 +40,7 @@ ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 
 ```bash
 ops 1p backup                     # 备份本机全部私钥 + 整份 servers.yaml（一个条目，两次 op 调用）
-ops 1p backup --vault Private     # 指定保险库（同时省掉一次列保险库的调用）
+ops 1p backup --vault Private     # 指定保险库（并被记住，之后不必再传）
 ops 1p restore                    # 还原清单与全部凭据（新机器一条命令起步）
 ops 1p restore web db-01          # 只还原这几台服务器的凭据（不动 servers.yaml）
 ops 1p restore --yes              # 无人值守（跳过明文密码确认）
@@ -79,8 +79,9 @@ ops 1p backup
 - **无条件全量。** 没有服务器选择、没有 `skip_batch` 跳过列表——要么全备份，要么不备份。
   没有凭据的服务器也照常进备份：清单本身就是备份的一部分。
 - **不再并发。** 只有一次写入，没有 fan-out，所以 `-p/--parallel` 已移除。
-- **`--vault` 能省一次调用。** 没记住保险库、也没给 `--vault` 时，得先 `op vault list`
-  才知道往哪儿写；记住了或显式给了就跳过。所以首次 3~4 次调用，之后稳定 2 次。
+- **保险库只会列一次。** 没记住保险库、也没给 `--vault` 时，得先 `op vault list` 才知道
+  往哪儿写；查到的保险库会**被记住**（效果同 `ops 1p config --vault`），所以只有第一次
+  备份付这一次调用。首次 4 次调用（列保险库 + edit + create + 回读），之后稳定 **2 次**。
 - **遇到 `op://` 残留直接拒绝。** 如果 `servers.yaml` 里还有服务器持有 `op://` 引用，
   `backup` 会在**触碰 1Password 之前**就报错退出：
 
