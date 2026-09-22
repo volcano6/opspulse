@@ -391,6 +391,10 @@ func runBackupToOnePassword(ctx context.Context) error {
 // preference is therefore taken at face value: if it has gone stale the write
 // fails and names the vault, which is a clearer report than a list would have
 // produced anyway.
+//
+// The vault that had to be discovered is remembered, so that only the first
+// backup ever pays for the listing. Without this every run would cost three
+// calls instead of two, which is exactly the cost this design exists to remove.
 func resolveBackupVault(ctx context.Context, cli secret.CLI, explicitVault string) (string, error) {
 	if vault := strings.TrimSpace(explicitVault); vault != "" {
 		rememberOnePasswordSetting("vault", vault)
@@ -399,7 +403,12 @@ func resolveBackupVault(ctx context.Context, cli secret.CLI, explicitVault strin
 	if candidates := rememberedVaultCandidates(); len(candidates) > 0 {
 		return candidates[0], nil
 	}
-	return resolveAndValidateVault(ctx, cli, "", true)
+	vault, err := resolveAndValidateVault(ctx, cli, "", true)
+	if err != nil {
+		return "", err
+	}
+	rememberOnePasswordSetting("vault", vault)
+	return vault, nil
 }
 
 // serversWithLegacy1PRefs lists the servers whose servers.yaml entry still
