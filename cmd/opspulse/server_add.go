@@ -486,8 +486,8 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 
 	if srv.Password != "" && !secret.Is1PRef(srv.Password) {
 		_, _ = fmt.Fprintf(os.Stdout, "\n⚠️  [Security Warning] Plaintext password is stored in %s.\n", store.FilePath())
-		_, _ = fmt.Fprintf(os.Stdout, "   Consider using SSH key pairs or migrating to 1Password:\n")
-		_, _ = fmt.Fprintf(os.Stdout, "   Run: ops 1p push %s\n", srv.Name)
+		_, _ = fmt.Fprintf(os.Stdout, "   Prefer key-based login, then drop the password once it is verified:\n")
+		_, _ = fmt.Fprintf(os.Stdout, "   Run: ops server setup-key %s --remove-password\n", srv.Name)
 	}
 	return nil
 }

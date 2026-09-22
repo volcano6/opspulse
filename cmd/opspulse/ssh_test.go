@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -146,7 +145,7 @@ func TestBuildSSHArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, "", testStore)
+			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, testStore)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildSSHArgs() =\n%v\nwant:\n%v", got, tt.want)
 			}
@@ -423,55 +422,6 @@ func TestSelectServerInteractively_PointerIntegrity(t *testing.T) {
 	}
 }
 
-func TestResolvePasswordIf1P_Plaintext(t *testing.T) {
-	ctx := context.Background()
-	got, err := resolvePasswordIf1P(ctx, nil, "mypassword", "test")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "mypassword" {
-		t.Errorf("got %q, want 'mypassword'", got)
-	}
-
-	gotEmpty, err := resolvePasswordIf1P(ctx, nil, "", "test empty")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if gotEmpty != "" {
-		t.Errorf("got %q, want ''", gotEmpty)
-	}
-}
-
-type stubResolver struct {
-	resolved string
-	err      error
-}
-
-func (s *stubResolver) ResolvePassword(_ context.Context, _ string) (string, error) {
-	return s.resolved, s.err
-}
-
-func TestResolvePasswordIf1P_Stub(t *testing.T) {
-	ctx := context.Background()
-	stub := &stubResolver{resolved: "secret-123"}
-	got, err := resolvePasswordIf1P(ctx, stub, "op://vault/item/password", "test-server")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "secret-123" {
-		t.Errorf("got %q, want 'secret-123'", got)
-	}
-
-	stubErr := &stubResolver{err: fmt.Errorf("item locked")}
-	_, err = resolvePasswordIf1P(ctx, stubErr, "op://vault/item/password", "test-server")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "item locked") {
-		t.Errorf("expected error message to contain 'item locked', got %v", err)
-	}
-}
-
 func TestBuildAskpassConfig_Security(t *testing.T) {
 	target := server.Server{Name: "web", Host: "192.168.1.10"}
 	jump := &server.Server{Name: "bastion", Host: "10.0.0.1"}
@@ -532,74 +482,32 @@ func TestMatchHostPassword_DeterministicLongestMatch(t *testing.T) {
 }
 
 func TestResolveTargetPassword(t *testing.T) {
-	ctx := context.Background()
-
 	tests := []struct {
 		name     string
 		srv      server.Server
-		resolver *stubResolver
 		wantPass string
-		wantErr  bool
 	}{
 		{
-			name:     "empty password returns empty string without calling resolver",
+			name:     "empty password returns empty string",
 			srv:      server.Server{Name: "web", Password: ""},
-			resolver: &stubResolver{err: fmt.Errorf("should not be called")},
 			wantPass: "",
-			wantErr:  false,
 		},
 		{
-			name:     "plaintext password with empty KeyPath returns plaintext directly",
+			name:     "plaintext password with empty KeyPath returns plaintext",
 			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: ""},
-			resolver: &stubResolver{err: fmt.Errorf("should not be called for non-1p")},
 			wantPass: "plain-secret",
-			wantErr:  false,
 		},
 		{
-			name:     "plaintext password with KeyPath set returns plaintext directly",
+			name:     "plaintext password with KeyPath set returns plaintext",
 			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: "/id_rsa"},
-			resolver: &stubResolver{err: fmt.Errorf("should not be called for non-1p")},
 			wantPass: "plain-secret",
-			wantErr:  false,
-		},
-		{
-			name:     "1P password resolution failure with empty KeyPath returns error",
-			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: ""},
-			resolver: &stubResolver{err: fmt.Errorf("item locked")},
-			wantPass: "",
-			wantErr:  true,
-		},
-		{
-			name:     "1P password resolution failure with KeyPath set downgrades to warning and returns empty string",
-			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: "/id_rsa"},
-			resolver: &stubResolver{err: fmt.Errorf("item locked")},
-			wantPass: "",
-			wantErr:  false,
-		},
-		{
-			name:     "1P password resolution success with KeyPath set returns resolved password",
-			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: "/id_rsa"},
-			resolver: &stubResolver{resolved: "resolved-1p-pass"},
-			wantPass: "resolved-1p-pass",
-			wantErr:  false,
-		},
-		{
-			name:     "1P password resolution success with empty KeyPath returns resolved password",
-			srv:      server.Server{Name: "web", Password: "op://vault/web/password", KeyPath: ""},
-			resolver: &stubResolver{resolved: "resolved-1p-pass"},
-			wantPass: "resolved-1p-pass",
-			wantErr:  false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveTargetPassword(ctx, tt.resolver, tt.srv)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("resolveTargetPassword() error = %v, wantErr %v", err, tt.wantErr)
-			}
-			if got != tt.wantPass {
-				t.Errorf("resolveTargetPassword() got = %q, want %q", got, tt.wantPass)
+			if got := resolveTargetPassword(tt.srv); got != tt.wantPass {
+				t.Errorf("resolveTargetPassword() = %q, want %q", got, tt.wantPass)
 			}
 		})
 	}

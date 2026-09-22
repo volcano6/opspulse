@@ -164,6 +164,44 @@ func TestBuildLaunchCommand(t *testing.T) {
 	})
 }
 
+func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+
+	t.Run("op:// key path", func(t *testing.T) {
+		srv := server.Server{
+			Name:    "legacy-key",
+			Host:    "10.0.0.3",
+			Port:    22,
+			User:    "deploy",
+			KeyPath: "op://Vault/Item/private_key",
+		}
+		_, err := BuildLaunchCommand(client, srv, "/var/log")
+		if err == nil {
+			t.Fatal("expected error for op:// key path, got nil")
+		}
+		if !strings.Contains(err.Error(), "ops 1p restore") {
+			t.Errorf("expected error to point at 'ops 1p restore', got: %v", err)
+		}
+	})
+
+	t.Run("op:// password", func(t *testing.T) {
+		srv := server.Server{
+			Name:     "legacy-pass",
+			Host:     "10.0.0.4",
+			Port:     22,
+			User:     "root",
+			Password: "op://Vault/Item/password",
+		}
+		_, err := BuildLaunchCommand(client, srv, "/root")
+		if err == nil {
+			t.Fatal("expected error for op:// password, got nil")
+		}
+		if !strings.Contains(err.Error(), "ops 1p restore") {
+			t.Errorf("expected error to point at 'ops 1p restore', got: %v", err)
+		}
+	})
+}
+
 func TestFindClient(t *testing.T) {
 	// 1. Non-existent app
 	_, err := FindClient("definitely-nonexistent-app-99999", false)

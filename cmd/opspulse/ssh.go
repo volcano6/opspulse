@@ -3,13 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -17,11 +15,9 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
-	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/term"
 )
@@ -65,16 +61,22 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			return fmt.Errorf("system 'ssh' client not found in PATH: %w", err)
 		}
 
-		// The system ssh(1) binary only understands file paths, so any op://
-		// references are materialised into 0600 temp files for the duration of
-		// the session and removed on the way out.
-		jumpKeyPath, cleanupKeys, err := materializeOnePasswordKeys(srv, store)
-		if err != nil {
+		// This path drives the system ssh(1) binary and never reaches
+		// executor.BuildClientConfig, so the op:// guard has to be applied here.
+		// Without it the literal "op://..." string would be handed to ssh as a
+		// key path.
+		if err := srv.RejectLegacy1PRefs(); err != nil {
 			return err
 		}
-		defer cleanupKeys()
+		if srv.JumpHost != "" {
+			if jumpSrv, err := store.Get(srv.JumpHost); err == nil {
+				if err := jumpSrv.RejectLegacy1PRefs(); err != nil {
+					return err
+				}
+			}
+		}
 
-		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, jumpKeyPath, store)
+		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, store)
 
 		if srv.JumpHost != "" {
 			fmt.Printf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
@@ -178,10 +180,8 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 	return nil, fmt.Errorf("server %q not found in inventory", choice)
 }
 
-// buildSSHArgs builds the argv for the system ssh client. jumpKeyPath, when
-// non-empty, overrides the jump host's identity file; it is how a 1Password
-// op:// key of the jump host gets injected after being materialised on disk.
-func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyPath string, store *server.Store) []string {
+// buildSSHArgs builds the argv for the system ssh client.
+func buildSSHArgs(binary string, srv server.Server, extraArgs []string, store *server.Store) []string {
 	args := []string{binary}
 
 	// Compatibility with legacy RSA/DSA host keys and public keys when explicitly tagged.
@@ -221,10 +221,7 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyP
 				)
 			}
 			identity := jumpSrv.KeyPath
-			if jumpKeyPath != "" {
-				identity = jumpKeyPath
-			}
-			if identity != "" && !secret.Is1PRef(identity) {
+			if identity != "" {
 				expandedJumpKey := filepath.ToSlash(expandHome(identity))
 				if strings.Contains(expandedJumpKey, " ") {
 					expandedJumpKey = fmt.Sprintf(`"%s"`, expandedJumpKey)
@@ -253,7 +250,7 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, jumpKeyP
 
 	// A configured identity must be the only public key offered. This avoids
 	// exhausting the remote server's authentication attempts via ssh-agent.
-	if srv.KeyPath != "" && !secret.Is1PRef(srv.KeyPath) {
+	if srv.KeyPath != "" {
 		expandedKey := expandHome(srv.KeyPath)
 		args = append(args, "-o", "IdentitiesOnly=yes", "-i", expandedKey)
 	} else if srv.Password != "" {
@@ -462,24 +459,6 @@ type askpassConfig struct {
 	HostPass    map[string]string `json:"host_pass"`
 }
 
-type passwordResolver interface {
-	ResolvePassword(ctx context.Context, ref string) (string, error)
-}
-
-func resolvePasswordIf1P(ctx context.Context, r passwordResolver, pass, desc string) (string, error) {
-	if !secret.Is1PRef(pass) {
-		return pass, nil
-	}
-	if r == nil {
-		r = secret.NewResolver()
-	}
-	p, err := r.ResolvePassword(ctx, pass)
-	if err != nil {
-		return "", fmt.Errorf("resolve 1Password password for %s: %w", desc, err)
-	}
-	return p, nil
-}
-
 func buildAskpassConfig(srv server.Server, jumpSrv *server.Server, targetPassword, jumpPassword string) askpassConfig {
 	cfg := askpassConfig{
 		DefaultPass: targetPassword, // DefaultPass is ONLY targetPassword; NEVER fallback to jumpPassword to prevent cross-host leakage
@@ -518,22 +497,13 @@ func matchHostPassword(hostPass map[string]string, prompt string) string {
 	return ""
 }
 
-func resolveTargetPassword(ctx context.Context, r passwordResolver, srv server.Server) (string, error) {
-	if srv.Password == "" {
-		return "", nil
-	}
-	tp, err := resolvePasswordIf1P(ctx, r, srv.Password, fmt.Sprintf("server %q", srv.Name))
-	if err != nil {
-		if srv.KeyPath == "" {
-			// Password is the primary authentication method; failure must block the connection.
-			return "", err
-		}
-		// Primary authentication is KeyPath; srv.Password is a fallback or for setup-key.
-		// Downgrade 1P resolution failure to a warning so private key login is not blocked.
-		fmt.Fprintf(os.Stderr, "⚠️  Warning: could not resolve fallback password for %s: %v\n", srv.Name, err)
-		return "", nil
-	}
-	return tp, nil
+// resolveTargetPassword returns the password to hand to ssh(1).
+//
+// This used to resolve op:// references through 1Password, downgrading a
+// failure to a warning when a key was also configured. References are rejected
+// up front by Server.RejectLegacy1PRefs, so the stored value is already final.
+func resolveTargetPassword(srv server.Server) string {
+	return srv.Password
 }
 
 func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store, shouldFilter bool) error {
@@ -560,32 +530,14 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 	}
 	defer cleanup()
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	resolver := secret.NewResolver()
-
-	resolveCtx, resolveCancel := context.WithTimeout(ctx, 20*time.Second)
-	targetPassword, err := resolveTargetPassword(resolveCtx, resolver, srv)
-	resolveCancel()
-	if err != nil {
-		return err
-	}
+	targetPassword := resolveTargetPassword(srv)
 
 	var jumpPassword string
 	var jumpSrv *server.Server
 	if srv.JumpHost != "" {
 		if js, err := store.Get(srv.JumpHost); err == nil {
 			jumpSrv = js
-			if jumpSrv.Password != "" {
-				resolveJumpCtx, resolveJumpCancel := context.WithTimeout(ctx, 20*time.Second)
-				jp, err := resolvePasswordIf1P(resolveJumpCtx, resolver, jumpSrv.Password, fmt.Sprintf("jump host %q", jumpSrv.Name))
-				resolveJumpCancel()
-				if err != nil {
-					return err
-				}
-				jumpPassword = jp
-			}
+			jumpPassword = js.Password
 		}
 	}
 

@@ -76,6 +76,44 @@ func TestBuildClientConfig_NoAuth(t *testing.T) {
 	}
 }
 
+func TestBuildClientConfig_RejectsLegacy1PRefs(t *testing.T) {
+	tests := []struct {
+		name string
+		srv  server.Server
+	}{
+		{
+			name: "key_path",
+			srv: server.Server{
+				Name:    "legacy-key",
+				Host:    "192.168.1.3",
+				User:    "root",
+				KeyPath: "op://Vault/Item/private_key",
+			},
+		},
+		{
+			name: "password",
+			srv: server.Server{
+				Name:     "legacy-pass",
+				Host:     "192.168.1.4",
+				User:     "root",
+				Password: "op://Vault/Item/password",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildClientConfig(tt.srv, 5*time.Second)
+			if err == nil {
+				t.Fatalf("expected error for op:// %s, got nil", tt.name)
+			}
+			if !strings.Contains(err.Error(), "ops 1p restore") {
+				t.Errorf("expected error to point at 'ops 1p restore', got: %v", err)
+			}
+		})
+	}
+}
+
 func TestPrefixedWriter(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewPrefixedWriter("[vps-01] ", &buf)

@@ -73,20 +73,22 @@ func renderServerTable(w io.Writer, servers []server.Server) error {
 
 		var authMethod string
 		switch {
-		case secret.Is1PRef(s.KeyPath):
-			authMethod = fmt.Sprintf("key (1password: %s)", onePasswordRefDisplay(s.KeyPath))
+		case secret.Is1PRef(s.KeyPath) || secret.Is1PRef(s.Password):
+			// Transitional: servers.yaml has not been migrated yet, and the
+			// runtime refuses op:// references. Point at the fix rather than
+			// dumping the URI into the table.
+			authMethod = "legacy 1password ref"
 		case s.KeyPath != "":
 			if isManagedKey(s.KeyPath) {
 				authMethod = "key (managed)"
 			} else {
 				authMethod = fmt.Sprintf("key (%s)", formatKeyDisplay(s.KeyPath))
 			}
-		case s.Password != "":
-			if secret.Is1PRef(s.Password) {
-				authMethod = fmt.Sprintf("password (1password: %s)", onePasswordRefDisplay(s.Password))
-			} else {
-				authMethod = "password"
+			if s.Password != "" {
+				authMethod += " + password"
 			}
+		case s.Password != "":
+			authMethod = "password"
 		default:
 			authMethod = "default key"
 		}

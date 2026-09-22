@@ -133,6 +133,9 @@ ops ssh oracle-sg
 # 3. 将密码认证一键转换为专用密钥认证
 ops server setup-key oracle-sg
 
+# 3b. 同上，并在验证新密钥可用后清除 servers.yaml 中的明文密码
+ops server setup-key oracle-sg --remove-password
+
 # 4. 透传原生 SSH 客户端选项（使用 -- 分隔）
 ops ssh oracle-sg -- -o StrictHostKeyChecking=no
 
@@ -161,11 +164,11 @@ ops export ssh-config --write --filter env=prod
 
 绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
 
-非交互 SSH 执行与 SFTP 使用 TOFU 主机密钥策略：首次连接将主机密钥写入 `~/.ssh/known_hosts`，后续密钥不匹配时拒绝连接。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key` 后从配置中移除密码。
+非交互 SSH 执行与 SFTP 使用 TOFU 主机密钥策略：首次连接将主机密钥写入 `~/.ssh/known_hosts`，后续密钥不匹配时拒绝连接。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key --remove-password`（安装密钥并在验证可用后自动清除明文密码）。
 
 > **设计优势**：
 > - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。
-> - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件（0700 临时目录 + 0600 文件，连接退出后自动写零并删除）向 OpenSSH `SSH_ASKPASS` 传递密码；支持 1Password `op://` 动态解密；密码不出现在命令参数、环境变量或进程列表中。
+> - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件（0700 临时目录 + 0600 文件，连接退出后自动写零并删除）向 OpenSSH `SSH_ASKPASS` 传递密码；密码不出现在命令参数、环境变量或进程列表中。凭据必须是本地明文——`servers.yaml` 中残留的 `op://` 引用会在连接前被拒绝，并提示运行 `ops 1p restore` 迁移。
 > - **老旧主机兼容（`legacy-ssh`）**：针对仅提供 `ssh-rsa` / `ssh-dss` 的老旧主机，在 `servers.yaml` 中为其添加 `legacy-ssh` / `legacy_ssh` / `legacy-rsa` 标签或 `legacy-ssh: "true"` label 即可受控开启算法向下兼容（现代主机不受影响）。对于 `ops exec` / `ops cp` 等基于 Go `x/crypto/ssh` 的底层非交互调用，已默认支持 `ssh-rsa` 主机密钥协商；若主机仅提供 `ssh-dss`（DSA 算法已被 Go 官方库废弃），建议使用系统 OpenSSH 交互命令 `ops ssh` 登录维护。
 
 ---
