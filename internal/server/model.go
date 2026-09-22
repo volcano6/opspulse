@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/secret"
 )
 
 var (
@@ -76,6 +78,24 @@ type Server struct {
 // ConfigFile represents the YAML structure of the servers configuration file.
 type ConfigFile struct {
 	Servers []Server `yaml:"servers"`
+}
+
+// RejectLegacy1PRefs reports whether this server still holds a 1Password
+// op:// reference in a credential field.
+//
+// Credentials are local now, so a reference left in servers.yaml can only fail
+// once the connection is attempted. Callers that drive ssh(1) or sftp(1)
+// directly - and therefore never reach executor.BuildClientConfig - must check
+// this themselves, otherwise the literal "op://..." string is handed to the
+// binary as a key path.
+func (s *Server) RejectLegacy1PRefs() error {
+	if s == nil {
+		return nil
+	}
+	if err := secret.RejectLegacy1PRef("key_path", s.KeyPath, s.Name); err != nil {
+		return err
+	}
+	return secret.RejectLegacy1PRef("password", s.Password, s.Name)
 }
 
 // Validate checks if the server definition is valid.

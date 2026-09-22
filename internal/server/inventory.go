@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-
-	"github.com/volcano6/opspulse/internal/secret"
 )
 
 // MergeDecision says which side of a conflict wins.
@@ -55,10 +53,9 @@ func (c MergeConflict) Summary() string {
 // backup has never seen.
 //
 // Servers that differ only in credential fields are not conflicts. A credential
-// field is either a machine-local path or a portable op:// reference, so two
-// machines legitimately disagree, and pickCredential decides between them. A
-// conflict is raised when the inventory fields disagree, or when both sides
-// hold op:// references that point at different items.
+// field is a machine-local path or a plaintext password, so two machines
+// legitimately disagree, and pickCredential decides between them without asking.
+// A conflict is raised only when the inventory fields disagree.
 //
 // decide is consulted once per conflict. Passing nil makes any conflict an
 // error, which is what a non-interactive caller wants: the conflicts are
@@ -134,15 +131,14 @@ func MergeInventories(local, remote []Server, decide func(MergeConflict) MergeDe
 // resolveServer produces the winning definition for one conflicting or
 // credential-only-differing server, and reports whether anything actually
 // changed. Credential fields are resolved separately from the inventory
-// choice: a portable reference is better than a local path regardless of which
-// host definition won.
+// choice: this machine's key path is kept whenever it has one.
 func resolveServer(current, incoming Server, takeRemote bool) (Server, bool) {
 	resolved := current
 	if takeRemote {
 		resolved = incoming
 	}
-	resolved.KeyPath = pickCredential(current.KeyPath, incoming.KeyPath, takeRemote)
-	resolved.Password = pickCredential(current.Password, incoming.Password, takeRemote)
+	resolved.KeyPath = pickCredential(current.KeyPath, incoming.KeyPath)
+	resolved.Password = pickCredential(current.Password, incoming.Password)
 
 	changed := takeRemote || resolved.KeyPath != current.KeyPath || resolved.Password != current.Password
 	return resolved, changed
@@ -194,9 +190,9 @@ func sameServer(a, b Server) bool {
 
 // diffServers lists the fields that genuinely need a user decision.
 //
-// Credential fields are excluded unless both sides are op:// references: a
-// local path and a reference are not competing claims, they are the same
-// credential seen from a managed machine and an unmanaged one.
+// Credential fields are excluded outright: they are resolved by pickCredential
+// rather than by the user, because two machines are expected to hold different
+// key paths for the same server.
 func diffServers(local, remote Server) []FieldDiff {
 	var diffs []FieldDiff
 	add := func(field, l, r string) {
@@ -214,39 +210,19 @@ func diffServers(local, remote Server) []FieldDiff {
 	add("labels", renderLabels(local.Labels), renderLabels(remote.Labels))
 	add("description", local.Description, remote.Description)
 
-	if local.KeyPath != remote.KeyPath && secret.Is1PRef(local.KeyPath) && secret.Is1PRef(remote.KeyPath) {
-		diffs = append(diffs, FieldDiff{Field: "key_path", Local: local.KeyPath, Remote: remote.KeyPath})
-	}
-	if local.Password != remote.Password && secret.Is1PRef(local.Password) && secret.Is1PRef(remote.Password) {
-		diffs = append(diffs, FieldDiff{Field: "password", Local: local.Password, Remote: remote.Password})
-	}
-
 	return diffs
 }
 
 // pickCredential decides between two values for one credential field.
 //
-// A portable op:// reference beats a machine-local path, because only the
-// reference still means something on the machine being bootstrapped. When
-// neither side is a reference both are local paths belonging to different
-// machines, so the local value is kept rather than churned back and forth.
-// takeRemote only matters when the caller already asked the user about two
-// competing references.
-func pickCredential(local, remote string, takeRemote bool) string {
-	if local == remote {
-		return local
-	}
-	localRef, remoteRef := secret.Is1PRef(local), secret.Is1PRef(remote)
+// This machine's value wins whenever it has one: a key path belongs to the
+// machine that holds it, and overwriting it with the backup's path would break
+// the very server the merge was meant to preserve. An empty local value defers
+// to the remote one, which is what makes restoring onto a fresh machine work.
+func pickCredential(local, remote string) string {
 	switch {
-	case localRef && remoteRef:
-		if takeRemote {
-			return remote
-		}
+	case local == remote:
 		return local
-	case localRef:
-		return local
-	case remoteRef:
-		return remote
 	case local == "":
 		return remote
 	case remote == "":

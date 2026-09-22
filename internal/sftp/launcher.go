@@ -1,7 +1,6 @@
 package sftp
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -14,12 +13,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
 // Materialized1PKeyDir returns the directory where temporary private keys are stored
 // for GUI SFTP clients (~/.ssh/opspulse-1p).
+//
+// Legacy: keys are no longer materialised there. The directory is only
+// inspected and purged to clean up residue left by versions that resolved
+// op:// references at connect time. Slated for removal in the next major
+// version.
 func Materialized1PKeyDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -36,6 +39,8 @@ type MaterializedKeyInfo struct {
 }
 
 // ListMaterialized1PKeyDetails returns detailed metadata for all materialized keys in ~/.ssh/opspulse-1p.
+//
+// Legacy: see Materialized1PKeyDir.
 func ListMaterialized1PKeyDetails() ([]MaterializedKeyInfo, error) {
 	dir, err := Materialized1PKeyDir()
 	if err != nil {
@@ -68,6 +73,8 @@ func ListMaterialized1PKeyDetails() ([]MaterializedKeyInfo, error) {
 }
 
 // ListMaterialized1PKeys returns server names of all materialized keys in ~/.ssh/opspulse-1p.
+//
+// Legacy: see Materialized1PKeyDir.
 func ListMaterialized1PKeys() ([]string, error) {
 	details, err := ListMaterialized1PKeyDetails()
 	if err != nil {
@@ -96,6 +103,10 @@ func materializedKeyPath(dir, serverName string) (string, error) {
 // If serverName is non-empty, only that server's key is removed.
 // If serverName is empty, all keys in the directory are removed.
 // Returns the list of deleted server key names and any encountered error.
+//
+// Legacy: it exists to clean up residue from the op:// era. `ops 1p restore`
+// calls it once after migrating. `ops sftp --cleanup` is deprecated and kept
+// only so that an existing script does not break outright.
 func PurgeMaterialized1PKeys(serverName string) ([]string, error) {
 	dir, err := Materialized1PKeyDir()
 	if err != nil {
@@ -151,32 +162,6 @@ func PurgeMaterialized1PKeys(serverName string) ([]string, error) {
 	}
 
 	return deleted, nil
-}
-
-func materializeKeyOnDisk(serverName, ref string) (string, error) {
-	key, err := secret.NewResolver().ResolveSSHKey(context.Background(), ref)
-	if err != nil {
-		return "", fmt.Errorf("resolve 1Password key for %q: %w", serverName, err)
-	}
-	if !strings.HasSuffix(key, "\n") {
-		key += "\n"
-	}
-
-	dir, err := Materialized1PKeyDir()
-	if err != nil {
-		return "", err
-	}
-	target, err := materializedKeyPath(dir, serverName)
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", dir, err)
-	}
-	if err := os.WriteFile(target, []byte(key), 0o600); err != nil {
-		return "", fmt.Errorf("write resolved key to %s: %w", target, err)
-	}
-	return target, nil
 }
 
 // ClientType denotes the category of SFTP client.
@@ -508,14 +493,16 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 		user = "root"
 	}
 
+	// This builds a command line for an external sftp client and never reaches
+	// executor.BuildClientConfig, so the op:// guard has to be applied here.
+	// Without it the literal "op://..." string would be handed to the client as
+	// a key path.
+	if err := srv.RejectLegacy1PRefs(); err != nil {
+		return nil, err
+	}
+
 	keyPathForClient := srv.KeyPath
-	if secret.Is1PRef(keyPathForClient) {
-		resolved, err := materializeKeyOnDisk(srv.Name, keyPathForClient)
-		if err != nil {
-			return nil, err
-		}
-		keyPathForClient = resolved
-	} else if keyPathForClient != "" {
+	if keyPathForClient != "" {
 		if strings.HasPrefix(keyPathForClient, "~") {
 			if home, err := os.UserHomeDir(); err == nil {
 				if keyPathForClient == "~" {

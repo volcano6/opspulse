@@ -74,6 +74,6 @@ ops restore run my-wsl-env --target-server vps-01
 
 - Shell: `~/.zshrc`, `~/.bashrc`, `~/.profile`
 - Git: `~/.gitconfig`, `~/.gitignore_global`
-- SSH: `~/.ssh/config`, `~/.ssh/known_hosts` (注意：私钥不要备份到 S3，交给 OpsPulse 托管到 1Password 即可，见 [1Password 私钥托管指南](../reference/onepassword.md))
+- SSH: `~/.ssh/config`, `~/.ssh/known_hosts` (注意：私钥不要备份到 S3，用 `ops 1p backup` 备份到 1Password 即可，见 [1Password 备份与跨机同步指南](../reference/onepassword.md))
 - 命令行工具: `~/.aws/config`, `~/.kube/config`, `~/.config/gh/`
 - 编辑器: `~/.config/nvim/`

@@ -2,6 +2,7 @@ package secret
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,13 @@ func TestResolver_ResolveMap_Mixed(t *testing.T) {
 }
 
 func TestResolver_Resolve_Op_NotInstalled(t *testing.T) {
+	// Pin the CLI to a path that cannot exist so the test exercises the failure
+	// path rather than invoking whatever op this machine happens to have. A real
+	// op.exe under WSL blocks on Desktop App authorisation for tens of seconds
+	// (and has no cache to absorb it), which made this test both slow and
+	// dependent on the developer's 1Password state.
+	t.Setenv("OPSPULSE_OP_PATH", filepath.Join(t.TempDir(), "op-not-installed"))
+
 	r := NewResolver()
 	ctx := context.Background()
 

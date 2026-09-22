@@ -85,11 +85,10 @@ func RenderSSHConfig(servers []Server) string {
 
 		switch {
 		case secret.Is1PRef(s.KeyPath):
-			// ssh(1) cannot read op:// references, so exporting one as
-			// IdentityFile would produce a config that silently fails to
-			// authenticate. Leave a pointer instead of something broken.
-			buf.WriteString(fmt.Sprintf("# private key is held in 1Password: %s\n", s.KeyPath))
-			buf.WriteString(fmt.Sprintf("# use 'ops ssh %s', or run 'ops 1p pull %s' to materialise it locally\n", s.Name, s.Name))
+			// ssh(1) cannot read op:// references, and the runtime no longer
+			// resolves them either. Leave a pointer instead of a config that
+			// silently fails to authenticate.
+			buf.WriteString("# no local key configured; run 'ops 1p restore " + s.Name + "' if it is backed up\n")
 		case s.KeyPath != "":
 			buf.WriteString(fmt.Sprintf("    IdentityFile %s\n", s.KeyPath))
 			buf.WriteString("    IdentitiesOnly yes\n")

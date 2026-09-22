@@ -17,10 +17,22 @@ import (
 	"github.com/volcano6/opspulse/internal/server"
 )
 
+var serverSetupKeyRemovePassword bool
+
 var serverSetupKeyCmd = &cobra.Command{
 	Use:   "setup-key <name>",
 	Short: "Generate and install an SSH key using the configured password",
-	Args:  cobra.ExactArgs(1),
+	Long: `Generate an SSH key pair, install the public key on the remote host using the
+stored password, and bind the server to the local private key.
+
+The remote password is not changed: this only adds key-based login alongside it,
+so the existing password keeps working as a fallback.
+
+With --remove-password, OpsPulse first proves the new key authenticates on its
+own (with the password deliberately withheld), and only then deletes the
+plaintext password from servers.yaml. A verification that fell back to password
+authentication therefore cannot be mistaken for a working key.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		store := server.NewDefaultStore()
 		srv, err := store.Get(args[0])
@@ -67,8 +79,42 @@ var serverSetupKeyCmd = &cobra.Command{
 			return fmt.Errorf("save key path after remote installation: %w", err)
 		}
 		fmt.Printf("SSH key installed for %q and bound to %s. The remote password was not changed.\n", srv.Name, storedKeyPath)
+
+		if serverSetupKeyRemovePassword {
+			return removePasswordAfterKeyVerification(store, srv, storedKeyPath)
+		}
 		return nil
 	},
+}
+
+// removePasswordAfterKeyVerification proves the new key can authenticate on its
+// own before the plaintext password is dropped.
+//
+// The probe uses a copy of the server with the password forced empty, so a
+// connection that actually fell back to password authentication cannot be
+// mistaken for a working key. Only after that succeeds is the password deleted
+// from servers.yaml; on failure it is kept, because locking the user out of a
+// host is far worse than leaving a secret in a 0600 file.
+func removePasswordAfterKeyVerification(store *server.Store, srv *server.Server, storedKeyPath string) error {
+	keySrv := *srv
+	keySrv.KeyPath = storedKeyPath
+	keySrv.Password = ""
+
+	fmt.Printf("🔐 Verifying that %q accepts the new key on its own...\n", srv.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
+	if _, _, err := exec.Test(ctx, executor.NewServerTarget(keySrv)); err != nil {
+		return fmt.Errorf("pure key authentication for %q failed, so the password was kept: %w\n\ncheck that the remote sshd_config allows PubkeyAuthentication", srv.Name, err)
+	}
+
+	srv.Password = ""
+	if err := store.Save(*srv); err != nil {
+		return fmt.Errorf("remove the password from servers.yaml: %w", err)
+	}
+	fmt.Printf("✅ Key authentication verified; the plaintext password was removed from servers.yaml.\n")
+	return nil
 }
 
 func setupKeyPath(serverName string) (storedPath, expandedPath string, err error) {
@@ -142,6 +188,7 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 }
 
 func init() {
+	serverSetupKeyCmd.Flags().BoolVar(&serverSetupKeyRemovePassword, "remove-password", false, "After verifying the key works on its own, delete the plaintext password from servers.yaml")
 	serverSetupKeyCmd.ValidArgsFunction = completeServerNames
 	serverCmd.AddCommand(serverSetupKeyCmd)
 }

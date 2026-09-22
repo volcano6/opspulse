@@ -66,12 +66,11 @@ func TestMergeInventoriesUnions(t *testing.T) {
 			wantConflicts: 1,
 		},
 		{
-			name:        "op reference beats local path without a conflict",
-			local:       []Server{srv("box", "10.0.0.1", "~/.ssh/box.key")},
-			remote:      []Server{srv("box", "10.0.0.1", "op://Personal/opspulse_box_key/password")},
-			wantNames:   []string{"box"},
-			wantUpdated: 1,
-			wantKey:     map[string]string{"box": "op://Personal/opspulse_box_key/password"},
+			name:      "local path is kept when the backup holds a reference",
+			local:     []Server{srv("box", "10.0.0.1", "~/.ssh/box.key")},
+			remote:    []Server{srv("box", "10.0.0.1", "op://Personal/opspulse_box_key/password")},
+			wantNames: []string{"box"},
+			wantKey:   map[string]string{"box": "~/.ssh/box.key"},
 		},
 		{
 			name:      "two local paths are not churned",
@@ -113,7 +112,7 @@ func TestMergeInventoriesUnions(t *testing.T) {
 
 func TestMergeInventoriesCredentialOnlyDifferenceIsNotAConflict(t *testing.T) {
 	local := []Server{srv("box", "10.0.0.1", "~/.ssh/box.key")}
-	remote := []Server{srv("box", "10.0.0.1", "op://Personal/opspulse_box_key/password")}
+	remote := []Server{srv("box", "10.0.0.1", "~/.ssh/remote-box.key")}
 
 	merged, added, updated, conflicts, err := MergeInventories(local, remote, nil)
 	if err != nil {
@@ -122,14 +121,14 @@ func TestMergeInventoriesCredentialOnlyDifferenceIsNotAConflict(t *testing.T) {
 	if added != 0 {
 		t.Errorf("added = %d, want 0", added)
 	}
-	if updated != 1 {
-		t.Errorf("updated = %d, want 1", updated)
+	if updated != 0 {
+		t.Errorf("updated = %d, want 0 (the local credential already won)", updated)
 	}
 	if len(conflicts) != 0 {
 		t.Fatalf("conflicts = %v, want none", conflicts)
 	}
-	if got := merged[0].KeyPath; got != "op://Personal/opspulse_box_key/password" {
-		t.Errorf("key_path = %q, want the op reference", got)
+	if got := merged[0].KeyPath; got != "~/.ssh/box.key" {
+		t.Errorf("key_path = %q, want the local path", got)
 	}
 }
 
@@ -177,23 +176,28 @@ func TestMergeInventoriesKeepsLocalCredentialWhenBothAreReferences(t *testing.T)
 	local := []Server{srv("box", "10.0.0.1", "op://Personal/opspulse_box_key/password")}
 	remote := []Server{srv("box", "10.0.0.1", "op://Work/opspulse_box_key/password")}
 
-	merged, _, _, conflicts, err := MergeInventories(local, remote, func(MergeConflict) MergeDecision {
+	// Credential fields are not part of the conflict set, so the decider is
+	// never consulted and this machine's value is kept.
+	merged, _, updated, conflicts, err := MergeInventories(local, remote, func(MergeConflict) MergeDecision {
 		return KeepLocal
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(conflicts) != 1 {
-		t.Fatalf("conflicts = %v, want one (competing references)", conflicts)
+	if len(conflicts) != 0 {
+		t.Fatalf("conflicts = %v, want none (credentials are not conflicts)", conflicts)
+	}
+	if updated != 0 {
+		t.Errorf("updated = %d, want 0", updated)
 	}
 	if got := merged[0].KeyPath; got != "op://Personal/opspulse_box_key/password" {
 		t.Errorf("key_path = %q, want the local reference", got)
 	}
 }
 
-func TestMergeInventoriesTakesRemoteCredentialWhenBothAreReferences(t *testing.T) {
-	local := []Server{srv("box", "10.0.0.1", "op://Personal/opspulse_box_key/password")}
-	remote := []Server{srv("box", "10.0.0.1", "op://Work/opspulse_box_key/password")}
+func TestMergeInventoriesKeepsLocalCredentialEvenWhenTakingRemote(t *testing.T) {
+	local := []Server{srv("box", "10.0.0.1", "~/.ssh/local.key")}
+	remote := []Server{srv("box", "10.0.0.9", "~/.ssh/remote.key")}
 
 	merged, _, _, _, err := MergeInventories(local, remote, func(MergeConflict) MergeDecision {
 		return TakeRemote
@@ -201,8 +205,11 @@ func TestMergeInventoriesTakesRemoteCredentialWhenBothAreReferences(t *testing.T
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := merged[0].KeyPath; got != "op://Work/opspulse_box_key/password" {
-		t.Errorf("key_path = %q, want the remote reference", got)
+	if got := merged[0].Host; got != "10.0.0.9" {
+		t.Errorf("host = %q, want the remote host", got)
+	}
+	if got := merged[0].KeyPath; got != "~/.ssh/local.key" {
+		t.Errorf("key_path = %q, want the local path to survive a TakeRemote decision", got)
 	}
 }
 
@@ -345,31 +352,26 @@ func TestMergeConflictSummaryListsEveryField(t *testing.T) {
 
 func TestPickCredential(t *testing.T) {
 	const (
-		refA  = "op://Personal/opspulse_box_key/password"
-		refB  = "op://Work/opspulse_box_key/password"
 		pathA = "~/.ssh/box.key"
 		pathB = "~/.ssh/other.key"
 	)
 	tests := []struct {
-		name       string
-		local      string
-		remote     string
-		takeRemote bool
-		want       string
+		name   string
+		local  string
+		remote string
+		want   string
 	}{
-		{name: "equal values stay put", local: refA, remote: refA, want: refA},
-		{name: "local ref beats remote path", local: refA, remote: pathA, want: refA},
-		{name: "remote ref beats local path", local: pathA, remote: refA, want: refA},
-		{name: "two local paths keep local", local: pathA, remote: pathB, want: pathA},
-		{name: "two refs keep local by default", local: refA, remote: refB, want: refA},
-		{name: "two refs honour takeRemote", local: refA, remote: refB, takeRemote: true, want: refB},
-		{name: "remote wins when local is empty", local: "", remote: pathA, want: pathA},
+		{name: "equal values stay put", local: pathA, remote: pathA, want: pathA},
+		{name: "local path wins over a different local path", local: pathA, remote: pathB, want: pathA},
+		{name: "remote wins when local is empty", local: "", remote: pathB, want: pathB},
 		{name: "local wins when remote is empty", local: pathA, remote: "", want: pathA},
+		{name: "plaintext password keeps the local value", local: "hunter2", remote: "other", want: "hunter2"},
+		{name: "both empty stays empty", local: "", remote: "", want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := pickCredential(tt.local, tt.remote, tt.takeRemote); got != tt.want {
-				t.Errorf("pickCredential(%q, %q, %v) = %q, want %q", tt.local, tt.remote, tt.takeRemote, got, tt.want)
+			if got := pickCredential(tt.local, tt.remote); got != tt.want {
+				t.Errorf("pickCredential(%q, %q) = %q, want %q", tt.local, tt.remote, got, tt.want)
 			}
 		})
 	}

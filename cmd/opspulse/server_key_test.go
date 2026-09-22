@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/volcano6/opspulse/internal/server"
 )
 
 func setTestHome(t *testing.T, home string) {
@@ -72,5 +74,49 @@ func TestEnsureSSHKeyPair(t *testing.T) {
 	}
 	if _, err := os.Stat(privateKey + ".pub"); err != nil {
 		t.Fatalf("public key missing: %v", err)
+	}
+}
+
+func TestSetupKeyRemovePasswordFlagRegistered(t *testing.T) {
+	f := serverSetupKeyCmd.Flags().Lookup("remove-password")
+	if f == nil {
+		t.Fatal("ops server setup-key should expose --remove-password")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--remove-password should default to false, got %q", f.DefValue)
+	}
+}
+
+// TestRemovePasswordKeepsPasswordWhenKeyProbeFails pins the safety property of
+// --remove-password: the plaintext password is dropped only after the key has
+// authenticated on its own, so a probe that cannot prove that must leave it.
+func TestRemovePasswordKeepsPasswordWhenKeyProbeFails(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	store := server.NewStore(filepath.Join(t.TempDir(), "servers.yaml"))
+	srv := &server.Server{
+		Name:     "unreachable",
+		Host:     "127.0.0.1",
+		Port:     1, // nothing listens here, so the probe fails at once
+		User:     "root",
+		Password: "hunter2",
+	}
+	if err := store.Save(*srv); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	err := removePasswordAfterKeyVerification(store, srv, "~/.ssh/opspulse_unreachable")
+	if err == nil {
+		t.Fatal("expected the key probe to fail against an unreachable host")
+	}
+	if !strings.Contains(err.Error(), "password was kept") {
+		t.Errorf("the error should say the password was kept, got %v", err)
+	}
+
+	stored, getErr := store.Get("unreachable")
+	if getErr != nil {
+		t.Fatalf("reload server: %v", getErr)
+	}
+	if stored.Password != "hunter2" {
+		t.Errorf("the password must survive a failed verification, got %q", stored.Password)
 	}
 }

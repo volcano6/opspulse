@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/sftp"
 )
@@ -37,6 +36,11 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		if sftpCleanup {
+			// Kept working so an existing script is not broken outright, but no
+			// longer advertised: nothing writes to ~/.ssh/opspulse-1p any more,
+			// and 'ops 1p restore' purges whatever the op:// era left behind.
+			fmt.Fprintln(os.Stderr, "⚠️  --cleanup is deprecated: OpsPulse no longer materialises temporary keys in ~/.ssh/opspulse-1p, and 'ops 1p restore' purges leftovers from the op:// era automatically. This flag will be removed in a future release.")
+
 			targetServer := ""
 			if len(args) > 0 {
 				targetServer = args[0]
@@ -110,14 +114,10 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 				return fmt.Errorf("failed to launch %s: %w", client.Name, err)
 			}
 			fmt.Printf("✅ %s launched in background.\n", client.Name)
-			if secret.Is1PRef(targetServer.KeyPath) {
-				fmt.Printf("   💡 Note: 1Password key temporarily materialized at ~/.ssh/opspulse-1p/%s for GUI client.\n", targetServer.Name)
-				fmt.Println("      Run 'ops 1p cleanup' or 'ops sftp --cleanup' to purge from disk when done.")
-			}
 			if details, err := sftp.ListMaterialized1PKeyDetails(); err == nil {
 				for _, d := range details {
-					if d.IsStale && d.Name != targetServer.Name {
-						fmt.Printf("   ⚠️  Stale key on disk: %s (>24h old, please run 'ops 1p cleanup')\n", d.Name)
+					if d.IsStale {
+						fmt.Printf("   ⚠️  Stale key on disk: %s (>24h old; 'ops 1p restore' purges these leftovers automatically)\n", d.Name)
 					}
 				}
 			}
@@ -160,7 +160,8 @@ func init() {
 	sftpCmd.Flags().StringVar(&sftpRemotePath, "path", "/", "Initial remote directory to open")
 	sftpCmd.Flags().BoolVar(&sftpCLI, "cli", false, "Use terminal OpenSSH sftp client instead of GUI")
 	sftpCmd.Flags().BoolVar(&sftpListApps, "list-apps", false, "List detected SFTP clients on the host system")
-	sftpCmd.Flags().BoolVar(&sftpCleanup, "cleanup", false, "Purge temporary materialized 1Password keys from ~/.ssh/opspulse-1p")
+	sftpCmd.Flags().BoolVar(&sftpCleanup, "cleanup", false, "deprecated: 'ops 1p restore' purges these leftovers automatically")
+	_ = sftpCmd.Flags().MarkHidden("cleanup")
 	sftpCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sftpCmd)
 }
