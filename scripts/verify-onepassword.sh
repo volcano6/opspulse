@@ -59,9 +59,9 @@ cleanup() {
 }
 trap cleanup EXIT
 cleanup
-# $WORK_POSIX/home is OPSPULSE_HOME (servers.yaml lives there); fakehome stands in
+# $WORK_POSIX/opshome is OPSPULSE_HOME (servers.yaml lives there); fakehome stands in
 # for the user's home so that a restore never touches the real ~/.ssh.
-mkdir -p "$WORK_POSIX/home" "$WORK_POSIX/fakehome/.ssh"
+mkdir -p "$WORK_POSIX/opshome" "$WORK_POSIX/fakehome/.ssh"
 
 echo "==> building ops and the op stub"
 # Build into the *native* form of the path: with MSYS path conversion disabled
@@ -72,7 +72,7 @@ echo "==> building ops and the op stub"
 ssh-keygen -q -t ed25519 -N '' -f "$WORK_NATIVE/id_web" -C opspulse-verify
 ssh-keygen -q -t ed25519 -N '' -f "$WORK_NATIVE/id_other" -C opspulse-other
 
-export OPSPULSE_HOME="$WORK_NATIVE/home"
+export OPSPULSE_HOME="$WORK_NATIVE/opshome"
 export OPSPULSE_OP_PATH="$WORK_NATIVE/opstub$EXE"
 # A backup is now two op calls, but the log is still the record every assertion
 # below reads, so it lives on a temp filesystem rather than next to the repo.
@@ -91,7 +91,7 @@ export HOME="$WORK_NATIVE/fakehome"
 mkdir -p "$WORK_POSIX/fakehome/.ssh"
 
 OPS="$WORK_NATIVE/ops$EXE"
-YAML="$WORK_POSIX/home/servers.yaml"
+YAML="$WORK_POSIX/opshome/servers.yaml"
 LOCAL_PW="local-plaintext-pw"
 FAILURES=0
 
@@ -497,13 +497,6 @@ check "the run still succeeds" 0 "$ORPHAN_RC"
 check "the orphaned item is reported" 1 "$(printf '%s' "$ORPHAN" | grep -c 'opspulse_orphan_key')"
 check "the backup document is not called an orphan" 0 "$(printf '%s' "$ORPHAN" | grep -c "$BLOB_TITLE")"
 check "the orphan did not become a server" 0 "$(grep -c 'name: orphan' "$YAML")"
-
-echo
-echo "==> the retired push/pull names point at the new commands"
-PUSH_OUT="$("$OPS" 1p push 2>&1 || true)"
-PULL_OUT="$("$OPS" 1p pull 2>&1 || true)"
-check "push is retired in favour of backup" 1 "$(printf '%s' "$PUSH_OUT" | grep -c "use 'ops 1p backup'")"
-check "pull is retired in favour of restore" 1 "$(printf '%s' "$PULL_OUT" | grep -c "use 'ops 1p restore'")"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

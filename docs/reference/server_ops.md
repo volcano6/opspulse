@@ -22,7 +22,7 @@ ops add oracle-sg ubuntu@203.0.113.10:2222 \
   --desc "生产环境博客主节点"
 
 # 3. 通过跳板机（Bastion / Jump Host）添加内网机器（免查内网 IP，名字由跳板机解析）
-ops add vps2 ubuntu@vps2 -J vps1 -p 123456
+ops add vps2 ubuntu@vps2 -J vps1 -p 2222
 
 # 4. 敏感/公司服务器防手滑保护（跳过 ops exec -f all 与 ops doctor 等隐式批量运维）
 ops add company-srv 10.0.0.1 --skip-batch
@@ -56,6 +56,32 @@ ops server edit oracle-sg
 ```
 
 `server edit` 在临时副本中编辑。编辑器正常退出后才校验 YAML、服务器字段和名称唯一性；校验失败或目标服务器被删除时，原 `servers.yaml` 保持不变。
+
+### 删除服务器确认 (`ops server remove`)
+
+`ops server remove <name>`（别名 `rm` / `delete`）删除清单条目的同时，还会删除 OpsPulse 为该机托管的私钥文件，因此默认要求交互确认：
+
+```bash
+# 1. 交互式删除：提示默认答案为 No，直接回车即取消
+ops server remove old-vps
+
+# 2. 非交互脚本中必须显式接受
+ops server remove old-vps --yes
+
+# 3. 只删清单条目，保留托管私钥
+ops server remove old-vps --keep-key
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `-y, --yes` | 布尔 | `false` | 跳过删除确认提示；非交互 shell（stdin 非终端）下必须显式提供，否则直接拒绝执行 |
+| `--keep-key` | 布尔 | `false` | 不删除磁盘上由 OpsPulse 托管的私钥文件（若有其他服务器仍引用同一密钥，本来也不会删除） |
+
+交互提示的默认答案是 No：回车或回答 `n` 会中止操作并报 `server removal cancelled by user`，清单与私钥都保持原样。在非交互 shell（CI、脚本、管道）中不带 `--yes` 则直接拒绝，不会挂起等待输入：
+
+```text
+Error: refusing to remove server "old-vps" without confirmation; re-run with --yes to accept this in a non-interactive shell
+```
 
 ### 多维筛选过滤 (`ops ls` / `--filter`)
 
@@ -171,7 +197,7 @@ ops export ssh-config --write --filter env=prod
 
 绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
 
-非交互 SSH 执行与 SFTP 使用 TOFU 主机密钥策略：首次连接将主机密钥写入 `~/.ssh/known_hosts`，后续密钥不匹配时拒绝连接。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key --remove-password`（安装密钥并在验证可用后自动清除明文密码）。
+非交互 SSH 执行与 SFTP 默认执行**严格主机密钥校验**：主机密钥不在 `~/.ssh/known_hosts` 中时**直接拒绝连接**，并打印密钥类型与 SHA256 指纹；只有显式设置 `OPSPULSE_TRUST_NEW_HOST_KEY=1`（或 `true`）才会在首次连接时受信并写入 `~/.ssh/known_hosts`，之后应及时取消该变量以恢复严格校验。已记录的主机密钥不匹配时同样拒绝连接（需 `ssh-keygen -R <host>` 清除旧行后再连）。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key --remove-password`（安装密钥并在验证可用后自动清除明文密码）。
 
 > **设计优势**：
 > - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。
@@ -200,7 +226,7 @@ ops exec oracle-sg "apt-get update" --timeout 120s
 
 # 4. 批量并发执行（默认自动排除配置了 --skip-batch 的服务器）
 ops exec -f all "uptime"
-ops exec -f "provider=oracle" -p 10 "docker ps -q | wc -l"
+ops exec -f "provider=oracle" -j 10 "docker ps -q | wc -l"
 
 # 5. 显式临时包含 skip-batch 服务器进行批量操作
 ops exec -f all --include-skipped "uptime"
@@ -213,7 +239,7 @@ ops exec -f all --include-skipped "uptime"
 | 维度 | `ops ssh <name> --exec "cmd"` | `ops exec <name> cmd ...` |
 | --- | --- | --- |
 | 传输层 | 系统 `ssh(1)` 子进程 | 进程内 Go `x/crypto/ssh` |
-| 主机密钥 | ssh(1) 原生策略，与交互式登录共用同一份 `~/.ssh/known_hosts` | 严格 TOFU：写入同一份 `~/.ssh/known_hosts`，不匹配即拒绝；未知主机直接报错，需 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式放行 |
+| 主机密钥 | ssh(1) 原生策略，与交互式登录共用同一份 `~/.ssh/known_hosts` | 严格校验：共用同一份 `~/.ssh/known_hosts`，未记录的主机直接报错（`OPSPULSE_TRUST_NEW_HOST_KEY=1` 可显式放行首次连接），已记录但密钥不匹配同样拒绝 |
 | pty | 沿用 ssh(1) 规则：stdin 是终端即分配，`-- -T` 强制关闭 | 不分配 pty |
 | stdout / stderr | 分离；横幅走 stderr，stdout 干净可直接进管道 | 合并为同一路输出（便于按时间顺序查看全量日志） |
 | 退出码 | 原样透传 | 原样透传 |
@@ -222,7 +248,7 @@ ops exec -f all --include-skipped "uptime"
 | 自动提权 | 不介入，命令以登录用户身份执行 | 远端为非 root 且 `sudo -n true` 可用时自动以 `sudo -E` 执行 |
 | 连接复用 | ControlMaster 多路复用（Windows 上自动关闭） | 每次调用新建连接 |
 | 命令封装 | 命令交给远端登录 shell，引号与管道按远端语义解释 | 整条命令经 base64 后交给远端 `bash -s`（行尾统一为 LF） |
-| 批量执行 | 单台 | `-f all` / `-f provider=xxx` 批量并发（`-p` 控并发度，自动跳过 `skip_batch` 服务器） |
+| 批量执行 | 单台 | `-f all` / `-f provider=xxx` 批量并发（`-j` 控并发度，自动跳过 `skip_batch` 服务器） |
 
 简言之：**要 pty 与交互性、需要 ssh(1) 原生算法兼容（老机器）时选 `ops ssh --exec`；要超时控制、自动提权、批量并发时选 `ops exec`。**
 
@@ -266,7 +292,7 @@ GUI 客户端以异步独立进程拉起，终端立即返回可用。
 |---------|------------------|----------------|
 | **Windows** | WinSCP、NetSarang Xftp (7/8)、FileZilla | PATH -> WinSCP -> Xftp -> FileZilla |
 | **macOS** | Cyberduck、Panic Transmit、FileZilla | Cyberduck -> FileZilla -> Transmit |
-| **Linux** | FileZilla、Nautilus (GNOME Files)、Dolphin、xdg-open | FileZilla -> Nautilus -> xdg-open |
+| **Linux** | FileZilla、Nautilus (GNOME Files)、xdg-open | FileZilla -> Nautilus -> xdg-open |
 
 ### 常见用法
 
@@ -291,4 +317,26 @@ ops sftp oracle-sg --path /var/log/nginx
 # 6. 使用终端原生 OpenSSH sftp 会话（非 GUI 模式）
 ops sftp oracle-sg --cli
 ```
+
+### WSL 下的私钥镜像目录
+
+在 WSL 里唤起 Windows 侧 GUI 客户端时，私钥所在的 Linux 路径无法被 Windows 进程读取，Ops 会把私钥内容镜像到 Windows 用户目录 `%USERPROFILE%\.ssh\opspulse\`（WSL 内即 `/mnt/c/Users/<你>/.ssh/opspulse`，文件名沿用密钥名，如 `opspulse_<server>`），再把原生 Windows 路径交给客户端。
+
+该镜像**刻意不会自动清理**：GUI 客户端是异步读取密钥的，可能在拉起它的进程退出之后才真正读取。需要清理时在 Windows 侧手动删除：
+
+```powershell
+Remove-Item -Recurse -Force "$env:USERPROFILE\.ssh\opspulse"
+```
+
+或在 WSL 中执行：
+
+```bash
+rm -rf /mnt/c/Users/<你>/.ssh/opspulse
+```
+
+注意 `/mnt/c` 上无法可靠地保留 POSIX `0600` 权限，该目录的实际访问控制由 Windows ACL 决定。
+
+### 安全提示：密码会出现在命令行里
+
+当服务器使用密码认证时，Ops 会构造 `sftp://user:password@host:port/path` 形式的 URL 并作为 GUI 客户端（WinSCP / Xftp / FileZilla 等）的命令行参数传递——本机上任何能列出进程的人都能读到这个密码。GUI 场景建议先用 `ops server setup-key <name>` 切到密钥认证：密钥以文件路径传递，密码不会进入命令行。
 

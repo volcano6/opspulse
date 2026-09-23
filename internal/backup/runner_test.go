@@ -52,8 +52,12 @@ func TestBuildBackupScript(t *testing.T) {
 	}
 
 	// Verify restic backup command with tags, excludes, paths, and host isolation
-	if !strings.Contains(script, `restic backup --retry-lock 2m --json`) {
-		t.Error("script missing restic backup --retry-lock 2m --json")
+	if !strings.Contains(script, `restic backup $RETRY_LOCK_2M --json`) {
+		t.Error("script missing restic backup $RETRY_LOCK_2M --json")
+	}
+	// The script must never try to upgrade restic on the target host.
+	if strings.Contains(script, "self-update") {
+		t.Error("script must not run restic self-update")
 	}
 	if !strings.Contains(script, `--tag 'prod'`) || !strings.Contains(script, `--tag 'job:site-backup'`) ||
 		!strings.Contains(script, `--tag 'host:vps-01'`) || !strings.Contains(script, `--host 'vps-01'`) {
@@ -67,7 +71,7 @@ func TestBuildBackupScript(t *testing.T) {
 	}
 
 	// Verify retention policy with strict job and host isolation
-	if !strings.Contains(script, `restic forget --retry-lock 5m --prune --tag 'job:site-backup' --tag 'host:vps-01' --host 'vps-01' --keep-daily 7 --keep-weekly 4 --keep-monthly 6`) {
+	if !strings.Contains(script, `restic forget $RETRY_LOCK_5M --prune --tag 'job:site-backup' --tag 'host:vps-01' --host 'vps-01' --keep-daily 7 --keep-weekly 4 --keep-monthly 6`) {
 		t.Errorf("script missing retention forget command with host isolation, got:\n%s", script)
 	}
 }
@@ -83,7 +87,7 @@ func TestBuildSnapshotsScript(t *testing.T) {
 	if !strings.Contains(script, `export RESTIC_REPOSITORY='/mnt/backup'`) {
 		t.Error("snapshots script missing RESTIC_REPOSITORY")
 	}
-	if !strings.Contains(script, `restic snapshots --retry-lock 30s --json --tag 'job:site-backup' --tag 'host:vps-01' --host 'vps-01'`) {
+	if !strings.Contains(script, `restic snapshots $RETRY_LOCK_30S --json --tag 'job:site-backup' --tag 'host:vps-01' --host 'vps-01'`) {
 		t.Errorf("snapshots script missing restic snapshots with job and host tags, got:\n%s", script)
 	}
 }

@@ -250,6 +250,36 @@ func TestRunContainerBackup_Standalone_WithAlias(t *testing.T) {
 	}
 }
 
+func TestRunContainerBackup_RejectsUnsafeAlias(t *testing.T) {
+	for _, alias := range []string{"../escape", "a/b", ".hidden", "-flag", "a b", "..", "a..b"} {
+		t.Run(alias, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+			if err != nil {
+				t.Fatalf("storage.Open() error: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			exec := &dynamicMockExecutor{}
+			runner := NewRunnerWithStores(exec,
+				server.NewStore(filepath.Join(tmpDir, "servers.yaml")),
+				storage.NewBackupRepo(db),
+				NewStore(filepath.Join(tmpDir, "backups.yaml")),
+				asset.NewStore(filepath.Join(tmpDir, "assets.yaml")),
+			)
+
+			opts := ContainerBackupOptions{Server: "vps-01", ContainerName: "nginx-test", AliasName: alias}
+			var buf bytes.Buffer
+			if _, err := runner.RunContainerBackup(context.Background(), opts, &buf); err == nil {
+				t.Fatalf("RunContainerBackup() accepted unsafe alias %q", alias)
+			}
+			if len(exec.executedScripts) != 0 {
+				t.Errorf("unsafe alias %q reached the target host: %v", alias, exec.executedScripts)
+			}
+		})
+	}
+}
+
 func TestRunContainerBackup_BindMountPathBoundary(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))

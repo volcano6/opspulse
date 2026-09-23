@@ -125,20 +125,35 @@ Connecting to web-01 (198.51.100.10:22)...
 
 ## 5. 第二步：查看与发现可用模板
 
-Ops 二进制中直接内置了常用的官方模板：
+Ops 二进制中直接内置了 19 个官方模板：
 
 ```bash
 ops template list
 ```
 
-输出示例：
+下面是这 19 个模板的清单（DESCRIPTION 为中文概述，`ops template list` 的实际输出是英文原文）：
 ```text
-NAME       VER   TYPE       OS              DESCRIPTION
-----       ---   ----       --              -----------
-base       v1    built-in   ubuntu,debian   安装常用系统基础工具与依赖包
-docker     v1    built-in   ubuntu,debian   安装官方 Docker CE 与 Docker Compose 插件
-restic     v1    built-in   ubuntu,debian   安装 restic 与 rclone 备份工具链
-security   v1    built-in   ubuntu,debian   基础安全加固（UFW 防火墙、fail2ban 防暴破）
+NAME             VER   TYPE       OS              DESCRIPTION
+----             ---   ----       --              -----------
+base             v2    built-in   ubuntu,debian   系统基础工具集
+bbr              v1    built-in   ubuntu,debian   开启 TCP BBR 拥塞控制
+caddy            v2    built-in   ubuntu,debian   Caddy Web 服务器
+clean            v2    built-in   ubuntu,debian   磁盘与资源清理
+cluster-check    v1    built-in   ubuntu,debian   节点指标快捷巡检
+cn               v2    built-in   ubuntu,debian   国内 VPS 网络与镜像加速
+docker           v3    built-in   ubuntu,debian   Docker CE 容器环境
+firewall-ports   v1    built-in   ubuntu,debian   开放自定义防火墙端口
+golang           v1    built-in   ubuntu,debian   Go 语言开发环境
+nginx            v1    built-in   ubuntu,debian   Nginx Web 服务器
+nodejs           v1    built-in   ubuntu,debian   Node.js 开发环境与工具链
+restic           v1    built-in   ubuntu,debian   备份工具链
+security         v3    built-in   ubuntu,debian   安全与防火墙加固
+swap             v1    built-in   ubuntu,debian   零停机 Swap 扩容/调整
+timezone         v1    built-in   ubuntu,debian   系统时区与时间同步
+tmux             v2    built-in   ubuntu,debian   终端复用与精巧配置
+upgrade          v2    built-in   ubuntu,debian   系统包安全更新
+uv               v1    built-in   ubuntu,debian   Astral uv Python 工具链
+zsh-starship     v3    built-in   ubuntu,debian   现代终端与美化
 ```
 
 查看某个具体模板的脚本源码与元数据：

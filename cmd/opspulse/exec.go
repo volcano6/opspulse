@@ -33,21 +33,31 @@ var execCmd = &cobra.Command{
 	Long: `Execute arbitrary shell commands on a specified remote server or across multiple
 servers matched by a filter.
 
-Put -- before the remote command when that command takes an argument starting with -,
-as in ops exec vps-1 -- df -h /; otherwise ops parses the argument as its own flag.
+Write flags before the server name: everything after the name is the remote
+command, so 'ops exec vps-1 df -h /' works as-is. A '--' is still accepted before
+the command, and is the way to pass a command that itself mentions --filter.
 
 Examples:
-  ops exec vps-1 -- uptime                        # Single server
+  ops exec vps-1 uptime                           # Single server
+  ops exec vps-1 df -h /                          # -h belongs to the remote command
   ops exec --filter all "uptime"                  # All servers in parallel
   ops exec --filter "provider=racknerd" "df -h"   # Filter by label or tag
-  ops exec -f all -p 10 "docker ps -q | wc -l"    # Concurrency control`,
+  ops exec -f all -j 10 "docker ps -q | wc -l"    # Concurrency control`,
 	Args: cobra.ArbitraryArgs,
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		store := server.NewDefaultStore()
 
 		if execFilter != "" {
 			if len(args) < 1 {
 				return errors.New("command is required when using --filter (e.g. ops exec --filter all 'uptime')")
+			}
+			// --filter takes no server name. A configured name in the first
+			// position means both forms were written at once, which would
+			// otherwise run the name as part of the remote command.
+			if cmd.Flags().ArgsLenAtDash() < 0 {
+				if _, err := store.Get(args[0]); err == nil {
+					return mixedExecFormsError(args[0])
+				}
 			}
 			commandStr := strings.Join(args, " ")
 			return executeFiltered(store, execFilter, commandStr, execParallel, execTimeout, execIncludeSkipped)
@@ -59,12 +69,28 @@ Examples:
 		}
 
 		serverName := args[0]
-		commandStr := strings.Join(args[1:], " ")
-
 		srv, err := store.Get(serverName)
 		if err != nil {
 			return err
 		}
+
+		// Flags are parsed only before the server name, so a '--' separator
+		// survives into the arguments; dropping it keeps 'ops exec vps-1 --
+		// df -h /' working.
+		commandArgs := args[1:]
+		explicitDash := commandArgs[0] == "--"
+		if explicitDash {
+			commandArgs = commandArgs[1:]
+			if len(commandArgs) == 0 {
+				return errors.New("command is required after '--'")
+			}
+		} else if hasExecFilterToken(commandArgs) {
+			// A --filter that survived into the command is the other form's
+			// flag, so the server name and the filter were mixed. A '--'
+			// before the command is the way to pass one through on purpose.
+			return mixedExecFormsError(serverName)
+		}
+		commandStr := strings.Join(commandArgs, " ")
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -286,11 +312,38 @@ func completeExecArgs(cmd *cobra.Command, args []string, toComplete string) ([]s
 	return nil, cobra.ShellCompDirectiveNoFileComp
 }
 
+// mixedExecFormsError reports an invocation that names a server and passes
+// --filter at the same time.
+//
+// The two forms are alternatives, so running either one as written would send
+// the command somewhere the user did not ask for: the server name becomes part
+// of the remote command, or the filter decides the machines.
+func mixedExecFormsError(serverName string) error {
+	return fmt.Errorf("'ops exec' takes either a server name or --filter, not both: use 'ops exec %s <command...>' or 'ops exec --filter <filter> <command...>'", serverName)
+}
+
+// hasExecFilterToken reports whether a positional argument is OpsPulse's own
+// --filter flag rather than part of the remote command.
+//
+// Only --filter is looked for: it is the one flag whose survival into the
+// command changes which servers the command runs on.
+func hasExecFilterToken(args []string) bool {
+	for _, a := range args {
+		if a == "--filter" || strings.HasPrefix(a, "--filter=") {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "T", 60*time.Second, "Command execution timeout (0 to disable)")
 	execCmd.Flags().StringVarP(&execFilter, "filter", "f", "", "Filter target servers (e.g. 'all', 'provider=racknerd', or tag)")
-	execCmd.Flags().IntVarP(&execParallel, "parallel", "p", 5, "Maximum number of parallel server executions")
+	execCmd.Flags().IntVarP(&execParallel, "parallel", "j", 5, "Maximum number of parallel server executions")
 	execCmd.Flags().BoolVar(&execIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in batch execution")
 	execCmd.ValidArgsFunction = completeExecArgs
+	// Everything after the server name is the remote command, so a command may
+	// take arguments that start with '-' without an intervening '--'.
+	execCmd.Flags().SetInterspersed(false)
 	rootCmd.AddCommand(execCmd)
 }

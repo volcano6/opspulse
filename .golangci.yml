@@ -46,6 +46,7 @@ issues:
     - .gemini
     - .workbuddy
     - .workbuddy-ai
+    - .trellis
   exclude-rules:
     # Relax error checking and security checks in test files
     - path: _test\.go

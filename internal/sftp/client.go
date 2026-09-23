@@ -140,9 +140,12 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", tmpRemote, err)
 	}
 
-	// Atomically rename temporary file to destination
-	_ = c.sftpClient.Remove(remotePath)
+	// Rename the temporary file into place. PosixRename is atomic and replaces an
+	// existing destination, so the destination is only removed in the legacy
+	// fallback below, where plain Rename refuses to overwrite it. Removing it up
+	// front would leave the destination missing whenever both renames fail.
 	if err := c.sftpClient.PosixRename(tmpRemote, remotePath); err != nil {
+		_ = c.sftpClient.Remove(remotePath)
 		if rErr := c.sftpClient.Rename(tmpRemote, remotePath); rErr != nil {
 			_ = c.sftpClient.Remove(tmpRemote)
 			return n, fmt.Errorf("failed to rename %q to %q: %w", tmpRemote, remotePath, rErr)

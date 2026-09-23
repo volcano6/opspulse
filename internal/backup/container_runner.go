@@ -26,6 +26,31 @@ type ContainerBackupOptions struct {
 	AliasName     string // Optional alias to rename the container in generated Compose and backup job
 }
 
+// validateContainerAlias rejects aliases that cannot serve as a single path
+// component. The alias becomes the directory name under
+// /var/lib/opspulse/containers and is written into the generated Compose
+// project, so separators, traversal and leading dots must never get through.
+func validateContainerAlias(name string) error {
+	if name == "" || len(name) > 255 {
+		return fmt.Errorf("invalid container alias %q: must be between 1 and 255 characters", name)
+	}
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
+		return fmt.Errorf("invalid container alias %q: cannot start with '.' or '-'", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("invalid container alias %q: cannot contain '..'", name)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return fmt.Errorf("invalid container alias %q: contains invalid character %q", name, r)
+		}
+	}
+	return nil
+}
+
 // ContainerBackupResult contains the results of the container backup operation.
 type ContainerBackupResult struct {
 	RunRecord    *storage.BackupRun
@@ -62,6 +87,8 @@ func (r *Runner) RunContainerBackup(
 	finalName := strings.TrimSpace(opts.AliasName)
 	if finalName == "" {
 		finalName = containerName
+	} else if err := validateContainerAlias(finalName); err != nil {
+		return nil, err
 	}
 
 	target, err := r.ResolveTarget(serverName)

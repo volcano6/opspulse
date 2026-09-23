@@ -13,7 +13,11 @@ import (
 var templateCmd = &cobra.Command{
 	Use:   "template",
 	Short: "Manage and inspect script templates",
-	Long:  "List available built-in and custom script templates or inspect their contents.",
+	Long: `List available built-in and custom script templates or inspect their contents.
+
+Examples:
+  ops template list         # Show every built-in and custom template
+  ops template show base    # Print the content and metadata of one template`,
 }
 
 var templateListCmd = &cobra.Command{

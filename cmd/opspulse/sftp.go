@@ -16,7 +16,6 @@ var (
 	sftpRemotePath string
 	sftpCLI        bool
 	sftpListApps   bool
-	sftpCleanup    bool
 )
 
 var sftpCmd = &cobra.Command{
@@ -27,7 +26,7 @@ var sftpCmd = &cobra.Command{
 Supported GUI clients:
   - Windows: WinSCP, Xftp (NetSarang), FileZilla
   - macOS:   Cyberduck, Transmit, FileZilla
-  - Linux:   FileZilla, Nautilus, Dolphin, xdg-open
+  - Linux:   FileZilla, Nautilus, xdg-open
 
 The client process is launched asynchronously in the background so your terminal
 remains available immediately.
@@ -36,37 +35,6 @@ If no server name is provided, an interactive selector will prompt you to choose
 To force terminal-based OpenSSH sftp session, pass --cli.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		if sftpCleanup {
-			// Kept working so an existing script is not broken outright, but no
-			// longer advertised: nothing writes to ~/.ssh/opspulse-1p any more,
-			// and 'ops 1p restore' purges whatever the op:// era left behind.
-			fmt.Fprintln(os.Stderr, "⚠️  --cleanup is deprecated: OpsPulse no longer materialises temporary keys in ~/.ssh/opspulse-1p, and 'ops 1p restore' purges leftovers from the op:// era automatically. This flag will be removed in a future release.")
-
-			targetServer := ""
-			if len(args) > 0 {
-				targetServer = args[0]
-			}
-			deleted, err := sftp.PurgeMaterialized1PKeys(targetServer)
-			if err != nil {
-				return fmt.Errorf("failed to clean up materialized keys: %w", err)
-			}
-			if len(deleted) == 0 {
-				if targetServer != "" {
-					fmt.Printf("✨ No materialized key found for server %q in ~/.ssh/opspulse-1p.\n", targetServer)
-				} else {
-					fmt.Println("✨ No materialized 1Password keys found on disk (~/.ssh/opspulse-1p is clean).")
-				}
-				return nil
-			}
-			if targetServer != "" {
-				fmt.Printf("🧹 Successfully removed materialized 1Password key for %q.\n", targetServer)
-			} else {
-				fmt.Printf("🧹 Successfully removed %d materialized 1Password private key(s) from ~/.ssh/opspulse-1p: %s\n",
-					len(deleted), strings.Join(deleted, ", "))
-			}
-			return nil
-		}
-
 		if sftpListApps {
 			return listAvailableSFTPApps()
 		}
@@ -197,8 +165,6 @@ func init() {
 	sftpCmd.Flags().StringVar(&sftpRemotePath, "path", "/", "Initial remote directory to open")
 	sftpCmd.Flags().BoolVar(&sftpCLI, "cli", false, "Use terminal OpenSSH sftp client instead of GUI")
 	sftpCmd.Flags().BoolVar(&sftpListApps, "list-apps", false, "List detected SFTP clients on the host system")
-	sftpCmd.Flags().BoolVar(&sftpCleanup, "cleanup", false, "deprecated: 'ops 1p restore' purges these leftovers automatically")
-	_ = sftpCmd.Flags().MarkHidden("cleanup")
 	sftpCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sftpCmd)
 }

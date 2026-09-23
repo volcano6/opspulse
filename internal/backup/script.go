@@ -19,6 +19,36 @@ func HostTag(serverName string) string {
 	return "host:" + serverName
 }
 
+// retryLockVar binds a shell variable to the "--retry-lock <duration>" pair it
+// should hold when the target's restic supports the flag.
+type retryLockVar struct {
+	name     string
+	duration string
+}
+
+// resticRetryLockPreamble emits a shell preamble that fills each variable with
+// its flag pair only when the target's restic understands --retry-lock (added
+// in 0.16.0), and leaves it empty otherwise so older builds keep working
+// without the flag.
+//
+// OpsPulse never runs "restic self-update": upgrading a binary on the target
+// host is the operator's decision, not ours.
+func resticRetryLockPreamble(vars ...retryLockVar) string {
+	var sb strings.Builder
+	sb.WriteString("# --retry-lock requires restic >= 0.16.0; older builds run without it.\n")
+	for _, v := range vars {
+		sb.WriteString(v.name + "=\"\"\n")
+	}
+	sb.WriteString("if command -v restic >/dev/null 2>&1 && restic snapshots --help 2>&1 | grep -q -- '--retry-lock'; then\n")
+	for _, v := range vars {
+		sb.WriteString("  " + v.name + "=\"--retry-lock " + v.duration + "\"\n")
+	}
+	sb.WriteString("else\n")
+	sb.WriteString("  echo \"Notice: restic on this host predates --retry-lock (0.16.0); continuing without it.\" >&2\n")
+	sb.WriteString("fi\n")
+	return sb.String()
+}
+
 // BuildBackupScript generates a self-contained shell script that checks, initializes,
 // executes a restic backup, and optionally prunes old snapshots according to the retention policy.
 func BuildBackupScript(job Job) (string, error) {
@@ -33,21 +63,21 @@ func BuildBackupScript(job Job) (string, error) {
 	// 1. Export environment variables
 	writeEnvBlock(&sb, job)
 
-	// 2. Check restic installation and ensure modern version support (e.g. --retry-lock >= 0.16.0)
+	// 2. Check restic installation and probe for --retry-lock support
 	sb.WriteString(`if ! command -v restic >/dev/null 2>&1; then
-  echo "Error: restic is not installed on target host. Please install it first or run: opspulse bootstrap <server> -t restic" >&2
+  echo "Error: restic is not installed on target host. Please install it first or run: ops bootstrap <server> -t restic" >&2
   exit 127
 fi
 
-if ! restic backup --help 2>&1 | grep -q -- '--retry-lock'; then
-  echo "Notice: detected older restic version, updating via restic self-update..." >&2
-  restic self-update >/dev/null 2>&1 || true
-fi
-` + "\n")
+` + resticRetryLockPreamble(
+		retryLockVar{"RETRY_LOCK_1M", "1m"},
+		retryLockVar{"RETRY_LOCK_2M", "2m"},
+		retryLockVar{"RETRY_LOCK_5M", "5m"},
+	) + "\n")
 
 	// 3. Auto-initialize repository if not initialized
 	sb.WriteString(`# Check if repository is initialized, if not initialize it
-if ! restic snapshots --retry-lock 1m >/dev/null 2>&1; then
+if ! restic snapshots $RETRY_LOCK_1M >/dev/null 2>&1; then
   echo "Repository not initialized. Running restic init..."
   restic init
 fi
@@ -55,7 +85,7 @@ fi
 
 	// 4. Build restic backup command
 	sb.WriteString("echo \"Starting restic backup for job: \" " + shellquote.Quote(job.Name) + " \"...\"\n")
-	sb.WriteString("restic backup --retry-lock 2m --json")
+	sb.WriteString("restic backup $RETRY_LOCK_2M --json")
 
 	for _, tag := range job.Tags {
 		sb.WriteString(" --tag " + shellquote.Quote(tag))
@@ -110,7 +140,7 @@ fi
 
 		if hasKeepRule {
 			sb.WriteString("echo \"Applying retention policy (restic forget --prune)...\"\n")
-			sb.WriteString("restic forget --retry-lock 5m --prune " + strings.Join(forgetArgs, " ") + "\n")
+			sb.WriteString("restic forget $RETRY_LOCK_5M --prune " + strings.Join(forgetArgs, " ") + "\n")
 		}
 	}
 
@@ -126,14 +156,11 @@ func BuildSnapshotsScript(job Job) string {
 
 	writeEnvBlock(&sb, job)
 
-	cmd := "restic snapshots --retry-lock 30s --json --tag " + shellquote.Quote(JobTag(job.Name))
+	cmd := "restic snapshots $RETRY_LOCK_30S --json --tag " + shellquote.Quote(JobTag(job.Name))
 	if strings.TrimSpace(job.Server) != "" {
 		cmd += " --tag " + shellquote.Quote(HostTag(job.Server)) + " --host " + shellquote.Quote(job.Server)
 	}
-	sb.WriteString(`if command -v restic >/dev/null 2>&1 && ! restic snapshots --help 2>&1 | grep -q -- '--retry-lock'; then
-  restic self-update >/dev/null 2>&1 || true
-fi
-`)
+	sb.WriteString(resticRetryLockPreamble(retryLockVar{"RETRY_LOCK_30S", "30s"}))
 	sb.WriteString(cmd + "\n")
 	return sb.String()
 }
@@ -153,11 +180,8 @@ func BuildRestoreScript(job Job, snapshotID string, targetPath string, includePa
   exit 127
 fi
 
-if ! restic restore --help 2>&1 | grep -q -- '--retry-lock'; then
-  echo "Notice: detected older restic version, updating via restic self-update..." >&2
-  restic self-update >/dev/null 2>&1 || true
-fi
 `)
+	sb.WriteString(resticRetryLockPreamble(retryLockVar{"RETRY_LOCK_2M", "2m"}))
 	sb.WriteString("\n")
 
 	hostIsolationFlags := ""
@@ -171,7 +195,7 @@ fi
 		sb.WriteString("STAGING=$(mktemp -d -t opspulse-restore-XXXXXX)\n")
 		sb.WriteString("trap 'rm -rf \"$STAGING\"' EXIT\n\n")
 
-		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target \"$STAGING\"")
+		sb.WriteString("restic restore $RETRY_LOCK_2M " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target \"$STAGING\"")
 		for _, pattern := range includePatterns {
 			sb.WriteString(" --include " + shellquote.Quote(pattern))
 		}
@@ -219,7 +243,7 @@ fi
 	} else {
 		// Standard restore
 		sb.WriteString("echo \"Starting restic restore (snapshot: \" " + shellquote.Quote(snapshotID) + " \", target: \" " + shellquote.Quote(targetPath) + " \")...\"\n")
-		sb.WriteString("restic restore --retry-lock 2m " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target " + shellquote.Quote(targetPath))
+		sb.WriteString("restic restore $RETRY_LOCK_2M " + shellquote.Quote(snapshotID) + hostIsolationFlags + " --target " + shellquote.Quote(targetPath))
 
 		for _, pattern := range includePatterns {
 			sb.WriteString(" --include " + shellquote.Quote(pattern))
@@ -248,8 +272,9 @@ fi
 `)
 	sb.WriteString("\n")
 
+	sb.WriteString(resticRetryLockPreamble(retryLockVar{"RETRY_LOCK_30S", "30s"}))
 	sb.WriteString("echo \"[DRY-RUN] Listing files in snapshot \" " + shellquote.Quote(snapshotID) + " \"...\"\n")
-	sb.WriteString("restic ls --retry-lock 30s " + shellquote.Quote(snapshotID))
+	sb.WriteString("restic ls $RETRY_LOCK_30S " + shellquote.Quote(snapshotID))
 
 	for _, pattern := range includePatterns {
 		sb.WriteString(" --include " + shellquote.Quote(pattern))

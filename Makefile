@@ -11,7 +11,7 @@ GOPATH_BIN  := $(shell go env GOPATH 2>/dev/null || echo $(HOME)/go)/bin
 LOCAL_BIN   := $(HOME)/.local/bin
 export PATH := $(GOPATH_BIN):$(PATH)
 
-.PHONY: build install test lint ci clean docker dev tools
+.PHONY: build install test lint ci clean docker tools
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) ./cmd/opspulse
@@ -50,10 +50,7 @@ tools:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5
 
 clean:
-	rm -rf bin/ coverage.out
+	rm -rf bin/ dist/ coverage.out
 
 docker:
 	docker build -t $(APP_NAME):$(VERSION) .
-
-dev:
-	docker compose -f docker-compose.dev.yml up -d

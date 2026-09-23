@@ -72,21 +72,6 @@ func ListMaterialized1PKeyDetails() ([]MaterializedKeyInfo, error) {
 	return details, nil
 }
 
-// ListMaterialized1PKeys returns server names of all materialized keys in ~/.ssh/opspulse-1p.
-//
-// Legacy: see Materialized1PKeyDir.
-func ListMaterialized1PKeys() ([]string, error) {
-	details, err := ListMaterialized1PKeyDetails()
-	if err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(details))
-	for _, d := range details {
-		keys = append(keys, d.Name)
-	}
-	return keys, nil
-}
-
 func materializedKeyPath(dir, serverName string) (string, error) {
 	if err := server.ValidateServerName(serverName); err != nil {
 		return "", fmt.Errorf("invalid server name %q: %w", serverName, err)
@@ -105,8 +90,8 @@ func materializedKeyPath(dir, serverName string) (string, error) {
 // Returns the list of deleted server key names and any encountered error.
 //
 // Legacy: it exists to clean up residue from the op:// era. `ops 1p restore`
-// calls it once after migrating. `ops sftp --cleanup` is deprecated and kept
-// only so that an existing script does not break outright.
+// calls it once after migrating; the `ops sftp --cleanup` flag that used to
+// expose it to users has since been removed.
 func PurgeMaterialized1PKeys(serverName string) ([]string, error) {
 	dir, err := Materialized1PKeyDir()
 	if err != nil {

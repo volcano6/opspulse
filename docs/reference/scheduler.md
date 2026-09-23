@@ -132,6 +132,6 @@ WantedBy=multi-user.target
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now opspulse
-systemctl status opspulse
+systemctl enable --now ops.service
+systemctl status ops.service
 ```
