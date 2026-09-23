@@ -35,7 +35,7 @@
 - **🔔 Webhook 告警通知**：任务执行完毕或出现故障时自动触发，开箱即用兼容 Slack、Discord、企业微信、钉钉、飞书与通用 Webhook，支持仅在失败时精准告警。
 - **📊 实时日志流与本地落盘**：终端实时输出带服务器前缀标签的交互日志，并在 `$XDG_DATA_HOME/opspulse/logs/` 自动落盘保存。
 - **💾 纯 Go 嵌入式 SQLite 存储**：集成无 CGO 依赖的 `modernc.org/sqlite`，支持嵌入式 SQL 自动迁移，记录结构化执行历史与指标。
-- **🔒 本地优先的凭证与安全边界**：SSH 凭据平时存放在本地（`servers.yaml` 中的私钥路径或明文密码），`ops ssh` / `ops exec` / `ops cp` 直接读取、全程不与 1Password 交互，因此不会弹授权框；1Password 降级为**备份与跨机同步目标**，仅由 `ops 1p backup` 把整台机器（本机全部私钥 + 整份 `servers.yaml`）写进一个 `opspulse_inventory_<hostname>` Secure Note（**绝不改写 `servers.yaml`**，写入后回读逐字节校验；稳定态只需**两次 op 调用**——旧版每台服务器两条目、规模大一点就是几十次调用、两分多钟，而无缓存的 Windows `op.exe` 每次调用都是一次桌面端授权往返），`ops 1p restore` 在新机器上一条命令还原清单与全部凭据、或按需整体脱离 1Password（并集合并所有机器的备份文档、绝不删除本机独有的服务器，私钥覆盖按公钥比对）；`servers.yaml` 中残留的 `op://` 引用在运行时快速失败并指向 `ops 1p restore`；`backups.yaml` 任务的 `env:` 仍支持 `op://` 运行时解析注入、不落盘；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。默认强制启用严格主机密钥校验（Strict Host Key Checking，未知主机输出密钥类型与 SHA256 指纹提示阻断中间人攻击），支持 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式声明首次连接自动受信（等价于 `accept-new` 并通过日志/终端线程安全告警），全模式严密阻断任何主机密钥不匹配与篡改。私钥绝不主动离机，无任何外部遥测上报。
+- **🔒 本地优先的凭证与安全边界**：SSH 凭据平时存放在本地（`servers.yaml` 中的私钥路径或明文密码），`ops ssh` / `ops exec` / `ops cp` 直接读取、全程不与 1Password 交互，因此不会弹授权框；1Password 降级为**备份与跨机同步目标**，仅由 `ops 1p backup` 把整台机器（本机全部私钥 + 整份 `servers.yaml`）写进一个 `opspulse_inventory_<hostname>` Secure Note（**绝不改写 `servers.yaml`**，写入后回读逐字节校验；稳定态只需**两次 op 调用**——旧版每台服务器两条目、十几台机器就要几十次调用、两分多钟，而无缓存的 Windows `op.exe` 每次调用都是一次桌面端授权往返），`ops 1p restore` 在新机器上一条命令还原清单与全部凭据、或按需整体脱离 1Password（并集合并所有机器的备份文档、绝不删除本机独有的服务器，私钥覆盖按公钥比对）；`servers.yaml` 中残留的 `op://` 引用在运行时快速失败并指向 `ops 1p restore`；`backups.yaml` 任务的 `env:` 仍支持 `op://` 运行时解析注入、不落盘；集成 `SSH Agent` 自适应探测；支持 WSL 到 Windows 的原生私钥智能安全桥接。默认强制启用严格主机密钥校验（Strict Host Key Checking，未知主机输出密钥类型与 SHA256 指纹提示阻断中间人攻击），支持 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式声明首次连接自动受信（等价于 `accept-new` 并通过日志/终端线程安全告警），全模式严密阻断任何主机密钥不匹配与篡改。私钥绝不主动离机，无任何外部遥测上报。
 
 ---
 
@@ -72,6 +72,9 @@ ops server info oracle-sg
 # 终端极速直连（无参执行 ops ssh 弹出交互菜单直选；亦可指定服务器名直接进入）
 ops ssh oracle-sg
 
+# 非交互执行远程命令：stdout 只承载命令输出、退出码原样透传，可直接进管道
+ops ssh oracle-sg --exec "docker ps"
+
 # 一键导出并幂等写入 ~/.ssh/config（打通 VS Code Remote-SSH / Cursor / 系统原生 ssh）
 ops export ssh-config --write
 
@@ -80,7 +83,8 @@ ops export ssh-config --write
 ops server setup-key oracle-sg
 
 # 远程执行单条命令（实时流式输出，支持免引号参数透传）
-ops exec oracle-sg docker ps
+# 远程参数以 - 开头时需用 -- 分隔（如 ops exec oracle-sg -- df -h /）
+ops exec oracle-sg -- docker ps
 
 # 通过 SFTP 统一双向快速传输文件或目录
 ops cp ./nginx.conf oracle-sg:/etc/nginx/nginx.conf
@@ -235,7 +239,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops logs <server> <container> [-f] [--tail <n>]` | 实时流式追踪远端 Docker 容器运行日志 |
 | `ops doctor` | 一键体检本地运行环境与外部依赖可用性（SSH/restic/1Password/SFTP 等） |
 | `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
-| `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传） |
+| `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传，以 `-` 开头的远程参数用 `--` 分隔） |
 | `ops template list` | 列出所有内置及自定义脚本模板 |
 | `ops template show <name>` | 查看指定模板的元数据与完整脚本内容 |
 | `ops bootstrap <servers...> -t <templates...>` | 串行执行服务器初始化任务 |
