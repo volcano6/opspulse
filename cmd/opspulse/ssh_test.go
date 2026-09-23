@@ -14,6 +14,40 @@ import (
 	"github.com/volcano6/opspulse/internal/server"
 )
 
+func TestSSHRejectsBareArgumentsInTheSSHOptionSlot(t *testing.T) {
+	setTestHome(t, t.TempDir())
+
+	// Everything after the server name is handed to ssh(1) ahead of the
+	// destination, which is the only slot ssh(1) accepts options in. A bare word
+	// there is read as the host name, so ops has to refuse it up front instead of
+	// letting ssh fail with "hostname contains invalid characters".
+	for _, args := range [][]string{
+		{"ssh", "web", "--", "tmux", "attach"},
+		{"ssh", "web", "--", "uname", "-a"},
+		{"ssh", "web", "tmuo"},
+	} {
+		rootCmd.SetArgs(args)
+		err := rootCmd.Execute()
+		if err == nil {
+			t.Fatalf("rootCmd.Execute(%v) = nil, want a rejected argument", args)
+		}
+		if !strings.Contains(err.Error(), "--exec") {
+			t.Errorf("rootCmd.Execute(%v) error = %q, want it to point at --exec", args, err)
+		}
+	}
+
+	// Dash-prefixed passthrough must keep working. "ghost" does not exist, so the
+	// command stops at the server lookup — proof the guard did not fire.
+	rootCmd.SetArgs([]string{"ssh", "ghost", "--", "-v", "-o", "ConnectTimeout=5"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("rootCmd.Execute(ssh ghost -- -v -o ConnectTimeout=5) = nil, want a server lookup error")
+	}
+	if strings.Contains(err.Error(), "--exec") {
+		t.Errorf("dash-prefixed passthrough was rejected as a remote command: %v", err)
+	}
+}
+
 func TestBuildSSHArgs(t *testing.T) {
 	home := t.TempDir()
 	setTestHome(t, home)
@@ -371,10 +405,10 @@ func TestReadSSHAskpassPasswordMultiHost(t *testing.T) {
 	cfg := askpassConfig{
 		DefaultPass: "fallback-pass",
 		HostPass: map[string]string{
-			"192.0.2.10": "jump-pass",
-			"bastion-1":         "jump-pass",
-			"worker-1.example.com":   "worker-pass",
-			"worker-1":     "worker-pass",
+			"192.0.2.10":           "jump-pass",
+			"bastion-1":            "jump-pass",
+			"worker-1.example.com": "worker-pass",
+			"worker-1":             "worker-pass",
 		},
 	}
 	payload, err := json.Marshal(cfg)
