@@ -158,8 +158,18 @@ func TestBuildLaunchCommand(t *testing.T) {
 		if !strings.Contains(argsStr, "-i ") {
 			t.Errorf("missing -i in args: %s", argsStr)
 		}
+		// Without this, an ssh-agent offering keys the user never chose can
+		// exhaust the server's authentication attempts before the real key.
+		if !strings.Contains(argsStr, "-o IdentitiesOnly=yes") {
+			t.Errorf("missing IdentitiesOnly in args: %s", argsStr)
+		}
 		if !strings.Contains(argsStr, "deploy@10.0.0.1:/var/www") {
 			t.Errorf("missing target in args: %s", argsStr)
+		}
+		// Options must precede the destination, otherwise sftp reads them as a
+		// remote path.
+		if strings.Index(argsStr, "deploy@10.0.0.1") < strings.Index(argsStr, "-i ") {
+			t.Errorf("destination precedes options in args: %s", argsStr)
 		}
 	})
 }
@@ -200,6 +210,103 @@ func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
 			t.Errorf("expected error to point at 'ops 1p restore', got: %v", err)
 		}
 	})
+}
+
+func TestBuildLaunchCommandOpenSSHReusesControlMaster(t *testing.T) {
+	if !server.ControlMasterEnabled() {
+		t.Skip("connection multiplexing is disabled on this platform")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+	srv := server.Server{Name: "web", Host: "10.0.0.1", Port: 22, User: "deploy"}
+
+	// Before the socket directory exists the flags are withheld: ssh and sftp
+	// fail outright on a ControlPath they cannot bind.
+	cmd, err := BuildLaunchCommand(client, srv, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if argsStr := strings.Join(cmd.Args, " "); strings.Contains(argsStr, "ControlMaster") {
+		t.Fatalf("args = %s, want no multiplexing before the directory exists", argsStr)
+	}
+
+	if err := server.EnsureControlMasterDir(); err != nil {
+		t.Fatalf("EnsureControlMasterDir() error: %v", err)
+	}
+	cmd, err = BuildLaunchCommand(client, srv, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	argsStr := strings.Join(cmd.Args, " ")
+	// Same ControlPath pattern the ssh command uses, which is what lets an
+	// 'ops ssh' session be reused here instead of authenticating again.
+	for _, want := range []string{"-o ControlMaster=auto", "-o ControlPath=", "-o ControlPersist=10m"} {
+		if !strings.Contains(argsStr, want) {
+			t.Errorf("args = %s, missing %q", argsStr, want)
+		}
+	}
+	if strings.Index(argsStr, "ControlPath") > strings.Index(argsStr, "deploy@10.0.0.1") {
+		t.Errorf("destination precedes the multiplexing options: %s", argsStr)
+	}
+}
+
+func TestBuildLaunchCommandOpenSSHLegacyHost(t *testing.T) {
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+
+	legacy := server.Server{
+		Name: "hb_170", Host: "116.62.16.170", Port: 22, User: "www",
+		Password: "secret", Tags: []string{"legacy-ssh"},
+	}
+	cmd, err := BuildLaunchCommand(client, legacy, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	argsStr := strings.Join(cmd.Args, " ")
+	// OpenSSH 9.x refuses ssh-rsa host keys unless they are re-enabled, and a
+	// legacy-only daemon offers nothing else - so without this sftp dies at
+	// negotiation while ops ssh, which does inject it, connects fine.
+	if !strings.Contains(argsStr, "HostKeyAlgorithms=+ssh-rsa,ssh-dss") {
+		t.Errorf("args = %s, want the legacy host key algorithms re-enabled", argsStr)
+	}
+
+	modern := server.Server{Name: "web", Host: "10.0.0.1", Port: 22, User: "deploy"}
+	cmd, err = BuildLaunchCommand(client, modern, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if argsStr := strings.Join(cmd.Args, " "); strings.Contains(argsStr, "HostKeyAlgorithms") {
+		t.Errorf("args = %s, want no weak algorithms for a modern host", argsStr)
+	}
+}
+
+func TestBuildLaunchCommandOpenSSHPasswordServer(t *testing.T) {
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+	srv := server.Server{
+		Name: "hb_211_root", Host: "172.20.182.211", Port: 22, User: "root",
+		Password: "secret",
+	}
+
+	cmd, err := BuildLaunchCommand(client, srv, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	argsStr := strings.Join(cmd.Args, " ")
+	if !strings.Contains(argsStr, "-o PubkeyAuthentication=no") {
+		t.Errorf("args = %s, want pubkey auth disabled for a password-only server", argsStr)
+	}
+	if !strings.Contains(argsStr, "-o PreferredAuthentications=password,keyboard-interactive") {
+		t.Errorf("args = %s, want password auth preferred", argsStr)
+	}
+	// There is no identity to pin, so pinning one would be wrong.
+	if strings.Contains(argsStr, "IdentitiesOnly") {
+		t.Errorf("args = %s, want no IdentitiesOnly without a key", argsStr)
+	}
+	if !strings.HasSuffix(argsStr, "root@172.20.182.211") {
+		t.Errorf("args = %s, want the destination last", argsStr)
+	}
 }
 
 func TestFindClient(t *testing.T) {

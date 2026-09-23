@@ -560,10 +560,31 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 		return exec.Command(client.Path, targetURL), nil
 
 	case ClientOpenSSH:
-		// Terminal OpenSSH sftp command
+		// Terminal OpenSSH sftp command. The multiplexing flags let this reuse
+		// the socket an 'ops ssh' session already authenticated, and
+		// IdentitiesOnly keeps an ssh-agent from exhausting the server's
+		// authentication attempts with keys the user did not ask for.
 		args := []string{"-P", strconv.Itoa(port)}
+		args = append(args, server.ControlMasterArgs()...)
+
+		// Legacy hosts offer only ssh-rsa/ssh-dss, which modern OpenSSH refuses
+		// by default; without this sftp cannot even negotiate where ssh can.
+		if srv.IsLegacySSH() {
+			args = append(args,
+				"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
+				"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
+			)
+		}
+
 		if keyPathForClient != "" {
-			args = append(args, "-i", filepath.Clean(keyPathForClient))
+			args = append(args, "-o", "IdentitiesOnly=yes", "-i", filepath.Clean(keyPathForClient))
+		} else if srv.Password != "" {
+			// Mirrors ops ssh: with no identity configured, spend the server's
+			// limited authentication attempts on the password we actually hold
+			// instead of on whatever the agent happens to offer first.
+			args = append(args,
+				"-o", "PubkeyAuthentication=no",
+				"-o", "PreferredAuthentications=password,keyboard-interactive")
 		}
 		target := fmt.Sprintf("%s@%s", user, srv.Host)
 		if remotePath != "/" {

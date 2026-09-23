@@ -153,6 +153,166 @@ func TestBuildSSHArgs(t *testing.T) {
 	}
 }
 
+func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
+	if !server.ControlMasterEnabled() {
+		t.Skip("connection multiplexing is disabled on this platform")
+	}
+	setTestHome(t, t.TempDir())
+
+	srv := server.Server{Name: "vps-01", Host: "192.168.1.10", Port: 22, User: "root"}
+
+	// The socket directory does not exist yet. ssh exits 255 rather than
+	// degrading when it cannot bind a ControlPath, so the flags must be absent.
+	if got := buildSSHArgs("ssh", srv, nil, nil); strings.Contains(strings.Join(got, " "), "ControlMaster") {
+		t.Fatalf("buildSSHArgs() = %v, want no multiplexing before the directory exists", got)
+	}
+
+	if err := server.EnsureControlMasterDir(); err != nil {
+		t.Fatalf("EnsureControlMasterDir() error: %v", err)
+	}
+
+	got := buildSSHArgs("ssh", srv, nil, nil)
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"-o ControlMaster=auto", "-o ControlPath=", "-o ControlPersist=10m"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("buildSSHArgs() = %v, missing %q", got, want)
+		}
+	}
+	if last := got[len(got)-1]; last != "root@192.168.1.10" {
+		t.Errorf("buildSSHArgs() last arg = %q, want the destination to stay last", last)
+	}
+
+	// A user who passes their own ControlMaster option must win, which means
+	// ours has to appear earlier in argv.
+	overridden := buildSSHArgs("ssh", srv, []string{"-o", "ControlMaster=no"}, nil)
+	mine, theirs := -1, -1
+	for i, a := range overridden {
+		if a == "ControlMaster=auto" {
+			mine = i
+		}
+		if a == "ControlMaster=no" {
+			theirs = i
+		}
+	}
+	if mine == -1 || theirs == -1 || mine > theirs {
+		t.Errorf("buildSSHArgs() = %v, want the user's ControlMaster=no to come after ours", overridden)
+	}
+}
+
+func TestNewAskpassFileIsPrivateAndCleanable(t *testing.T) {
+	cfg := askpassConfig{DefaultPass: "s3cret", HostPass: map[string]string{"web": "s3cret"}}
+
+	path, cleanup, err := newAskpassFile(cfg)
+	if err != nil {
+		t.Fatalf("newAskpassFile() error: %v", err)
+	}
+	dir := filepath.Dir(path)
+
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat payload: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("payload mode = %o, want 600", perm)
+	}
+
+	// The payload must be readable back by the helper that will consume it.
+	t.Setenv(askpassDataFile, path)
+	got, err := readSSHAskpassPassword("root@web's password: ")
+	if err != nil {
+		t.Fatalf("readSSHAskpassPassword() error: %v", err)
+	}
+	if got != "s3cret" {
+		t.Errorf("helper returned %q, want %q", got, "s3cret")
+	}
+
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("cleanup left %s behind (stat err: %v)", dir, err)
+	}
+}
+
+func TestAskpassEnvPointsAtThisBinary(t *testing.T) {
+	env := askpassEnv("/usr/local/bin/ops", "/tmp/x/password")
+
+	if env["SSH_ASKPASS"] != "/usr/local/bin/ops" {
+		t.Errorf("SSH_ASKPASS = %q, want the ops binary", env["SSH_ASKPASS"])
+	}
+	// force is what makes the client consult the helper even though it has an
+	// inherited terminal to prompt on.
+	if env["SSH_ASKPASS_REQUIRE"] != "force" {
+		t.Errorf("SSH_ASKPASS_REQUIRE = %q, want force", env["SSH_ASKPASS_REQUIRE"])
+	}
+	if env[askpassHelperFlag] != "1" {
+		t.Errorf("%s = %q, want 1", askpassHelperFlag, env[askpassHelperFlag])
+	}
+	if env[askpassDataFile] != "/tmp/x/password" {
+		t.Errorf("%s = %q, want the payload path", askpassDataFile, env[askpassDataFile])
+	}
+}
+
+func TestReadSSHAskpassRefusesHostKeyPrompt(t *testing.T) {
+	// A host-key confirmation routed to the askpass helper expects "yes" or
+	// "no". Answering it with a password makes ssh's confirm loop ask again
+	// forever, which turned an unknown host into a hang instead of an error.
+	prompt := "The authenticity of host '10.0.0.1 (10.0.0.1)' can't be established.\n" +
+		"ED25519 key fingerprint is SHA256:abc.\n" +
+		"Are you sure you want to continue connecting (yes/no/[fingerprint])? "
+
+	cfg := askpassConfig{DefaultPass: "s3cret", HostPass: map[string]string{"10.0.0.1": "s3cret"}}
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordPath := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(passwordPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(askpassDataFile, passwordPath)
+
+	got, err := readSSHAskpassPassword(prompt)
+	if err == nil {
+		t.Fatalf("readSSHAskpassPassword() = %q, want an error for the host key prompt", got)
+	}
+	if got != "" {
+		t.Errorf("readSSHAskpassPassword() leaked %q while refusing", got)
+	}
+
+	// The ordinary credential prompt for the very same host must still be
+	// answered, or the guard would have broken password login.
+	pass, err := readSSHAskpassPassword("root@10.0.0.1's password: ")
+	if err != nil {
+		t.Fatalf("password prompt was refused: %v", err)
+	}
+	if pass != "s3cret" {
+		t.Errorf("password prompt returned %q, want %q", pass, "s3cret")
+	}
+}
+
+func TestIsHostKeyConfirmation(t *testing.T) {
+	yes := []string{
+		"The authenticity of host 'x' can't be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? ",
+		"Are you sure you want to continue connecting (yes/no)? ",
+	}
+	for _, p := range yes {
+		if !isHostKeyConfirmation(p) {
+			t.Errorf("isHostKeyConfirmation(%q) = false, want true", p)
+		}
+	}
+
+	no := []string{
+		"root@10.0.0.1's password: ",
+		"Password: ",
+		"Enter passphrase for key '/home/u/.ssh/id_ed25519': ",
+		"",
+	}
+	for _, p := range no {
+		if isHostKeyConfirmation(p) {
+			t.Errorf("isHostKeyConfirmation(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestExpandHome(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

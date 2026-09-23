@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -126,11 +127,47 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 
 		// CLI interactive OpenSSH mode
 		fmt.Printf("--> Connecting to %s (%s) via %s...\n", targetServer.Name, targetServer.Address(), client.Name)
+
+		// Same multiplexing directory the ssh command uses, so the two share
+		// one authenticated socket instead of authenticating twice.
+		prepareControlMaster()
+
+		cleanupAskpass, err := attachAskpass(cmd, *targetServer)
+		if err != nil {
+			return err
+		}
+		defer cleanupAskpass()
+
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
 	},
+}
+
+// attachAskpass wires a child sftp process to this binary as its SSH_ASKPASS
+// helper, so a password-auth server connects without the user retyping a
+// password the inventory already holds.
+//
+// A key-only server needs nothing: it returns a no-op cleanup so the caller can
+// defer unconditionally.
+func attachAskpass(cmd *exec.Cmd, srv server.Server) (func(), error) {
+	noop := func() {}
+	if srv.Password == "" {
+		return noop, nil
+	}
+
+	selfPath, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve SSH password helper: %w", err)
+	}
+
+	passwordPath, cleanup, err := newAskpassFile(buildAskpassConfig(srv, nil, srv.Password, ""))
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = overrideEnv(os.Environ(), askpassEnv(selfPath, passwordPath))
+	return cleanup, nil
 }
 
 func listAvailableSFTPApps() error {
