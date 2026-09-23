@@ -324,4 +324,35 @@ func TestServerAddCommand_Integration(t *testing.T) {
 	if !sSkip.SkipBatch {
 		t.Errorf("expected node-skip to have SkipBatch=true, got false")
 	}
+
+	// Test 10: underscores are canonicalized to hyphens on creation, so one machine
+	// cannot end up in the inventory twice under two visually similar names.
+	rootCmd.SetArgs([]string{"add", "node_under", "10.0.0.11", "--skip-test"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(add node_under) error: %v", err)
+	}
+	sNorm, err := store.Get("node-under")
+	if err != nil {
+		t.Fatalf("expected node_under to be stored as node-under: %v", err)
+	}
+	if sNorm.Host != "10.0.0.11" {
+		t.Errorf("node-under host mismatch: %s", sNorm.Host)
+	}
+	if _, err := store.Get("node_under"); err == nil {
+		t.Errorf("expected no entry named node_under, got one")
+	}
+
+	// Test 11: the canonical name is already taken, so the add must fail instead of
+	// silently repointing the existing server at the new host.
+	rootCmd.SetArgs([]string{"add", "node_under", "10.0.0.12", "--skip-test"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected error when the canonical name already exists, got nil")
+	}
+	unchanged, err := store.Get("node-under")
+	if err != nil {
+		t.Fatalf("failed to retrieve node-under: %v", err)
+	}
+	if unchanged.Host != "10.0.0.11" {
+		t.Errorf("existing server was overwritten: host=%s, want 10.0.0.11", unchanged.Host)
+	}
 }

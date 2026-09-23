@@ -62,6 +62,15 @@ func ValidateServerName(name string) error {
 	return nil
 }
 
+// NormalizeServerName returns the canonical form of a server name: underscores
+// become hyphens. Both characters are accepted by ValidateServerName and they are
+// hard to tell apart in many fonts, so "web_1" and "web-1" would otherwise name
+// one machine twice. Callers apply it to names they are about to create; existing
+// entries are never rewritten, so lookups stay predictable.
+func NormalizeServerName(name string) string {
+	return strings.ReplaceAll(name, "_", "-")
+}
+
 // Server represents a managed server instance.
 type Server struct {
 	Name        string            `yaml:"name" json:"name"`

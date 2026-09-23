@@ -29,6 +29,10 @@ var addCmd = &cobra.Command{
 Target can be specified as positional argument [user@]host[:port] or via flags.
 Default user is root, default SSH port is 22.
 
+Names are canonicalized on creation: underscores become hyphens, so "web_1" is
+stored as "web-1" and one machine cannot end up in the inventory twice under two
+names that look alike. Existing entries are never renamed.
+
 Examples:
   # Add server with silent password prompt and automatic public key injection
   ops add vps-1 1.2.3.4
@@ -308,6 +312,21 @@ func handlePublicKeyInjection(in io.Reader, out io.Writer, srv *server.Server, p
 	}
 }
 
+// underscoreTwin reports an existing server whose name differs from name only by
+// underscores, i.e. one that NormalizeServerName would collapse into name.
+func underscoreTwin(store *server.Store, name string) (string, bool) {
+	servers, err := store.List()
+	if err != nil {
+		return "", false
+	}
+	for _, s := range servers {
+		if s.Name != name && server.NormalizeServerName(s.Name) == name {
+			return s.Name, true
+		}
+	}
+	return "", false
+}
+
 func runServerAdd(cmd *cobra.Command, args []string) error {
 	name := strings.TrimSpace(args[0])
 	if name == "" {
@@ -374,6 +393,22 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 	jumpHost = strings.TrimSpace(jumpHost)
 
 	store := server.NewDefaultStore()
+
+	// Underscores and hyphens are hard to tell apart in many fonts and both are legal
+	// in ValidateServerName, so "web_1" next to an existing "web-1" would leave two
+	// inventory entries for one machine. Canonicalize the name being created.
+	if normalized := server.NormalizeServerName(name); normalized != name {
+		if _, err := store.Get(normalized); err == nil {
+			return fmt.Errorf("server %q already exists and %q normalizes to it; run 'ops add %s ...' to update that server, or pick another name", normalized, name, normalized)
+		} else if !errors.Is(err, server.ErrServerNotFound) {
+			return err
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "ℹ️  Server name %q contains underscores; using %q instead.\n", name, normalized)
+		name = normalized
+	} else if twin, ok := underscoreTwin(store, name); ok {
+		_, _ = fmt.Fprintf(os.Stdout, "⚠️  Server %q differs from the existing %q only by underscores; if they are the same machine, remove one with 'ops server remove %s'.\n", name, twin, twin)
+	}
+
 	if jumpHost != "" {
 		if strings.EqualFold(jumpHost, name) {
 			return server.ErrSelfReferencingJumpHost
