@@ -81,7 +81,7 @@ func TestRenderServerTable(t *testing.T) {
 			JumpHost: "bastion-1",
 		},
 		{
-			Name:        "tx",
+			Name:        "db-1",
 			Host:        "198.51.100.20",
 			Port:        22,
 			User:        "ubuntu",

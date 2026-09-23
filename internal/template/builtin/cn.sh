@@ -1,7 +1,7 @@
 #!/bin/bash
 # ---
 # name: cn
-# version: 1
+# version: 2
 # os: [ubuntu, debian]
 # description: China mainland network & mirror optimization (APT, Git, Docker, Go, Pip)
 # ---
@@ -202,9 +202,11 @@ echo "==> 3. Configuring Docker Registry Mirrors..."
 mkdir -p /etc/docker
 
 # Priority:
-# 1. Custom argument ($1 or $SCRIPT_ARG) if supplied
-# 2. Verified private mirror (https://docker-mirror.example.com)
-# 3. Stable public mirror fallback (https://docker.m.daocloud.io)
+# 1. Custom argument ($1 or $SCRIPT_ARG) if supplied - pass a self-hosted or
+#    otherwise private mirror here, e.g. -t cn:https://mirror.example.com
+# 2. Stable public mirror fallback (https://docker.m.daocloud.io)
+# No private mirror is hardcoded: users get the public fallback unless they opt
+# in explicitly through the template argument.
 CUSTOM_ARG="${1:-${SCRIPT_ARG:-}}"
 
 DOCKER_MIRRORS_LIST=()
@@ -213,7 +215,6 @@ if [ -n "$CUSTOM_ARG" ] && [[ "$CUSTOM_ARG" =~ ^https?:// ]]; then
 fi
 
 DOCKER_MIRRORS_LIST+=(
-    "https://docker-mirror.example.com"
     "https://docker.m.daocloud.io"
 )
 
@@ -302,6 +303,6 @@ echo "=========================================================="
 echo "🎉 China mainland VPS initialization completed successfully!"
 echo "   • APT mirrors updated and synced"
 echo "   • Git GitHub insteadOf acceleration active"
-echo "   • Docker registry-mirrors configured (docker-mirror.example.com + daocloud)"
+echo "   • Docker registry-mirrors configured: ${DOCKER_MIRRORS_LIST[*]}"
 echo "   • Go (goproxy.cn) and Python (tsinghua) mirrors configured"
 echo "=========================================================="

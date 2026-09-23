@@ -9,7 +9,7 @@ func TestPathRemapper_Remap(t *testing.T) {
 	rules := map[string]string{
 		"/home/user":         "/root",
 		"/home/user/.config": "/root/.config",
-		"var/log/":          "/opt/log",
+		"var/log/":           "/opt/log",
 	}
 
 	remapper := NewPathRemapper(rules)

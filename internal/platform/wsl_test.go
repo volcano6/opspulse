@@ -7,9 +7,9 @@ func TestToWSLPath(t *testing.T) {
 		input string
 		want  string
 	}{
-		{`C:\Users\volca`, "/mnt/c/Users/user"},
+		{`C:\Users\user`, "/mnt/c/Users/user"},
 		{`D:\Projects\app`, "/mnt/d/Projects/app"},
-		{`C:\Users\volca\AppData\Local\Temp`, "/mnt/c/Users/user/AppData/Local/Temp"},
+		{`C:\Users\user\AppData\Local\Temp`, "/mnt/c/Users/user/AppData/Local/Temp"},
 		{"no_drive_letter", "no_drive_letter"},
 		{"/already/posix", "/already/posix"},
 		{`  C:\spaced  `, "/mnt/c/spaced"},
@@ -28,7 +28,7 @@ func TestToWindowsPath(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"/mnt/c/Users/user", `C:\Users\volca`},
+		{"/mnt/c/Users/user", `C:\Users\user`},
 		{"/mnt/d/Projects/app", `D:\Projects\app`},
 		{"/home/user", "/home/user"},
 		{"/mnt/", "/mnt/"},
@@ -43,7 +43,7 @@ func TestToWindowsPath(t *testing.T) {
 }
 
 func TestPathTranslationRoundTrip(t *testing.T) {
-	win := `C:\Users\volca\AppData\Local\Temp`
+	win := `C:\Users\user\AppData\Local\Temp`
 	if got := ToWindowsPath(ToWSLPath(win)); got != win {
 		t.Errorf("round trip of %q produced %q", win, got)
 	}

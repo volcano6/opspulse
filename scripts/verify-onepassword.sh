@@ -218,9 +218,10 @@ esac
 echo
 echo "==> a repeat backup is two calls: one edit, one read-back"
 # This is the change in one assertion. The old per-credential design spent one
-# call per key and one per password, plus a listing; a large fleet took dozens of
-# calls and over two minutes. Here the whole inventory is refreshed by editing
-# the document in place, which needs no listing and no read-before-write.
+# call per key and one per password, plus a listing; on a large fleet that ran
+# to dozens of calls and over two minutes. Here the whole inventory is refreshed
+# by editing the document in place, which needs no listing and no
+# read-before-write.
 #
 # No --vault is passed, which is the point: the vault the first backup had to
 # discover is remembered, so the steady state never lists vaults again. Paying

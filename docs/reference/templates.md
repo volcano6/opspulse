@@ -10,7 +10,7 @@ OpsPulse 直接通过 `go:embed` 将以下经过充分验证的官方模板嵌�
 
 | 模板名称 | 操作系统支持 | 功能描述 | 主要执行动作 |
 |----------|------------|---------|-------------|
-| `cn` | Ubuntu, Debian | 国内 VPS 网络与镜像加速 | 自动切换 APT 国内源（内网/公网自适应）、Git GitHub 全局代理、Docker 镜像源、Go/Pip 生态源 |
+| `cn` | Ubuntu, Debian | 国内 VPS 网络与镜像加速 | 自动切换 APT 国内源（内网/公网自适应）、Git GitHub 全局代理、Docker 镜像源（默认仅公共源，可用 `-t cn:<镜像地址>` 追加自建源）、Go/Pip 生态源 |
 | `base` | Ubuntu, Debian | 系统基础工具集 | 自动更新 apt 缓存，安装常用工具与排障套件，开启 TCP BBR 拥塞控制 |
 | `bbr` | Ubuntu, Debian | 开启 TCP BBR 拥塞控制 | 独立开启 Linux TCP BBR 与 fq 排队规则（写入 `/etc/sysctl.d/99-bbr.conf`） |
 | `security` | Ubuntu, Debian | 安全与防火墙加固 | 智能识别当前活跃 SSH 端口并自动放行，放行 Web 80/443，开启 UFW 与 fail2ban 防暴破 |

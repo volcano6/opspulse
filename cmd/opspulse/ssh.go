@@ -31,11 +31,15 @@ Reads connection parameters (host, port, user, key_path) automatically from serv
 Arguments after '--' are handed to ssh(1) as options (-o, -L, -v, ...). They are
 placed ahead of the destination because that is where ssh(1) requires options to
 be, so a remote command cannot be passed this way — ssh(1) would read it as the
-host name. Use --exec to run a command instead.
+host name, and ops rejects such an argument before connecting. Use --exec to run
+a command instead.
 
-With --exec the command runs non-interactively: no pseudo-terminal is allocated,
-stdout carries the command's output and nothing else, and the command's exit
-status becomes the exit status of ops.
+With --exec stdout carries the command's output and nothing else (the banner goes
+to stderr) and the command's exit status becomes the exit status of ops. ops
+injects no pseudo-terminal of its own: ssh(1) keeps its native rule and allocates
+one whenever stdin is a terminal, so tmux/sudo stay usable through --exec while
+pipes and scripts get a plain non-interactive session. Pass "-- -T" to force it
+off.
 
 If no server name is provided, an interactive menu allows selecting a server to connect.`,
 	Args: cobra.ArbitraryArgs,
@@ -58,6 +62,14 @@ If no server name is provided, an interactive menu allows selecting a server to 
 		} else {
 			serverName = args[0]
 			extraArgs = args[1:]
+			// buildSSHArgs keeps these ahead of the destination, the only slot
+			// ssh(1) accepts options in. A bare word there becomes the host name,
+			// so refuse it here with the fix instead of letting ssh fail with
+			// "hostname contains invalid characters".
+			if len(extraArgs) > 0 && !strings.HasPrefix(extraArgs[0], "-") {
+				return fmt.Errorf("unexpected argument %q: arguments after the server name are passed to ssh(1) as options, so a bare word is read as the host name; run a remote command with --exec %q instead",
+					extraArgs[0], strings.Join(extraArgs, " "))
+			}
 		}
 
 		srv, err := store.Get(serverName)
@@ -89,9 +101,12 @@ If no server name is provided, an interactive menu allows selecting a server to 
 
 		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, sshExec, store)
 
-		// A remote command is not an interactive session: no pseudo-terminal and
-		// no terminal-title rewriting, and the banner goes to stderr so that
-		// stdout carries the command's output and nothing else.
+		// A remote command is not an interactive session for ops: no
+		// terminal-title rewriting and no output filtering, and the banner goes to
+		// stderr so that stdout carries the command's output and nothing else. The
+		// pseudo-terminal is deliberately left to ssh(1), which allocates one
+		// whenever stdin is a terminal ("-- -T" forces it off), keeping tmux and
+		// interactive sudo usable through --exec.
 		execMode := sshExec != ""
 
 		banner := fmt.Sprintf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())

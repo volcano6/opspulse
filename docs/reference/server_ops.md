@@ -15,7 +15,7 @@ Ops 不仅是一键初始化与灾备迁移平台，更是日常高效管理多�
 ops add vps-1 203.0.113.10
 
 # 2. 指定自定义用户、端口与私钥
-ops add oracle-sg ubuntu@192.0.2.11:2222 \
+ops add oracle-sg ubuntu@203.0.113.10:2222 \
   -i ~/Downloads/oracle.pem \
   --labels provider=oracle,region=singapore,purpose=blog \
   --tags prod,web \
@@ -82,7 +82,7 @@ ops ls --filter oracle-sg
 ```text
 NAME          HOST          PORT   USER     AUTH                    LABELS                                                TAGS       DESCRIPTION
 ----          ----          ----   ----     ----                    ------                                                ----       -----------
-oracle-sg     203.0.113.10   22     ubuntu   key (~/.ssh/id_ed25519) purpose=blog,provider=oracle,region=singapore         prod,web   生产环境博客主节点
+oracle-sg     203.0.113.10  22     ubuntu   key (~/.ssh/id_ed25519) purpose=blog,provider=oracle,region=singapore         prod,web   生产环境博客主节点
 ```
 
 ---
@@ -99,7 +99,7 @@ ops server info oracle-sg
 ```text
 ╔═══════════════════════════════════════════════════════════════╗
 ║  Server : oracle-sg                                           ║
-║  Host   : 192.0.2.11:22                                      ║
+║  Host   : 203.0.113.10:22                                     ║
 ╠═══════════════════════════════════════════════════════════════╣
    OS           : Ubuntu 24.04 LTS
    Kernel       : 6.8.0-45-generic
@@ -138,10 +138,17 @@ ops server setup-key oracle-sg --remove-password
 
 # 4. 透传原生 SSH 客户端选项（使用 -- 分隔）
 ops ssh oracle-sg -- -o StrictHostKeyChecking=no
+ops ssh oracle-sg -- -v          # 调试握手过程
+ops ssh oracle-sg -- -T          # 强制不分配 pty（纯管道场景）
 
-# 5. 远程快速启动特定命令或 tmux
-ops ssh oracle-sg -- tmux attach
+# 5. 远程执行单条命令（非交互路径）
+ops ssh oracle-sg --exec "tmux attach"
+ops ssh oracle-sg --exec "systemctl status nginx | tail -n 20"
 ```
+
+> **`--` 与 `--exec` 的分工**：`--` 之后的参数原样进入 ssh(1) 的**选项槽位**（`-o` / `-L` / `-v` / `-T` …）。该槽位必须位于目的地址之前，也是 ssh(1) 唯一接受选项的位置，因此远程命令无法经 `--` 传递——ssh(1) 会把命令词当成主机名。ops 在建立连接前就会拒绝这类参数，并提示改用 `--exec`。
+
+`--exec` 复用同一个系统 ssh(1) 进程，但按非交互语义运行：ops 不改写终端标题、不过滤输出，横幅信息写 stderr，因此 **stdout 只承载命令输出**（可直接进管道）；**远程退出码原样成为 ops 的退出码**；pty 沿用 ssh(1) 的原生规则——stdin 是终端时分配（`tmux attach`、交互式 `sudo` 因此仍然可用），管道与脚本中得到纯非交互会话，需要强制关闭时追加 `-- -T`。需要超时控制、自动提权、批量并发或 Go 侧主机密钥策略时改用 [`ops exec`](#4-远程单命令快速执行-exec)；两条路径的逐项差异见 §4 末尾的对照表。
 
 ### 一键打通 VS Code / Cursor / 系统终端 (`ops export ssh-config`)
 
@@ -175,14 +182,17 @@ ops export ssh-config --write --filter env=prod
 
 ## 4. 远程单命令快速执行 (`exec`)
 
-无需登录交互终端，直接在本地对指定远程主机执行单条命令，实时流式返回标准输出/标准错误，并完整保留远程命令退出码（支持免引号参数）：
+无需登录交互终端，直接在本地对指定远程主机执行单条命令，实时流式返回标准输出/标准错误，并完整保留远程命令退出码（支持免引号参数；远程参数以 `-` 开头时需用 `--` 分隔）：
 
 ```bash
 # 1. 快速查看 Docker 容器列表
-ops exec oracle-sg docker ps
+ops exec oracle-sg -- docker ps
 
 # 2. 查看磁盘或内存情况（可直接在本地通过管道符处理）
-ops exec oracle-sg df -h /
+#    注意：远程参数以 - 开头时必须用 -- 分隔，否则该参数会被当成 ops 自身的标志
+#    （ops exec oracle-sg df -h / 中的 -h 会触发帮助输出，命令根本不会执行）
+ops exec oracle-sg -- df -h /
+ops exec oracle-sg -- free -m
 ops exec oracle-sg cat /var/log/nginx/access.log | grep 404 | wc -l
 
 # 3. 设置超时时间（默认 60 秒，传 0 禁用超时）
@@ -195,6 +205,26 @@ ops exec -f "provider=oracle" -p 10 "docker ps -q | wc -l"
 # 5. 显式临时包含 skip-batch 服务器进行批量操作
 ops exec -f all --include-skipped "uptime"
 ```
+
+### `ops exec` 与 `ops ssh --exec` 的差异对照
+
+两者都能在远端跑一条命令，但走的是**两条不同的技术路径**：`ops ssh --exec` 驱动系统 OpenSSH 客户端，`ops exec` 使用进程内 Go `x/crypto/ssh`。这些差异不是缺陷，而是两条路径各自存在的理由——按场景选：
+
+| 维度 | `ops ssh <name> --exec "cmd"` | `ops exec <name> cmd ...` |
+| --- | --- | --- |
+| 传输层 | 系统 `ssh(1)` 子进程 | 进程内 Go `x/crypto/ssh` |
+| 主机密钥 | ssh(1) 原生策略，与交互式登录共用同一份 `~/.ssh/known_hosts` | 严格 TOFU：写入同一份 `~/.ssh/known_hosts`，不匹配即拒绝；未知主机直接报错，需 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 显式放行 |
+| pty | 沿用 ssh(1) 规则：stdin 是终端即分配，`-- -T` 强制关闭 | 不分配 pty |
+| stdout / stderr | 分离；横幅走 stderr，stdout 干净可直接进管道 | 合并为同一路输出（便于按时间顺序查看全量日志） |
+| 退出码 | 原样透传 | 原样透传 |
+| 超时 | 无 ops 层超时 | `--timeout`（默认 60s，传 `0` 禁用） |
+| 老旧算法 | ssh(1) 原生支持，配合 `legacy-ssh` 标签受控降级 | Go 库可协商 `ssh-rsa` 主机密钥；仅提供 `ssh-dss` 的主机不可用 |
+| 自动提权 | 不介入，命令以登录用户身份执行 | 远端为非 root 且 `sudo -n true` 可用时自动以 `sudo -E` 执行 |
+| 连接复用 | ControlMaster 多路复用（Windows 上自动关闭） | 每次调用新建连接 |
+| 命令封装 | 命令交给远端登录 shell，引号与管道按远端语义解释 | 整条命令经 base64 后交给远端 `bash -s`（行尾统一为 LF） |
+| 批量执行 | 单台 | `-f all` / `-f provider=xxx` 批量并发（`-p` 控并发度，自动跳过 `skip_batch` 服务器） |
+
+简言之：**要 pty 与交互性、需要 ssh(1) 原生算法兼容（老机器）时选 `ops ssh --exec`；要超时控制、自动提权、批量并发时选 `ops exec`。**
 
 ---
 

@@ -33,11 +33,14 @@ var execCmd = &cobra.Command{
 	Long: `Execute arbitrary shell commands on a specified remote server or across multiple
 servers matched by a filter.
 
+Put -- before the remote command when that command takes an argument starting with -,
+as in ops exec vps-1 -- df -h /; otherwise ops parses the argument as its own flag.
+
 Examples:
-  ops exec vps-1 uptime                          # Single server
-  ops exec --filter all "uptime"                 # All servers in parallel
-  ops exec --filter "provider=racknerd" "df -h"  # Filter by label or tag
-  ops exec -f all -p 10 "docker ps -q | wc -l"   # Concurrency control`,
+  ops exec vps-1 -- uptime                        # Single server
+  ops exec --filter all "uptime"                  # All servers in parallel
+  ops exec --filter "provider=racknerd" "df -h"   # Filter by label or tag
+  ops exec -f all -p 10 "docker ps -q | wc -l"    # Concurrency control`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(_ *cobra.Command, args []string) error {
 		store := server.NewDefaultStore()

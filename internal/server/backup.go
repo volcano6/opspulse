@@ -21,10 +21,10 @@ const BackupVersion = 1
 //
 // It is deliberately one document rather than one item per server. Every
 // 1Password CLI call is a full round trip through the Desktop App - measured at
-// 3-9s, with no cache on the Windows build - so a large fleet spent dozens of
-// calls and over two minutes backing up. The whole payload is ~14KB, and
-// 1Password round-trips a single field of 2MB byte for byte, so packing it into
-// one field costs nothing and brings the same backup down to two calls.
+// 3-9s, with no cache on the Windows build - so a large fleet used to spend
+// dozens of calls and over two minutes backing up. The whole payload is ~14KB,
+// and 1Password round-trips a single field of 2MB byte for byte, so packing it
+// into one field costs nothing and brings the same backup down to two calls.
 //
 // Keys is a side map rather than a field on each Server so that Servers stays
 // exactly []Server: MergeInventories, SameInventory and diffServers keep working
