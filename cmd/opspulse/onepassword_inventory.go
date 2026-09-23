@@ -21,9 +21,9 @@ import (
 // prompt - stays together instead of swelling onepassword.go.
 //
 // One document rather than one item per credential because every op call is a
-// full round trip through the Desktop App (3-9s, uncached on Windows): a
-// large fleet ran to dozens of calls and over two minutes backing up, against two
-// calls and a few seconds now.
+// full round trip through the Desktop App (3-9s, uncached on Windows): on a
+// large fleet the old design spent dozens of calls and over two minutes backing
+// up, against two calls and a few seconds now.
 
 // errInventoryAborted reports that the user quit at a conflict prompt. It is a
 // cancellation, not a failure, but it must still reach the exit code: a merge

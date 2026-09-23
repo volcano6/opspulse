@@ -32,15 +32,18 @@ make ci
 
 ## 📝 Commit 提交规范
 
-请遵循 [Conventional Commits (约定式提交)](https://www.conventionalcommits.org/zh-hans/):
+请遵循 [Conventional Commits (约定式提交)](https://www.conventionalcommits.org/zh-hans/)：
 
 ```text
-feat: add server inventory
-fix: handle SSH timeout
-docs: update README
-test: add executor tests
-ci: update GitHub Actions
+feat(ssh): 新增 --exec 入口
+fix(1p): 空机器 restore 不再误报保留了本机独有服务器
+docs(reference): 补充 server_ops 的 skip-batch 说明
+test(backup): 覆盖容器热导的失败路径
+ci: 升级 golangci-lint 版本
 ```
+
+- `scope` 用变更所在模块（`ssh` / `1p` / `backup` / `restore` / `asset` / `template` / `docs` …），跨模块或纯构建改动可省略。
+- 标题用中文短句说清"做了什么"；正文说明**为什么**改、**怎么验证**（命令或场景），不要只复述 diff。
 
 ---
 

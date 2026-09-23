@@ -10,7 +10,7 @@ func TestTranslateWindowsPathToWSL(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{`C:\Users\volca`, `/mnt/c/Users/user`},
+		{`C:\Users\user`, `/mnt/c/Users/user`},
 		{`D:\Projects\app`, `/mnt/d/Projects/app`},
 		{`no_drive_letter`, `no_drive_letter`},
 	}
@@ -28,7 +28,7 @@ func TestTranslateWSLPathToWindows(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{`/mnt/c/Users/user`, `C:\Users\volca`},
+		{`/mnt/c/Users/user`, `C:\Users\user`},
 		{`/mnt/d/Projects/app`, `D:\Projects\app`},
 		{`/home/user`, `/home/user`},
 	}

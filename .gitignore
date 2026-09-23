@@ -29,9 +29,11 @@ dist/
 .opstub-verify/
 
 # Agent workspace (WorkBuddy / Gemini / Antigravity). Local notes, caches, and scratch builds.
+# 新增任何 agent/AI 工具目录时在这里加一条（本地守卫会兜底断言，防止漏加）。
 .workbuddy/
 .workbuddy-ai/
 .gemini/
+.trellis/
 scratch/
 docs/*_handoff.md
 docs/*_debt.md
