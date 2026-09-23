@@ -560,10 +560,14 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, remotePath string)
 		return exec.Command(client.Path, targetURL), nil
 
 	case ClientOpenSSH:
-		// Terminal OpenSSH sftp command
+		// Terminal OpenSSH sftp command. The multiplexing flags let this reuse
+		// the socket an 'ops ssh' session already authenticated, and
+		// IdentitiesOnly keeps an ssh-agent from exhausting the server's
+		// authentication attempts with keys the user did not ask for.
 		args := []string{"-P", strconv.Itoa(port)}
+		args = append(args, server.ControlMasterArgs()...)
 		if keyPathForClient != "" {
-			args = append(args, "-i", filepath.Clean(keyPathForClient))
+			args = append(args, "-o", "IdentitiesOnly=yes", "-i", filepath.Clean(keyPathForClient))
 		}
 		target := fmt.Sprintf("%s@%s", user, srv.Host)
 		if remotePath != "/" {

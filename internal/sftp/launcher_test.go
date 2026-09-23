@@ -158,8 +158,18 @@ func TestBuildLaunchCommand(t *testing.T) {
 		if !strings.Contains(argsStr, "-i ") {
 			t.Errorf("missing -i in args: %s", argsStr)
 		}
+		// Without this, an ssh-agent offering keys the user never chose can
+		// exhaust the server's authentication attempts before the real key.
+		if !strings.Contains(argsStr, "-o IdentitiesOnly=yes") {
+			t.Errorf("missing IdentitiesOnly in args: %s", argsStr)
+		}
 		if !strings.Contains(argsStr, "deploy@10.0.0.1:/var/www") {
 			t.Errorf("missing target in args: %s", argsStr)
+		}
+		// Options must precede the destination, otherwise sftp reads them as a
+		// remote path.
+		if strings.Index(argsStr, "deploy@10.0.0.1") < strings.Index(argsStr, "-i ") {
+			t.Errorf("destination precedes options in args: %s", argsStr)
 		}
 	})
 }
@@ -200,6 +210,47 @@ func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
 			t.Errorf("expected error to point at 'ops 1p restore', got: %v", err)
 		}
 	})
+}
+
+func TestBuildLaunchCommandOpenSSHReusesControlMaster(t *testing.T) {
+	if !server.ControlMasterEnabled() {
+		t.Skip("connection multiplexing is disabled on this platform")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+	srv := server.Server{Name: "web", Host: "10.0.0.1", Port: 22, User: "deploy"}
+
+	// Before the socket directory exists the flags are withheld: ssh and sftp
+	// fail outright on a ControlPath they cannot bind.
+	cmd, err := BuildLaunchCommand(client, srv, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if argsStr := strings.Join(cmd.Args, " "); strings.Contains(argsStr, "ControlMaster") {
+		t.Fatalf("args = %s, want no multiplexing before the directory exists", argsStr)
+	}
+
+	if err := server.EnsureControlMasterDir(); err != nil {
+		t.Fatalf("EnsureControlMasterDir() error: %v", err)
+	}
+	cmd, err = BuildLaunchCommand(client, srv, "/")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	argsStr := strings.Join(cmd.Args, " ")
+	// Same ControlPath pattern the ssh command uses, which is what lets an
+	// 'ops ssh' session be reused here instead of authenticating again.
+	for _, want := range []string{"-o ControlMaster=auto", "-o ControlPath=", "-o ControlPersist=10m"} {
+		if !strings.Contains(argsStr, want) {
+			t.Errorf("args = %s, missing %q", argsStr, want)
+		}
+	}
+	if strings.Index(argsStr, "ControlPath") > strings.Index(argsStr, "deploy@10.0.0.1") {
+		t.Errorf("destination precedes the multiplexing options: %s", argsStr)
+	}
 }
 
 func TestFindClient(t *testing.T) {

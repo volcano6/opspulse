@@ -61,6 +61,8 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			return fmt.Errorf("system 'ssh' client not found in PATH: %w", err)
 		}
 
+		prepareControlMaster()
+
 		// This path drives the system ssh(1) binary and never reaches
 		// executor.BuildClientConfig, so the op:// guard has to be applied here.
 		// Without it the literal "op://..." string would be handed to ssh as a
@@ -180,9 +182,28 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 	return nil, fmt.Errorf("server %q not found in inventory", choice)
 }
 
+// prepareControlMaster makes the multiplexing socket directory, so that
+// buildSSHArgs can hand ssh a ControlPath it is able to bind.
+//
+// Failing is not fatal and not silent: without the directory ssh still
+// connects, it just cannot reuse a session, and the user should know why the
+// second 'ops ssh' to the same box authenticated again.
+func prepareControlMaster() {
+	if !server.ControlMasterEnabled() {
+		return
+	}
+	if err := server.EnsureControlMasterDir(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  SSH session reuse is off: %v\n", err)
+	}
+}
+
 // buildSSHArgs builds the argv for the system ssh client.
 func buildSSHArgs(binary string, srv server.Server, extraArgs []string, store *server.Store) []string {
 	args := []string{binary}
+
+	// Session reuse comes first so a user-supplied '-o ControlMaster=...' in
+	// extraArgs still wins: later options override earlier ones in ssh(1).
+	args = append(args, server.ControlMasterArgs()...)
 
 	// Compatibility with legacy RSA/DSA host keys and public keys when explicitly tagged.
 	// SECURITY NOTE: This is intentional, opt-in backwards compatibility for legacy hosts
@@ -475,6 +496,66 @@ func buildAskpassConfig(srv server.Server, jumpSrv *server.Server, targetPasswor
 	return cfg
 }
 
+// writeAskpassPayload stores the password payload as a 0600 file, then wipes
+// the serialized bytes from memory so the plaintext does not linger while a
+// long session runs.
+func writeAskpassPayload(path string, cfg askpassConfig) error {
+	payload, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("serialize SSH password helper file: %w", err)
+	}
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return fmt.Errorf("write SSH password helper file: %w", err)
+	}
+	for i := range payload {
+		payload[i] = 0
+	}
+	return nil
+}
+
+// newAskpassFile creates a private directory holding the password payload and
+// returns its path plus a cleanup that zeroes the file before removing it.
+//
+// The zeroing is not ceremony: the payload is the plaintext password, and a
+// bare unlink would leave the bytes recoverable on the underlying device for
+// as long as the blocks are not reused.
+func newAskpassFile(cfg askpassConfig) (string, func(), error) {
+	dir, err := os.MkdirTemp("", "opspulse-askpass-")
+	if err != nil {
+		return "", nil, fmt.Errorf("create SSH password directory: %w", err)
+	}
+	path := filepath.Join(dir, "password")
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			if fi, err := os.Stat(path); err == nil {
+				zeroes := make([]byte, fi.Size())
+				_ = os.WriteFile(path, zeroes, 0o600)
+			}
+			_ = os.RemoveAll(dir)
+		})
+	}
+
+	if err := writeAskpassPayload(path, cfg); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+// askpassEnv points a child ssh or sftp process at this binary as its
+// SSH_ASKPASS helper. REQUIRE=force is what makes the client consult the helper
+// instead of prompting on the terminal it inherited.
+func askpassEnv(selfPath, dataFile string) map[string]string {
+	return map[string]string{
+		"SSH_ASKPASS":         selfPath,
+		"SSH_ASKPASS_REQUIRE": "force",
+		askpassHelperFlag:     "1",
+		askpassDataFile:       dataFile,
+	}
+}
+
 func matchHostPassword(hostPass map[string]string, prompt string) string {
 	if len(hostPass) == 0 || prompt == "" {
 		return ""
@@ -511,24 +592,6 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 	if err != nil {
 		return fmt.Errorf("resolve SSH password helper: %w", err)
 	}
-	passwordDir, err := os.MkdirTemp("", "opspulse-askpass-")
-	if err != nil {
-		return fmt.Errorf("create SSH password directory: %w", err)
-	}
-	passwordPath := filepath.Join(passwordDir, "password")
-
-	var cleanupOnce sync.Once
-	cleanup := func() {
-		cleanupOnce.Do(func() {
-			if fi, err := os.Stat(passwordPath); err == nil {
-				// Securely overwrite password bytes with zeros before unlinking
-				zeroes := make([]byte, fi.Size())
-				_ = os.WriteFile(passwordPath, zeroes, 0o600)
-			}
-			_ = os.RemoveAll(passwordDir)
-		})
-	}
-	defer cleanup()
 
 	targetPassword := resolveTargetPassword(srv)
 
@@ -543,18 +606,11 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 
 	cfg := buildAskpassConfig(srv, jumpSrv, targetPassword, jumpPassword)
 
-	payload, err := json.Marshal(cfg)
+	passwordPath, cleanup, err := newAskpassFile(cfg)
 	if err != nil {
-		return fmt.Errorf("serialize SSH password helper file: %w", err)
+		return err
 	}
-
-	if err := os.WriteFile(passwordPath, payload, 0o600); err != nil {
-		return fmt.Errorf("write SSH password helper file: %w", err)
-	}
-	// Immediately wipe in-memory payload bytes to avoid lingering in memory during long SSH sessions
-	for i := range payload {
-		payload[i] = 0
-	}
+	defer cleanup()
 
 	cmdArgs := args[1:]
 	if shouldFilter {
@@ -581,17 +637,20 @@ func runPasswordSSH(binary string, args []string, srv server.Server, store *serv
 		cmd.Stderr = os.Stderr
 	}
 
-	envMap := map[string]string{
-		"SSH_ASKPASS":         askpassPath,
-		"SSH_ASKPASS_REQUIRE": "force",
-		askpassHelperFlag:     "1",
-		askpassDataFile:       passwordPath,
-	}
-	cmd.Env = overrideEnv(os.Environ(), envMap)
+	cmd.Env = overrideEnv(os.Environ(), askpassEnv(askpassPath, passwordPath))
 	return cmd.Run()
 }
 
 func readSSHAskpassPassword(prompt string) (string, error) {
+	// ssh(1) sends its host-key confirmation through SSH_ASKPASS as well once
+	// the helper is forced. That prompt expects "yes" or "no"; answering it with
+	// a password makes ssh's confirm loop reject the answer and ask again
+	// forever, so the connection hangs instead of failing. Refusing the prompt
+	// turns it back into a closed failure.
+	if isHostKeyConfirmation(prompt) {
+		return "", fmt.Errorf("refusing to answer the host key prompt %q", prompt)
+	}
+
 	data, err := os.ReadFile(os.Getenv(askpassDataFile)) // #nosec G703 -- parent creates and owns the 0600 file in a 0700 temporary directory
 	if err != nil {
 		return "", fmt.Errorf("read SSH password helper file: %w", err)
@@ -615,6 +674,18 @@ func readSSHAskpassPassword(prompt string) (string, error) {
 
 	// Legacy or direct raw password string (when not JSON formatted)
 	return string(data), nil
+}
+
+// isHostKeyConfirmation reports whether the prompt is ssh's unknown-host
+// question rather than a credential prompt.
+//
+// Matched on wording rather than position because the question is the only
+// prompt whose valid answers are "yes" and "no"; a credential prompt never
+// reads like this.
+func isHostKeyConfirmation(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	return strings.Contains(lower, "are you sure you want to continue connecting") ||
+		strings.Contains(lower, "(yes/no")
 }
 
 func overrideEnv(environ []string, values map[string]string) []string {
