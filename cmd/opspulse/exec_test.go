@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -60,6 +62,27 @@ func TestCommandExitCode(t *testing.T) {
 	}
 	if got := commandExitCode(fmt.Errorf("ordinary error")); got != 1 {
 		t.Fatalf("commandExitCode() = %d, want 1", got)
+	}
+}
+
+// TestCommandExitCodePropagatesChildStatus guards the contract that
+// 'ops ssh <name> --exec ...' exits with the remote command's status: a failing
+// child reaches commandExitCode as a bare *exec.ExitError rather than as an
+// executor.ExecutionError, and its status must survive.
+func TestCommandExitCodePropagatesChildStatus(t *testing.T) {
+	if os.Getenv("OPSPULSE_TEST_EXIT_CHILD") == "1" {
+		os.Exit(42)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestCommandExitCodePropagatesChildStatus")
+	cmd.Env = append(os.Environ(), "OPSPULSE_TEST_EXIT_CHILD=1")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("helper child process unexpectedly succeeded")
+	}
+
+	if got := commandExitCode(err); got != 42 {
+		t.Fatalf("commandExitCode(%v) = %d, want 42", err, got)
 	}
 }
 

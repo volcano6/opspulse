@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
@@ -62,6 +63,13 @@ func commandExitCode(err error) int {
 	var executionErr *executor.ExecutionError
 	if errors.As(err, &executionErr) && executionErr.ExitCode > 0 {
 		return executionErr.ExitCode
+	}
+	// A child process that fails reaches here as a bare *exec.ExitError, for
+	// example 'ops ssh <name> --exec ...'. Report its status instead of a
+	// generic 1 so callers can branch on the remote command's exit code.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode()
 	}
 	return 1
 }

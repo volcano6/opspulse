@@ -28,6 +28,15 @@ var sshCmd = &cobra.Command{
 	Long: `Directly opens a native interactive SSH session to the specified server.
 Reads connection parameters (host, port, user, key_path) automatically from servers.yaml.
 
+Arguments after '--' are handed to ssh(1) as options (-o, -L, -v, ...). They are
+placed ahead of the destination because that is where ssh(1) requires options to
+be, so a remote command cannot be passed this way — ssh(1) would read it as the
+host name. Use --exec to run a command instead.
+
+With --exec the command runs non-interactively: no pseudo-terminal is allocated,
+stdout carries the command's output and nothing else, and the command's exit
+status becomes the exit status of ops.
+
 If no server name is provided, an interactive menu allows selecting a server to connect.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -78,16 +87,26 @@ If no server name is provided, an interactive menu allows selecting a server to 
 			}
 		}
 
-		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, store)
+		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, sshExec, store)
 
+		// A remote command is not an interactive session: no pseudo-terminal and
+		// no terminal-title rewriting, and the banner goes to stderr so that
+		// stdout carries the command's output and nothing else.
+		execMode := sshExec != ""
+
+		banner := fmt.Sprintf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())
 		if srv.JumpHost != "" {
-			fmt.Printf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
+			banner = fmt.Sprintf("--> Connecting to %s (%s) via jump host %s...\n", srv.Name, srv.Address(), srv.JumpHost)
+		}
+		if execMode {
+			fmt.Fprint(os.Stderr, banner)
 		} else {
-			fmt.Printf("--> Connecting to %s (%s)...\n", srv.Name, srv.Address())
+			fmt.Print(banner)
 		}
 
-		shouldFilter := len(extraArgs) == 0 && !sshNoTitle && term.IsTerminal(int(os.Stdin.Fd()))
-		if len(extraArgs) == 0 && !sshNoTitle {
+		interactive := !execMode && len(extraArgs) == 0 && !sshNoTitle
+		shouldFilter := interactive && term.IsTerminal(int(os.Stdin.Fd()))
+		if interactive {
 			setTerminalTitle(srv.Name)
 			defer resetTerminalTitle()
 		}
@@ -198,7 +217,9 @@ func prepareControlMaster() {
 }
 
 // buildSSHArgs builds the argv for the system ssh client.
-func buildSSHArgs(binary string, srv server.Server, extraArgs []string, store *server.Store) []string {
+//
+// remoteCmd, when non-empty, is the command ssh(1) runs on the far side.
+func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCmd string, store *server.Store) []string {
 	args := []string{binary}
 
 	// Session reuse comes first so a user-supplied '-o ControlMaster=...' in
@@ -289,6 +310,14 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, store *s
 		user = "root"
 	}
 	args = append(args, fmt.Sprintf("%s@%s", user, srv.Host))
+
+	// ssh(1) takes the first non-option argument as the destination and treats
+	// everything after it as the remote command, so the command can only be
+	// appended once the destination is in place. Placing it any earlier — as an
+	// extraArg would — makes ssh(1) read the command as the host name.
+	if remoteCmd != "" {
+		args = append(args, remoteCmd)
+	}
 
 	return args
 }
@@ -702,10 +731,14 @@ func overrideEnv(environ []string, values map[string]string) []string {
 	return result
 }
 
-var sshNoTitle bool
+var (
+	sshNoTitle bool
+	sshExec    string
+)
 
 func init() {
 	sshCmd.Flags().BoolVar(&sshNoTitle, "no-title", false, "Do not set terminal title during SSH session")
+	sshCmd.Flags().StringVar(&sshExec, "exec", "", "Run a command on the server non-interactively and exit with its status")
 	sshCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sshCmd)
 }
