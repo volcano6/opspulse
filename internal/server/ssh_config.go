@@ -83,6 +83,13 @@ func RenderSSHConfig(servers []Server) string {
 			buf.WriteString(fmt.Sprintf("    Port %d\n", port))
 		}
 
+		// Reuse an authenticated session for repeated connections to the same
+		// machine. Omitted entirely when the socket directory is not ready, so
+		// the exported config never points ssh at a path it cannot bind.
+		for _, line := range ControlMasterConfigLines() {
+			buf.WriteString(line + "\n")
+		}
+
 		switch {
 		case secret.Is1PRef(s.KeyPath):
 			// ssh(1) cannot read op:// references, and the runtime no longer
@@ -118,6 +125,11 @@ func UpdateSSHConfigFile(filePath string, servers []Server) (string, int, error)
 	} else {
 		filePath = config.ExpandPath(filePath)
 	}
+
+	// Prepare the multiplexing directory before rendering, so the block we are
+	// about to write carries ControlMaster lines the system ssh can actually
+	// use. A failure here is not fatal: the renderer then leaves the lines out.
+	_ = EnsureControlMasterDir()
 
 	block := RenderSSHConfig(servers)
 
