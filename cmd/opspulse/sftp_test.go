@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,6 +28,72 @@ func setupTestServerStore(t *testing.T) string {
 		t.Fatalf("failed to save test server: %v", err)
 	}
 	return tempDir
+}
+
+func TestAttachAskpass(t *testing.T) {
+	t.Run("a key-only server needs no helper", func(t *testing.T) {
+		cmd := exec.Command("sftp", "root@10.0.0.1")
+		cleanup, err := attachAskpass(cmd, server.Server{Name: "web", Host: "10.0.0.1", KeyPath: "~/.ssh/id_ed25519"})
+		if err != nil {
+			t.Fatalf("attachAskpass() error: %v", err)
+		}
+		defer cleanup()
+		if cmd.Env != nil {
+			t.Errorf("cmd.Env was set for a key-only server: %v", cmd.Env)
+		}
+	})
+
+	t.Run("a password server gets the helper environment", func(t *testing.T) {
+		cmd := exec.Command("sftp", "root@10.0.0.1")
+		srv := server.Server{Name: "web", Host: "10.0.0.1", Password: "s3cret"}
+
+		cleanup, err := attachAskpass(cmd, srv)
+		if err != nil {
+			t.Fatalf("attachAskpass() error: %v", err)
+		}
+		defer cleanup()
+
+		env := envMapOf(cmd.Env)
+		if env["SSH_ASKPASS"] == "" {
+			t.Error("SSH_ASKPASS was not set")
+		}
+		if env["SSH_ASKPASS_REQUIRE"] != "force" {
+			t.Errorf("SSH_ASKPASS_REQUIRE = %q, want force", env["SSH_ASKPASS_REQUIRE"])
+		}
+		if env[askpassHelperFlag] != "1" {
+			t.Errorf("%s = %q, want 1", askpassHelperFlag, env[askpassHelperFlag])
+		}
+
+		// The payload must be readable through the same contract the helper
+		// uses, otherwise sftp would be handed an unanswerable prompt.
+		payload := env[askpassDataFile]
+		if payload == "" {
+			t.Fatal("the payload path was not exported")
+		}
+		t.Setenv(askpassDataFile, payload)
+		pass, err := readSSHAskpassPassword("root@10.0.0.1's password: ")
+		if err != nil {
+			t.Fatalf("helper could not read the payload: %v", err)
+		}
+		if pass != "s3cret" {
+			t.Errorf("helper returned %q, want %q", pass, "s3cret")
+		}
+
+		cleanup()
+		if _, err := os.Stat(filepath.Dir(payload)); !os.IsNotExist(err) {
+			t.Errorf("cleanup left %s behind (stat err: %v)", filepath.Dir(payload), err)
+		}
+	})
+}
+
+func envMapOf(environ []string) map[string]string {
+	out := make(map[string]string, len(environ))
+	for _, entry := range environ {
+		if key, value, ok := strings.Cut(entry, "="); ok {
+			out[key] = value
+		}
+	}
+	return out
 }
 
 func TestSFTPCmd_ListApps(t *testing.T) {
