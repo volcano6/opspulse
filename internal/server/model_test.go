@@ -1,8 +1,42 @@
 package server
 
 import (
+	"errors"
 	"testing"
 )
+
+func TestServer_ValidatePort(t *testing.T) {
+	tests := []struct {
+		name    string
+		port    int
+		want    int
+		wantErr bool
+	}{
+		{name: "unset defaults to 22", port: 0, want: 22},
+		{name: "explicit port kept", port: 2222, want: 2222},
+		{name: "negative port rejected", port: -1, wantErr: true},
+		{name: "port above TCP range rejected", port: 65536, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := Server{Name: "srv", Host: "example.com", Port: tc.port}
+			err := s.Validate()
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidPort) {
+					t.Fatalf("Validate() error = %v, want ErrInvalidPort", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if s.Port != tc.want {
+				t.Errorf("Port = %d, want %d", s.Port, tc.want)
+			}
+		})
+	}
+}
 
 func TestServer_HasTag(t *testing.T) {
 	s := Server{

@@ -451,6 +451,30 @@ func TestDispatcher_Filtering(t *testing.T) {
 	if atomic.LoadInt32(&alwaysCount) != 2 {
 		t.Errorf("alw-ch count after success event = %d, want 2", alwaysCount)
 	}
+
+	// 3. Dispatch a PARTIAL event: the work finished but a follow-up step
+	// failed, so failure-triggered channels must hear about it.
+	partialEvent := Event{
+		JobName:   "db-backup",
+		Status:    "partial",
+		Server:    "vps-01",
+		Error:     "container auto-start failed",
+		Timestamp: time.Now(),
+	}
+	errs = dispatcher.Dispatch(ctx, partialEvent)
+	if len(errs) > 0 {
+		t.Fatalf("Dispatch(partial) errors: %v", errs)
+	}
+
+	if atomic.LoadInt32(&failureCount) != 2 {
+		t.Errorf("fail-ch count after partial event = %d, want 2", failureCount)
+	}
+	if atomic.LoadInt32(&successCount) != 1 {
+		t.Errorf("succ-ch count after partial event = %d, want 1", successCount)
+	}
+	if atomic.LoadInt32(&alwaysCount) != 3 {
+		t.Errorf("alw-ch count after partial event = %d, want 3", alwaysCount)
+	}
 }
 
 func TestDispatcher_SendTest(t *testing.T) {

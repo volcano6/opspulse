@@ -24,11 +24,6 @@ func translateWindowsPathToWSL(winPath string) string {
 	return platform.ToWSLPath(winPath)
 }
 
-// translateWSLPathToWindows translates a path like "/mnt/c/Users/Username" to "C:\Users\Username"
-func translateWSLPathToWindows(wslPath string) string {
-	return platform.ToWindowsPath(wslPath)
-}
-
 // BridgeKeyToWindows copies the WSL SSH private key to the mirrored Windows directory.
 // It returns the native Windows path (C:\...) to be passed to GUI clients.
 func BridgeKeyToWindows(linuxKeyPath string) (string, error) {

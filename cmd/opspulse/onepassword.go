@@ -285,32 +285,6 @@ credentials as part of the restore. That compatibility path is temporary.`,
 	},
 }
 
-// legacyPushCmd and legacyPullCmd retire the old names loudly.
-//
-// They are not aliases: push/pull carried flags that no longer exist, and
-// forwarding would mean either parsing a dead flag set or silently ignoring it.
-// Their flags stay registered (hidden) so that 'ops 1p push --materialize'
-// reports the rename instead of Cobra's "unknown flag" error.
-var onePasswordLegacyPushCmd = &cobra.Command{
-	Use:    "push",
-	Short:  "Retired: use 'ops 1p backup'",
-	Hidden: true,
-	Args:   cobra.ArbitraryArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		return fmt.Errorf("'ops 1p push' has been retired; use 'ops 1p backup' instead")
-	},
-}
-
-var onePasswordLegacyPullCmd = &cobra.Command{
-	Use:    "pull",
-	Short:  "Retired: use 'ops 1p restore'",
-	Hidden: true,
-	Args:   cobra.ArbitraryArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
-		return fmt.Errorf("'ops 1p pull' has been retired; use 'ops 1p restore' instead")
-	},
-}
-
 var onePasswordStatusRemote bool
 
 var onePasswordStatusCmd = &cobra.Command{
@@ -537,6 +511,20 @@ func runRestoreFromOnePassword(ctx context.Context, args []string) error {
 		return err
 	}
 
+	store := server.NewDefaultStore()
+	explicit := len(args) > 0
+
+	// Named servers are resolved before the first op call. servers.yaml is a
+	// local file, so a misspelled name can be reported without first paying for
+	// every 1Password round trip the rest of this function makes.
+	var namedTargets []*server.Server
+	if explicit {
+		var err error
+		if namedTargets, err = selectRestoreTargets(store, args); err != nil {
+			return err
+		}
+	}
+
 	cli, err := ensure1PCLI()
 	if err != nil {
 		return err
@@ -545,9 +533,6 @@ func runRestoreFromOnePassword(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	store := server.NewDefaultStore()
-	explicit := len(args) > 0
 
 	// One vault listing for the whole command: the inventory restore and the
 	// credential matching below both read it, and a second `op item list` would
@@ -577,9 +562,13 @@ func runRestoreFromOnePassword(ctx context.Context, args []string) error {
 		}
 	}
 
-	targets, err := selectRestoreTargets(store, args)
-	if err != nil {
-		return err
+	targets := namedTargets
+	if !explicit {
+		// The no-argument form waits for the inventory restore above: on a
+		// fresh machine the server names exist only once it has run.
+		if targets, err = selectRestoreTargets(store, nil); err != nil {
+			return err
+		}
 	}
 	if len(targets) == 0 {
 		return fmt.Errorf("nothing to restore: servers.yaml holds no servers")
@@ -632,7 +621,8 @@ func runRestoreFromOnePassword(ctx context.Context, args []string) error {
 //
 // Naming a server is an instruction, so a name that is not in servers.yaml is
 // an error rather than a silent skip: the usual cause is restoring credentials
-// before the server list, which the no-argument form fixes.
+// before the server list, which the no-argument form fixes. The named form is
+// resolved before any 1Password call, so a typo costs one local lookup.
 func selectRestoreTargets(store *server.Store, args []string) ([]*server.Server, error) {
 	if len(args) == 0 {
 		all, err := store.List()
@@ -1389,9 +1379,10 @@ func listVaults(ctx context.Context, cli secret.CLI) ([]string, error) {
 //     and falls through rather than wedging every future command.
 //  3. the only vault the account can see: no point demanding a choice.
 //
-// remember records an explicit choice as the new default. Push wants that, since
-// the vault is where items are created; pull's --vault only scopes a search, and
-// remembering a read-only archive vault would silently break the next push.
+// remember records an explicit choice as the new default. Backup wants that,
+// since the vault is where items are created; restore's --vault only scopes a
+// search, and remembering a read-only archive vault would silently move the
+// next backup's target.
 func resolveAndValidateVault(ctx context.Context, cli secret.CLI, explicitVault string, remember bool) (string, error) {
 	names, err := listVaults(ctx, cli)
 	if err != nil {
@@ -1482,7 +1473,7 @@ func dedupeNonEmpty(values []string) []string {
 
 // rememberOnePasswordSetting records a default so the next run can omit the
 // flag. Failures are reported but never fatal: not remembering a preference
-// must not break an otherwise successful push.
+// must not break an otherwise successful backup.
 func rememberOnePasswordSetting(field, value string) {
 	settings, err := secret.LoadSettings()
 	if err != nil {
@@ -1698,41 +1689,6 @@ func installWindows1PCLIFromWSL() error {
 	return fmt.Errorf("winget is not reachable from WSL")
 }
 
-// legacyFlagNames are the flags the retired push/pull commands used to carry.
-// They are registered on the hidden stubs and never read: without them, an old
-// invocation like 'ops 1p push --materialize' would die on Cobra's "unknown
-// flag" error instead of reaching the message that names its replacement.
-var legacyFlagNames = []struct {
-	name      string
-	shorthand string
-	isBool    bool
-}{
-	{"vault", "", false},
-	{"all", "", true},
-	{"filter", "f", false},
-	{"include-skipped", "", true},
-	{"delete-local", "", true},
-	{"inventory", "", true},
-	{"prefer-local", "", true},
-	{"prefer-remote", "", true},
-	{"yes", "y", true},
-	{"force", "", true},
-	{"from-vault", "", true},
-	{"materialize", "", true},
-}
-
-// registerLegacyFlags mirrors the old flag surface onto a retired stub.
-func registerLegacyFlags(cmd *cobra.Command) {
-	for _, f := range legacyFlagNames {
-		if f.isBool {
-			cmd.Flags().BoolP(f.name, f.shorthand, false, "retired; ignored")
-		} else {
-			cmd.Flags().StringP(f.name, f.shorthand, "", "retired; ignored")
-		}
-		_ = cmd.Flags().MarkHidden(f.name)
-	}
-}
-
 func init() {
 	onePasswordCmd.PersistentFlags().StringVar(&onePasswordAccount, "account", "", "1Password account (sign-in address or ID); remembered for future runs")
 
@@ -1753,16 +1709,11 @@ func init() {
 	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigUnset, "unset", false, "Forget the remembered vault and account")
 	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigOffline, "offline", false, "Only read or write the local config; do not contact the 1Password CLI")
 
-	registerLegacyFlags(onePasswordLegacyPushCmd)
-	registerLegacyFlags(onePasswordLegacyPullCmd)
-
 	onePasswordCmd.AddCommand(
 		onePasswordBackupCmd,
 		onePasswordRestoreCmd,
 		onePasswordStatusCmd,
 		onePasswordConfigCmd,
-		onePasswordLegacyPushCmd,
-		onePasswordLegacyPullCmd,
 	)
 	rootCmd.AddCommand(onePasswordCmd)
 }

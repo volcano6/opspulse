@@ -7,8 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  neutrality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Tracked files must not carry real addresses, hostnames, home directories,
+      # private keys or vault names. The rules are deliberately shape-based: a
+      # literal denylist living in this repository would itself be the leak.
+      # See CONTRIBUTING.md「中性化约定」.
+      - name: Check tracked files for non-neutralized real values
+        run: bash scripts/check-neutrality.sh
+
   lint:
     runs-on: ubuntu-latest
+    needs: neutrality
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

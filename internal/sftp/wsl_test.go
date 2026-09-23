@@ -23,24 +23,6 @@ func TestTranslateWindowsPathToWSL(t *testing.T) {
 	}
 }
 
-func TestTranslateWSLPathToWindows(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{`/mnt/c/Users/user`, `C:\Users\user`},
-		{`/mnt/d/Projects/app`, `D:\Projects\app`},
-		{`/home/user`, `/home/user`},
-	}
-
-	for _, tc := range tests {
-		actual := translateWSLPathToWindows(tc.input)
-		if actual != tc.expected {
-			t.Errorf("translateWSLPathToWindows(%q) = %q, want %q", tc.input, actual, tc.expected)
-		}
-	}
-}
-
 func TestIsWSL(t *testing.T) {
 	// Simple test to ensure it doesn't panic. Environment specific.
 	orig := os.Getenv("WSL_DISTRO_NAME")

@@ -312,8 +312,7 @@ legacy   legacy 1password ref (Private/opspulse_legacy_key)   -
 （重装、改名、或者 `~/.ssh` 里一个手滑的 `rm` 都会造成这种状态。）
 
 如果 `~/.ssh/opspulse-1p` 里还有旧版本遗留的临时私钥，`status` 会列出来。这些是
-`op://` 时代的残留，`ops 1p restore` 会自动清理。`ops sftp --cleanup` 已废弃：
-仍然可用，但已从帮助里隐藏，将来会移除。
+`op://` 时代的残留，`ops 1p restore` 会自动清理，无需手动处理。
 
 ## `ops 1p config`：记住默认的保险库与账号
 
@@ -343,26 +342,15 @@ ops 1p config --vault Employee --account acme.1password.com
 > 记住的保险库如果以后被删掉，命令会**告警并自动回退**到剩余可用的库，不会一直卡住；
 > 而显式传 `--vault` 传错名字是硬报错。
 
-## 已退役的 `push` / `pull`
+## 已删除的 `push` / `pull`
 
-旧版的 `ops 1p push` 与 `ops 1p pull` 已经**退役**。它们是隐藏命令，运行只会得到明确的
-迁移指引：
+旧版的 `ops 1p push` 与 `ops 1p pull` 已被**彻底删除**——它们不再是隐藏命令，旧参数
+（如 `--materialize`、`--delete-local`）也一并消失。现在运行 `ops 1p push` 只会打印 `ops 1p`
+的帮助，当前子命令仅 `backup` / `restore` / `status` / `config` 四个。
 
-```
-$ ops 1p push --all
-Error: 'ops 1p push' has been retired; use 'ops 1p backup' instead
-
-$ ops 1p pull --all --materialize
-Error: 'ops 1p pull' has been retired; use 'ops 1p restore' instead
-```
-
-它们的旧参数（如 `--materialize`、`--delete-local`）仍然被注册为**隐藏参数**，
-所以 `ops 1p push --materialize` 会得到上面的重命名提示，而不是 Cobra 的
-`unknown flag` 报错。
-
-为什么不能简单地把 `push` 当成 `backup` 的别名？因为 `push` 的语义是**改写 `servers.yaml`
-为 `op://` 引用**，而 `backup` 恰恰相反——它绝不改写 `servers.yaml`。两者不是同一个动作，
-悄悄转发等于在你背后改变了本机配置。
+替代者是 `ops 1p backup` / `ops 1p restore`，但语义并不相同，所以没有保留别名：
+`push` 的语义是**改写 `servers.yaml` 为 `op://` 引用**，而 `backup` 恰恰相反——它绝不改写
+`servers.yaml`。两者不是同一个动作，悄悄转发等于在你背后改变了本机配置。
 
 ## 仍然保留：`backups.yaml` 里的 `env: op://`
 
@@ -432,7 +420,6 @@ jobs:
 | `ops 1p status` | **离线**，只读 `servers.yaml`，从不弹授权框 |
 | `ops 1p status --remote` | 额外查询保险库并读取各机器的备份文档，需授权 |
 | `ops 1p config --offline` | 只读写本地记忆的默认值，不联系 CLI |
-| `ops 1p push` / `ops 1p pull` | 已退役（隐藏命令），运行只给出重命名指引 |
 | `ops export ssh-config` | 系统 `ssh` 读不了 `op://`；若某主机仍是引用，则不写 `IdentityFile`，只留注释指引 |
 | `backups.yaml` 的 `env: op://` | **仍然支持**：任务执行时按需解析注入，属独立的运行时特性 |
 

@@ -37,7 +37,7 @@ var serverListCmd = &cobra.Command{
 		}
 
 		if len(servers) == 0 {
-			fmt.Printf("No servers found. Add one using:\n  opspulse server add <name> --host <host>\n")
+			fmt.Printf("No servers found. Add one using:\n  ops server add <name> --host <host>\n")
 			return nil
 		}
 
@@ -184,7 +184,7 @@ var serverTestCmd = &cobra.Command{
 		if err != nil {
 			if isManagedKey(srv.KeyPath) {
 				fmt.Printf("💡 Note: This server uses an OpsPulse-managed key (%s).\n", srv.KeyPath)
-				fmt.Printf("   If the key is invalid, run 'opspulse server set %s --key <new_path>' to replace, or 'opspulse server remove %s' to clean up.\n", srv.Name, srv.Name)
+				fmt.Printf("   If the key is invalid, run 'ops server set %s --key <new_path>' to replace, or 'ops server remove %s' to clean up.\n", srv.Name, srv.Name)
 			}
 			return fmt.Errorf("❌ Connection failed: %w", err)
 		}
@@ -196,13 +196,25 @@ var serverTestCmd = &cobra.Command{
 	},
 }
 
-var removeKeepKey bool
+var (
+	removeKeepKey bool
+	removeYes     bool
+)
 
 var serverRemoveCmd = &cobra.Command{
 	Use:     "remove <name>",
 	Aliases: []string{"rm", "delete"},
 	Short:   "Remove a server from the inventory",
-	Args:    cobra.ExactArgs(1),
+	Long: `Remove a server entry from servers.yaml.
+
+Removing an entry also deletes the private key file OpsPulse manages for it,
+unless --keep-key is given or another server still references the same key.
+
+Examples:
+  ops server remove old-vps             # Confirm interactively, then remove
+  ops server remove old-vps --yes       # Skip the confirmation prompt
+  ops server remove old-vps --keep-key  # Leave the managed private key on disk`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
 		store := server.NewDefaultStore()
@@ -221,15 +233,60 @@ var serverRemoveCmd = &cobra.Command{
 				name, len(dependents), strings.Join(depNames, ", "))
 		}
 
-		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
+		if err := confirmServerRemoval(os.Stdin, os.Stdout, *srv, removeKeepKey, removeYes, stdinIsInteractive()); err != nil {
 			return err
+		}
+
+		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
+			return fmt.Errorf("clean up private key %s of server %q: %w", srv.KeyPath, srv.Name, err)
 		}
 		if err := store.Delete(name); err != nil {
-			return err
+			if srv.KeyPath != "" {
+				return fmt.Errorf("remove server %q from inventory (private key: %s): %w", name, srv.KeyPath, err)
+			}
+			return fmt.Errorf("remove server %q from inventory: %w", name, err)
 		}
-		fmt.Printf("✅ Server %q removed successfully from inventory.\n", name)
+		if srv.KeyPath != "" {
+			fmt.Printf("✅ Server %q removed successfully from inventory (private key: %s).\n", name, srv.KeyPath)
+		} else {
+			fmt.Printf("✅ Server %q removed successfully from inventory.\n", name)
+		}
 		return nil
 	},
+}
+
+// confirmServerRemoval gates a removal that drops the inventory entry and, with
+// it, the managed private key file on disk.
+//
+// A non-interactive shell is refused rather than prompted at: reading from a
+// pipe that never closes would hang a script, and assuming consent would delete
+// a key nobody agreed to lose. The I/O and the interactivity verdict are
+// parameters so the policy can be tested without a real terminal.
+func confirmServerRemoval(in io.Reader, out io.Writer, srv server.Server, keepKey, yes, interactive bool) error {
+	if yes {
+		return nil
+	}
+	if !interactive {
+		return fmt.Errorf("refusing to remove server %q without confirmation; re-run with --yes to accept this in a non-interactive shell", srv.Name)
+	}
+
+	keyNote := "no private key is configured"
+	if srv.KeyPath != "" {
+		switch {
+		case keepKey:
+			keyNote = fmt.Sprintf("the private key %s is kept on disk (--keep-key)", srv.KeyPath)
+		case isManagedKey(srv.KeyPath):
+			keyNote = fmt.Sprintf("the managed private key %s is deleted unless another server still uses it", srv.KeyPath)
+		default:
+			keyNote = fmt.Sprintf("the private key %s is left on disk (OpsPulse only deletes keys it manages)", srv.KeyPath)
+		}
+	}
+
+	prompt := fmt.Sprintf("⚠️  Warning: removing server %q drops its inventory entry, and %s.\nAre you sure you want to proceed? [y/N]: ", srv.Name, keyNote)
+	if !promptConfirm(in, out, prompt, false) {
+		return fmt.Errorf("server removal cancelled by user")
+	}
+	return nil
 }
 
 func completeServerNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -306,6 +363,7 @@ func formatTagsAndLabels(s server.Server) string {
 
 func init() {
 	serverRemoveCmd.Flags().BoolVar(&removeKeepKey, "keep-key", false, "Do not delete the managed private key file from disk")
+	serverRemoveCmd.Flags().BoolVarP(&removeYes, "yes", "y", false, "Skip the removal confirmation prompt")
 
 	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
 

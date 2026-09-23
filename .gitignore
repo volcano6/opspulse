@@ -24,16 +24,30 @@ go.work.sum
 # Build output
 bin/
 dist/
+build/
 
 # Scratch directories used by scripts/verify-onepassword.sh
 .opstub-verify/
 
-# Agent workspace (WorkBuddy / Gemini / Antigravity). Local notes, caches, and scratch builds.
-# 新增任何 agent/AI 工具目录时在这里加一条（本地守卫会兜底断言，防止漏加）。
+# Agent workspace (WorkBuddy / Gemini / Antigravity / 通用 AI 编码工具)。
+# 本地笔记、缓存与临时构建产物，一律不入库。
+# 新增任何 agent/AI 工具目录时在这里加一条；本地守卫 .trellis/tools/ai-paths.txt
+# 会兜底断言「已忽略且未被跟踪」，防止漏加。
 .workbuddy/
 .workbuddy-ai/
 .gemini/
 .trellis/
+.claude/
+.cursor/
+.codex/
+.omp/
+.windsurf/
+.specstory/
+.aider
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.github/copilot-instructions.md
 scratch/
 docs/*_handoff.md
 docs/*_debt.md
@@ -45,10 +59,23 @@ docs/internal/
 /test.*
 *.lock
 
+# Runtime logs
+*.log
+
+# Local secrets (never commit)
+id_rsa*
+*.pem
+*.key
 
 # env file
 .env
 .env.*
+.envrc
+
+# Patch / merge leftovers
+*.orig
+*.rej
+*.bak
 
 # Editor/IDE
 .idea/

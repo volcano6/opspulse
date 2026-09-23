@@ -62,8 +62,8 @@ func setupAddFlags(cmd *cobra.Command) {
 	cmd.Flags().StringP("jump-host", "J", "", "Jump host server name from inventory (bastion host)")
 	cmd.Flags().Bool("no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
 	cmd.Flags().Bool("skip-test", false, "Skip SSH connectivity test when adding server")
-	cmd.Flags().String("password", "", "SSH password (optional; prompted interactively if omitted and no key provided)")
-	cmd.Flags().StringP("tags", "t", "", "Comma-separated tags (e.g. prod,web)")
+	cmd.Flags().String("password", "", "SSH password (optional; prompted interactively if omitted and no key provided). Warning: a password passed here is recorded in plaintext in your shell history — prefer the interactive prompt or 'ops server setup-key'")
+	cmd.Flags().String("tags", "", "Comma-separated tags (e.g. prod,web)")
 	cmd.Flags().StringP("labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
 	cmd.Flags().StringP("desc", "d", "", "Server description")
 	cmd.Flags().Bool("skip-batch", false, "Exclude server from implicit batch operations (e.g. ops exec -f all, ops doctor)")
@@ -346,13 +346,21 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 	if targetPort > 0 && (!cmd.Flags().Changed("port") || port == 22) {
 		port = targetPort
 	}
-	if port <= 0 {
+	if port < 0 || port > 65535 {
+		return fmt.Errorf("%w: %d is outside the valid range 1-65535", server.ErrInvalidPort, port)
+	}
+	if port == 0 {
 		port = 22
 	}
 
 	identity, _ := cmd.Flags().GetString("identity")
 	key, _ := cmd.Flags().GetString("key")
-	if identity == "" && key != "" {
+	// --identity and --key are two names for one setting; accepting both with
+	// different values would silently pick one of them.
+	if cmd.Flags().Changed("identity") && cmd.Flags().Changed("key") && identity != key {
+		return fmt.Errorf("cannot use both --identity and --key with different values")
+	}
+	if identity == "" {
 		identity = key
 	}
 

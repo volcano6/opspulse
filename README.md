@@ -28,7 +28,7 @@
 - **⚡ 原生交互式 SSH 直连**：`ops ssh <name>` 免记 IP/端口/密钥，自动桥接密码认证与原生密钥直连，100% 支持 vim/tmux/htop/resize。
 - **🔑 自动化密钥配对注入**：`ops server setup-key <name>` 自动生成专用密钥并安全写入远端 `authorized_keys`，密码转私钥一键完成；`--remove-password` 在验证新密钥可用后清除 `servers.yaml` 中的明文密码。
 - **🧩 结构化业务资产 (Asset)**：支持 Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态资产，以稳定全局 ID 标识，支持跨机灵活路径重映射（Remap）。
-- **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置开箱即用的官方模板（`base`、`docker`、`security`、`restic`），支持自定义模板与同名优先覆盖机制。
+- **📜 脚本模板系统**：Shell 脚本支持 YAML Frontmatter 元数据头部。内置 19 个开箱即用的官方模板（`base`、`docker`、`security`、`restic` 等，完整列表见 `ops template list`），支持自定义模板与同名优先覆盖机制。
 - **🛡️ 结构化备份编排**：统一管理多主机 restic 备份任务 (`backups.yaml`)，支持并发限制 (`--parallel N`)、安全 Dry-Run 模拟、自动初始化仓库与按保留策略自动修剪 (`forget --prune`)。
 - **🐳 容器智能备份与跨机快起**：无需预先编写 YAML，直接 `ops backup run <server>:<container> [--as <name>]`。野生容器自动逆向转译为标准 `compose.yaml`，MySQL/PostgreSQL 自动执行容器内在途热 Dump 与 gzip 即时压缩，跨机还原 `ops restore run <name> --target-server <vps>` 默认自动自适应拉起容器并自动灌库。
 - **⏰ 定时调度与自动化守护**：支持标准 Cron 表达式（`@daily`、`@hourly` 等），内置防重叠并发保护与优雅退出，通过 `ops daemon` 长期驻留或 `--once` 单次批量触发。
@@ -39,9 +39,26 @@
 
 ---
 
-## 🚀 快速上手
+## 📦 安装
 
-### 1. 编译安装与自动补全
+### 方式一：下载预编译包（推荐，无需 Go 环境）
+
+到 [Releases](https://github.com/volcano6/opspulse/releases) 页面下载对应平台的压缩包
+（linux / darwin / windows × amd64 / arm64），校验后解压即用：
+
+```bash
+# 以 linux-amd64 为例，把 <版本> 换成实际版本号（如 v0.3.0）
+tar -xzf opspulse-<版本>-linux-amd64.tar.gz
+grep 'linux-amd64' checksums.txt | sha256sum -c -   # macOS 用 shasum -a 256 -c -
+sudo install -m 0755 opspulse /usr/local/bin/
+opspulse version
+```
+
+> `checksums.txt` 覆盖全部平台，所以这里只校验你实际下载的那一个包；
+> Windows 下载 `.zip`，解压后把 `opspulse.exe` 放进 `PATH` 即可。
+> 压缩包里已含 `LICENSE` 与 `README.md`。
+
+### 方式二：从源码编译（含 Shell 补全）
 
 ```bash
 git clone https://github.com/volcano6/opspulse.git
@@ -57,7 +74,11 @@ source ~/.zshrc  # 或 source ~/.bashrc
 ops version
 ```
 
-### 2. 添加并管理服务器 (Server Ops)
+---
+
+## 🚀 快速上手
+
+### 1. 添加并管理服务器 (Server Ops)
 
 ```bash
 # 注册一台 VPS（极简语法：ops add <name> [user@]host[:port]，缺省密码静默交互输入，连通后可一键注入公钥免密直连）
@@ -100,7 +121,7 @@ ops cp -r ./configs oracle-sg:/opt/app/configs
 ops server test oracle-sg
 ```
 
-### 3. 查看可用模板并初始化服务器 (Bootstrap)
+### 2. 查看可用模板并初始化服务器 (Bootstrap)
 
 ```bash
 # 查看所有可用脚本模板
@@ -113,7 +134,7 @@ ops bootstrap oracle-sg -t base,security,docker --dry-run
 ops bootstrap oracle-sg -t base,security,docker
 ```
 
-### 4. 统一备份管理 (Backup)
+### 3. 统一备份管理 (Backup)
 
 ```bash
 # 查看已配置的备份任务
@@ -138,7 +159,7 @@ ops backup history web-data
 ops backup snapshots web-data
 ```
 
-### 5. 业务资产管理 (Asset)
+### 4. 业务资产管理 (Asset)
 
 ```bash
 # 注册业务资产（Docker Compose 项目、数据库、Nginx 配置等）
@@ -155,7 +176,7 @@ ops asset show blog-mysql
 ops asset remove blog-mysql
 ```
 
-### 6. 精准还原与跨机迁移 (Restore)
+### 5. 精准还原与跨机迁移 (Restore)
 
 ```bash
 # 全量还原最新快照到原始服务器
@@ -174,7 +195,7 @@ ops restore run web-data --dry-run
 ops restore history web-data
 ```
 
-### 7. 定时调度与自动化守护 (Scheduler)
+### 6. 定时调度与自动化守护 (Scheduler)
 
 ```bash
 # 启动调度守护进程（前台运行，按 backups.yaml 中的 schedule 自动执行备份并触发告警）
@@ -184,7 +205,7 @@ ops daemon
 ops daemon --once
 ```
 
-### 8. 告警通知与连通性自测 (Notifications)
+### 7. 告警通知与连通性自测 (Notifications)
 
 ```bash
 # 查看所有已配置的通知渠道
@@ -228,7 +249,7 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops server setup-key <name> [--remove-password]` | 自动为指定服务器生成并安装专用 SSH 密钥对；`--remove-password` 在验证新密钥可用后清除 `servers.yaml` 中的明文密码 |
 | `ops server info <name>` | 无侵入探测并输出服务器系统/硬件/Docker 运行状态看板 |
 | `ops server test <name>` | 测试与目标服务器的 SSH 连通性与网络延迟 |
-| `ops server remove <name>` | 从清单中删除指定服务器 |
+| `ops server remove <name> [--yes]` | 从清单中删除指定服务器；默认交互确认，非交互 shell 需 `--yes` |
 | `ops 1p backup [--vault <v>]` | 备份本机全部私钥 + 整份 `servers.yaml` 到 1Password（**绝不改写 `servers.yaml`**；整机存进一个 `opspulse_inventory_<hostname>` Secure Note，稳定态**两次 op 调用**，写入后回读校验；有 `op://` 残留时拒绝，需先 `restore`） |
 | `ops 1p restore [server...] [--vault <v>] [--yes] [--force] [--prefer-local\|--prefer-remote]` | 从 1Password 还原：无参=先还原清单（并集合并所有机器的备份文档）再还原全部凭据（新机器一条命令起步），具名=只还原这几台的凭据；密码明文写回需确认，私钥覆盖按公钥比对 |
 | `ops 1p status [--filter <key=val>] [--remote]` | 查看每台服务器的凭据当前存放在哪里（默认**离线**、不弹授权框；`--remote` 额外查询备份文档） |
@@ -236,8 +257,8 @@ OpsPulse 严格遵循 [XDG Base Directory 规范](https://specifications.freedes
 | `ops ssh [name] [-- <args...>]` | 原生交互式 SSH 终端会话（无参时弹出菜单交互直选） |
 | `ops sftp [server] [--app <app>] [--path <path>] [--cli]` | 自动唤起外部 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
 | `ops ps <server> [-a]` | 快速列出远端主机上的 Docker 容器看板 |
-| `ops logs <server> <container> [-f] [--tail <n>]` | 实时流式追踪远端 Docker 容器运行日志 |
-| `ops doctor` | 一键体检本地运行环境与外部依赖可用性（SSH/restic/1Password/SFTP 等） |
+| `ops logs <server> <container> [--follow] [--tail <n>]` | 实时流式追踪远端 Docker 容器运行日志 |
+| `ops doctor` | 只读巡检所有已配置服务器（SSH 连通性与延迟、根分区磁盘占用、Docker 守护进程状态），支持 `-f/--filter` 筛选与 `-j/--parallel` 控制并发 |
 | `ops export ssh-config [--write]` | 导出 OpenSSH 配置，打通 VS Code / Cursor / 系统终端（`--write` 幂等写入 `~/.ssh/config`） |
 | `ops exec <name> <command...>` | 远程执行单条 Shell 命令并实时返回输出与退出码（支持免引号透传，以 `-` 开头的远程参数用 `--` 分隔） |
 | `ops template list` | 列出所有内置及自定义脚本模板 |

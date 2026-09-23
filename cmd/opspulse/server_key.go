@@ -31,7 +31,11 @@ so the existing password keeps working as a fallback.
 With --remove-password, OpsPulse first proves the new key authenticates on its
 own (with the password deliberately withheld), and only then deletes the
 plaintext password from servers.yaml. A verification that fell back to password
-authentication therefore cannot be mistaken for a working key.`,
+authentication therefore cannot be mistaken for a working key.
+
+Examples:
+  ops server setup-key web-01                     # Generate and install a dedicated key
+  ops server setup-key web-01 --remove-password   # Also drop the plaintext password once the key works`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		store := server.NewDefaultStore()

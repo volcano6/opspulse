@@ -34,7 +34,7 @@ Checks SSH connectivity, root filesystem disk utilization, and Docker daemon sta
 Examples:
   ops doctor                       # Inspect all servers
   ops doctor -f "provider=oracle"  # Inspect specific cluster
-  ops doctor -p 10                 # Control concurrency`,
+  ops doctor -j 10                 # Control concurrency`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := server.NewDefaultStore()
 		servers, err := store.List()
@@ -170,7 +170,7 @@ func renderDoctorTable(w io.Writer, results []doctor.ServerHealth) error {
 
 func init() {
 	doctorCmd.Flags().StringVarP(&doctorFilter, "filter", "f", "all", "Filter target servers (e.g. 'all', 'provider=oracle', tag)")
-	doctorCmd.Flags().IntVarP(&doctorParallel, "parallel", "p", 5, "Maximum number of concurrent server probes")
+	doctorCmd.Flags().IntVarP(&doctorParallel, "parallel", "j", 5, "Maximum number of concurrent server probes")
 	doctorCmd.Flags().DurationVarP(&doctorTimeout, "timeout", "T", 15*time.Second, "Per-server probe timeout")
 	doctorCmd.Flags().BoolVar(&doctorIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in health checks")
 

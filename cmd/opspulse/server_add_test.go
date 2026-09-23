@@ -216,7 +216,7 @@ func TestServerAddCommand_Integration(t *testing.T) {
 		t.Errorf("node-1 attributes mismatch: host=%s user=%s port=%d", s1.Host, s1.User, s1.Port)
 	}
 
-	// Test 2: ops add node-2 ubuntu@10.0.0.2:2222 -i ~/.ssh/test_key --skip-test -l env=prod,dc=us -t web,app -d "Production Web"
+	// Test 2: ops add node-2 ubuntu@10.0.0.2:2222 -i ~/.ssh/test_key --skip-test -l env=prod,dc=us --tags web,app -d "Production Web"
 	// Create dummy key
 	sshDir := filepath.Join(tempHome, ".ssh")
 	_ = os.MkdirAll(sshDir, 0o700)
@@ -228,7 +228,7 @@ func TestServerAddCommand_Integration(t *testing.T) {
 		"-i", dummyKeyPath,
 		"--skip-test",
 		"-l", "env=prod,dc=us",
-		"-t", "web,app",
+		"--tags", "web,app",
 		"-d", "Production Web",
 	})
 	if err := rootCmd.Execute(); err != nil {
@@ -303,11 +303,11 @@ func TestServerAddCommand_Integration(t *testing.T) {
 	}
 
 	// Remove dependent first, then removing jump host succeeds
-	rootCmd.SetArgs([]string{"server", "remove", "node-internal"})
+	rootCmd.SetArgs([]string{"server", "remove", "node-internal", "--yes"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("unexpected error removing dependent server: %v", err)
 	}
-	rootCmd.SetArgs([]string{"server", "remove", "node-1"})
+	rootCmd.SetArgs([]string{"server", "remove", "node-1", "--yes"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("unexpected error removing jump host after dependent was removed: %v", err)
 	}

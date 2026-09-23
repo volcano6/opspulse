@@ -30,7 +30,7 @@ var assetListCmd = &cobra.Command{
 		}
 
 		if len(assets) == 0 {
-			fmt.Printf("No assets configured. Add assets via:\n  opspulse asset add <id> --type <type> --source <path>\n\nConfig: %s\n", store.FilePath())
+			fmt.Printf("No assets configured. Add assets via:\n  ops asset add <id> --type <type> --source <path>\n\nConfig: %s\n", store.FilePath())
 			return nil
 		}
 
@@ -72,8 +72,8 @@ var assetAddCmd = &cobra.Command{
 Supported types: docker_compose, volume, database, directory, file
 
 Examples:
-  opspulse asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost blog"
-  opspulse asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db`,
+  ops asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost blog"
+  ops asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		id := args[0]

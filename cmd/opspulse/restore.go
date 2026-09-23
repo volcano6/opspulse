@@ -43,19 +43,19 @@ var restoreRunCmd = &cobra.Command{
 
 Examples:
   # Restore latest snapshot to original server and paths
-  opspulse restore run blog-backup
+  ops restore run blog-backup
 
   # Restore a specific snapshot
-  opspulse restore run blog-backup --snapshot abc12345
+  ops restore run blog-backup --snapshot abc12345
 
   # Cross-server migration: restore to a new VPS
-  opspulse restore run blog-backup --target-server new-vps --target-path /data/blog
+  ops restore run blog-backup --target-server new-vps --target-path /data/blog
 
   # Targeted single-asset restore
-  opspulse restore run blog-backup --asset blog-mysql
+  ops restore run blog-backup --asset blog-mysql
 
   # Preview files without actually restoring
-  opspulse restore run blog-backup --dry-run`,
+  ops restore run blog-backup --dry-run`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		jobName := args[0]
@@ -232,7 +232,7 @@ func checkRestoreConfirmation(in io.Reader, out io.Writer, jobName, targetServer
 	}
 	prompt := fmt.Sprintf("⚠️  Warning: Restoring job %q to %s (%s) may overwrite existing files.\nAre you sure you want to proceed? [y/N]: ", jobName, targetServer, targetDir)
 	if !promptConfirm(in, out, prompt, false) {
-		return fmt.Errorf("restore cancelled by user")
+		return fmt.Errorf("restore cancelled by user; re-run with --yes to skip the confirmation prompt")
 	}
 	return nil
 }

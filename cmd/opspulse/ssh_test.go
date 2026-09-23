@@ -692,35 +692,3 @@ func TestMatchHostPassword_DeterministicLongestMatch(t *testing.T) {
 		t.Errorf("expected empty string for unknown host, got %q", got)
 	}
 }
-
-func TestResolveTargetPassword(t *testing.T) {
-	tests := []struct {
-		name     string
-		srv      server.Server
-		wantPass string
-	}{
-		{
-			name:     "empty password returns empty string",
-			srv:      server.Server{Name: "web", Password: ""},
-			wantPass: "",
-		},
-		{
-			name:     "plaintext password with empty KeyPath returns plaintext",
-			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: ""},
-			wantPass: "plain-secret",
-		},
-		{
-			name:     "plaintext password with KeyPath set returns plaintext",
-			srv:      server.Server{Name: "web", Password: "plain-secret", KeyPath: "/id_rsa"},
-			wantPass: "plain-secret",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := resolveTargetPassword(tt.srv); got != tt.wantPass {
-				t.Errorf("resolveTargetPassword() = %q, want %q", got, tt.wantPass)
-			}
-		})
-	}
-}

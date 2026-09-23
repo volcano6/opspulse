@@ -23,7 +23,12 @@ var bootstrapCmd = &cobra.Command{
 	Short: "Bootstrap servers with specified script templates",
 	Long: `Initialize and configure one or more servers sequentially by executing
 a series of script templates over SSH. Logs are streamed to the console
-and saved locally under $XDG_DATA_HOME/opspulse/logs/.`,
+and saved locally under $XDG_DATA_HOME/opspulse/logs/.
+
+Examples:
+  ops bootstrap web-01 -t base,docker     # Apply two templates to one server
+  ops bootstrap web-01,db-01 -t docker    # Apply a template to several servers
+  ops bootstrap local -t base --dry-run   # Preview the run on this machine`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		if len(bootstrapTemplates) == 0 {

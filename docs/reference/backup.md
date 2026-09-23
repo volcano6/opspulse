@@ -105,6 +105,11 @@ ops backup run vps-01:my-app
 # 备份时重命名（例如将测试容器 nginx-test 转换为规范的 nginx）
 ops backup run vps-01:nginx-test --as nginx
 ```
+
+> **注意**：这种 `ops backup run <server>:<container>` 直接备份容器的形式**没有预览模式**，
+> 传 `--dry-run` 会直接报错（旧版本会忽略它并真的执行备份）。需要预览请用声明式任务：
+> `ops backup run <job> --dry-run`。
+
 > **自动处理**：
 > - 自动探测是否为 Compose 项目，非 Compose 则自动逆向反编译生成 `compose.yaml`。
 > - 若为 MySQL / PostgreSQL 数据库，自动执行容器内在线热 Dump 并管道压缩。

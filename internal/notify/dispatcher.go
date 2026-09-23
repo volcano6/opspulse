@@ -118,15 +118,20 @@ func (d *Dispatcher) SendTest(ctx context.Context, channelName string) error {
 	return firstErr
 }
 
+// shouldNotify reports whether a channel with the given trigger wants an event
+// with the given status. A "partial" run - the work finished but a follow-up
+// step failed, e.g. a restore whose container auto-start failed - is a failure,
+// so failure-triggered channels must hear about it.
 func shouldNotify(trigger, status string) bool {
+	failed := status == "failed" || status == "partial"
 	switch trigger {
 	case TriggerAlways:
 		return true
 	case TriggerSuccess:
 		return status == "success"
 	case TriggerFailure:
-		return status == "failed"
+		return failed
 	default:
-		return status == "failed"
+		return failed
 	}
 }

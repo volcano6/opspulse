@@ -20,6 +20,8 @@ var (
 	ErrInvalidServerName = errors.New("invalid server name")
 	// ErrInvalidHost is returned when the server host is empty.
 	ErrInvalidHost = errors.New("server host cannot be empty")
+	// ErrInvalidPort is returned when a configured port is outside the TCP range.
+	ErrInvalidPort = errors.New("invalid port")
 	// ErrSelfReferencingJumpHost is returned when a server specifies itself as its jump host.
 	ErrSelfReferencingJumpHost = errors.New("server cannot specify itself as jump host")
 	// ErrJumpHostCycle is returned when a cycle is detected in jump host dependencies.
@@ -106,7 +108,10 @@ func (s *Server) Validate() error {
 	if strings.TrimSpace(s.Host) == "" {
 		return ErrInvalidHost
 	}
-	if s.Port <= 0 || s.Port > 65535 {
+	if s.Port < 0 || s.Port > 65535 {
+		return fmt.Errorf("%w: %d is outside the valid range 1-65535", ErrInvalidPort, s.Port)
+	}
+	if s.Port == 0 {
 		s.Port = 22
 	}
 	if strings.TrimSpace(s.User) == "" {

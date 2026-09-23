@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/volcano6/opspulse/internal/server"
-	"github.com/volcano6/opspulse/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -253,9 +251,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
 
 	execCmd, stdin := remoteShellCommand(scriptContent)
-	if stdin != nil {
-		session.Stdin = stdin
-	}
+	session.Stdin = stdin
 
 	execErrChan := make(chan error, 1)
 	go func() {
@@ -300,11 +296,10 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 func remoteShellCommand(scriptContent string) (string, io.Reader) {
 	// Select one available shell before execution and automatically elevate
 	// with passwordless sudo if the remote session user is non-root.
-	// For scripts <= 48KB (base64 ~64KB), inline command to avoid pipe overhead;
-	// larger scripts stream through session.Stdin to avoid shell arg limits.
-	if len(scriptContent) <= 48*1024 {
-		encoded := base64.StdEncoding.EncodeToString([]byte(scriptContent))
-		return fmt.Sprintf("if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then runner=\"sudo -E $shell\"; else runner=\"$shell\"; fi; printf '%%s' %s | base64 -d | $runner", shellquote.Quote(encoded)), nil
-	}
+	//
+	// The script always travels over stdin. Inlining it into the command line
+	// (base64 or otherwise) would publish its contents - backup scripts carry
+	// resolved credentials in their env block - to every process on the target
+	// host via ps(1).
 	return "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then sudo -E \"$shell\" -s; else \"$shell\" -s; fi", strings.NewReader(scriptContent)
 }

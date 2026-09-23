@@ -622,22 +622,15 @@ func matchHostPassword(hostPass map[string]string, prompt string) string {
 	return ""
 }
 
-// resolveTargetPassword returns the password to hand to ssh(1).
-//
-// This used to resolve op:// references through 1Password, downgrading a
-// failure to a warning when a key was also configured. References are rejected
-// up front by Server.RejectLegacy1PRefs, so the stored value is already final.
-func resolveTargetPassword(srv server.Server) string {
-	return srv.Password
-}
-
 func runPasswordSSH(binary string, args []string, srv server.Server, store *server.Store, shouldFilter bool) error {
 	askpassPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve SSH password helper: %w", err)
 	}
 
-	targetPassword := resolveTargetPassword(srv)
+	// Legacy op:// references are rejected up front by Server.RejectLegacy1PRefs,
+	// so the stored password is already final.
+	targetPassword := srv.Password
 
 	var jumpPassword string
 	var jumpSrv *server.Server

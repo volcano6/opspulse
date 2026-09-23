@@ -121,39 +121,17 @@ func TestSSHExecutor_InvalidTarget(t *testing.T) {
 	}
 }
 
-func TestRemoteShellCommandPreservesScriptExitStatus(t *testing.T) {
-	command, stdin := remoteShellCommand("exit 42\n")
-	if stdin != nil {
-		t.Fatal("small script must be embedded in the remote command")
-	}
+func TestRemoteShellCommandStreamsScript(t *testing.T) {
+	const script = "exit 42\n"
 
-	cmd := exec.Command("sh", "-c", command)
-	err := cmd.Run()
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("remote shell command error = %v, want exit error", err)
-	}
-	if exitErr.ExitCode() != 42 {
-		t.Fatalf("remote shell command exit code = %d, want 42", exitErr.ExitCode())
-	}
-}
-
-func TestRemoteShellCommandStreamsLargeScript(t *testing.T) {
-	// 48KB exactly should still be embedded in remote command
-	smallScript := strings.Repeat("#", 48*1024)
-	_, smallStdin := remoteShellCommand(smallScript)
-	if smallStdin != nil {
-		t.Fatal("48KB script should be embedded inline, not streamed")
-	}
-
-	// 48KB + 1 byte must be streamed via stdin
-	script := strings.Repeat("#", 48*1024+1)
 	command, stdin := remoteShellCommand(script)
 	if stdin == nil {
-		t.Fatal("large script (>48KB) must be streamed to the remote shell")
+		t.Fatal("script must be streamed to the remote shell, not embedded in the command line")
 	}
-	if strings.Contains(command, "bash -s || sh -s") {
-		t.Fatalf("remote shell fallback can mask script failures: %q", command)
+	// The script body must never reach the command line: ps(1) on the target host
+	// would expose backup credentials to every local user.
+	if strings.Contains(command, "base64") {
+		t.Fatalf("remote command still encodes the script: %q", command)
 	}
 	data, err := io.ReadAll(stdin)
 	if err != nil {
@@ -161,5 +139,16 @@ func TestRemoteShellCommandStreamsLargeScript(t *testing.T) {
 	}
 	if string(data) != script {
 		t.Fatal("streamed script changed")
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdin = strings.NewReader(script)
+	err = cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("remote shell command error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != 42 {
+		t.Fatalf("remote shell command exit code = %d, want 42", exitErr.ExitCode())
 	}
 }

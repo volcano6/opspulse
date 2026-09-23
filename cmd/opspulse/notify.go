@@ -15,7 +15,12 @@ var notifyCmd = &cobra.Command{
 	Short: "Manage and test alert notification channels",
 	Long: `Inspect configured webhook notification channels and verify alert delivery.
 
-Configuration file: $XDG_CONFIG_HOME/opspulse/notifications.yaml`,
+Configuration file: $XDG_CONFIG_HOME/opspulse/notifications.yaml
+
+Examples:
+  ops notify list                 # Show every configured channel
+  ops notify test                 # Send a test event to all channels
+  ops notify test ops-alerts      # Send a test event to one channel`,
 }
 
 var notifyListCmd = &cobra.Command{
@@ -61,6 +66,16 @@ If [channel-name] is provided, only that channel is tested. Otherwise, all chann
 			targetChannel = args[0]
 			fmt.Printf("Testing notification channel %q...\n", targetChannel)
 		} else {
+			// Probe first: announcing "testing all channels" and then failing
+			// because there are none reads as a delivery problem when the real
+			// cause is an empty configuration file.
+			channels, err := store.List()
+			if err != nil {
+				return fmt.Errorf("failed to list notification channels: %w", err)
+			}
+			if len(channels) == 0 {
+				return fmt.Errorf("no notification channels configured in %s", store.FilePath())
+			}
 			fmt.Println("Testing all configured notification channels...")
 		}
 

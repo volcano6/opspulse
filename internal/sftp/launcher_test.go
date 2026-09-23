@@ -332,6 +332,22 @@ func TestFindClient(t *testing.T) {
 	}
 }
 
+// listMaterialized1PKeys lists the server names of the legacy key directory.
+// It only exists for these assertions: production code inspects the directory
+// through ListMaterialized1PKeyDetails.
+func listMaterialized1PKeys(t *testing.T) []string {
+	t.Helper()
+	details, err := ListMaterialized1PKeyDetails()
+	if err != nil {
+		t.Fatalf("ListMaterialized1PKeyDetails error: %v", err)
+	}
+	names := make([]string, 0, len(details))
+	for _, d := range details {
+		names = append(names, d.Name)
+	}
+	return names
+}
+
 func TestMaterialized1PKeyManagement(t *testing.T) {
 	dir, err := Materialized1PKeyDir()
 	if err != nil {
@@ -370,10 +386,7 @@ func TestMaterialized1PKeyManagement(t *testing.T) {
 		}
 	}
 
-	keys, err := ListMaterialized1PKeys()
-	if err != nil {
-		t.Fatalf("ListMaterialized1PKeys error: %v", err)
-	}
+	keys := listMaterialized1PKeys(t)
 	if len(keys) < 2 {
 		t.Errorf("expected at least 2 keys, got %d (%v)", len(keys), keys)
 	}
@@ -387,10 +400,7 @@ func TestMaterialized1PKeyManagement(t *testing.T) {
 		t.Errorf("expected [server-a] deleted, got %v", deletedSingle)
 	}
 
-	keysMid, err := ListMaterialized1PKeys()
-	if err != nil {
-		t.Fatalf("ListMaterialized1PKeys after single purge error: %v", err)
-	}
+	keysMid := listMaterialized1PKeys(t)
 	if len(keysMid) != 1 || keysMid[0] != "server-b" {
 		t.Errorf("expected only server-b remaining, got: %v", keysMid)
 	}
@@ -413,10 +423,7 @@ func TestMaterialized1PKeyManagement(t *testing.T) {
 		t.Errorf("expected [server-b] deleted in purge all, got: %v", deletedAll)
 	}
 
-	keysAfter, err := ListMaterialized1PKeys()
-	if err != nil {
-		t.Fatalf("ListMaterialized1PKeys after purge error: %v", err)
-	}
+	keysAfter := listMaterialized1PKeys(t)
 	if len(keysAfter) != 0 {
 		t.Errorf("expected 0 keys after purge, got: %v", keysAfter)
 	}

@@ -90,11 +90,24 @@ var (
 var backupRunCmd = &cobra.Command{
 	Use:   "run <job1,job2... | all | server:container>",
 	Short: "Execute one or more backup jobs or back up a container directly",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Execute one or more configured backup jobs, or back up a single container directly.
+
+Examples:
+  ops backup run blog-backup                # Run one job
+  ops backup run blog-backup,db-backup -j 2 # Run several jobs, two at a time
+  ops backup run vps-1:blog-db --as blog    # Back up container blog-db on vps-1 as job "blog"`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		// Check for container target syntax: opspulse backup run <server>:<container> [--as <alias>]
+		// Check for container target syntax: ops backup run <server>:<container> [--as <alias>]
 		if len(args) == 1 {
 			if srv, ctr, isContainer := backup.ParseContainerTarget(args[0]); isContainer {
+				if backupRunDryRun {
+					// This branch generates a Compose file, hot-dumps databases
+					// and writes to the restic repository, none of which has a
+					// preview mode. Refusing is the only honest answer: silently
+					// running the real backup behind --dry-run would be a lie.
+					return fmt.Errorf("--dry-run is not supported for %s:%s backups", srv, ctr)
+				}
 				db, err := storage.OpenDefault()
 				if err != nil {
 					return fmt.Errorf("failed to open database: %w", err)
@@ -135,7 +148,7 @@ var backupRunCmd = &cobra.Command{
 					fmt.Printf("   Database:     Online hot dump created & archived\n")
 				}
 				fmt.Printf("\nTo restore on another VPS and auto-start:\n")
-				fmt.Printf("   opspulse restore run %s --target-server <target-vps>\n\n", res.JobName)
+				fmt.Printf("   ops restore run %s --target-server <target-vps>\n\n", res.JobName)
 				return nil
 			}
 		}
@@ -445,8 +458,8 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 }
 
 func init() {
-	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic")
-	backupRunCmd.Flags().IntVarP(&backupRunParallel, "parallel", "p", 0, "Maximum concurrent jobs (0 = unlimited)")
+	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic (not supported for <server>:<container> targets)")
+	backupRunCmd.Flags().IntVarP(&backupRunParallel, "parallel", "j", 0, "Maximum concurrent jobs (0 = unlimited)")
 	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "Rename container in generated Compose and backup job (when using <server>:<container>)")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "Maximum number of history records to show")

@@ -19,7 +19,12 @@ echo "   OpsPulse Deep CI Verification"
 echo "========================================="
 
 echo ""
-echo "[1/5] Running Multi-OS Cross-Compilation Vet (Linux, Windows, macOS)..."
+echo ""
+echo "[1/6] Checking tracked files for non-neutralized real values..."
+bash scripts/check-neutrality.sh
+echo "  -> Neutrality: PASSED"
+echo ""
+echo "[2/6] Running Multi-OS Cross-Compilation Vet (Linux, Windows, macOS)..."
 echo "  -> Checking GOOS=linux..."
 GOOS=linux go vet ./...
 echo "  -> Checking GOOS=windows..."
@@ -29,7 +34,7 @@ GOOS=darwin go vet ./...
 echo "  -> Multi-OS Vet: PASSED"
 
 echo ""
-echo "[2/5] Running Linters (gofmt, revive, errcheck, ineffassign, gosec, staticcheck)..."
+echo "[3/6] Running Linters (gofmt, revive, errcheck, ineffassign, gosec, staticcheck)..."
 check_tool "revive" "github.com/mgechev/revive@latest"
 check_tool "errcheck" "github.com/kisielk/errcheck@latest"
 check_tool "ineffassign" "github.com/gordonklaus/ineffassign@latest"
@@ -56,12 +61,12 @@ staticcheck ./...
 echo "  -> Linters: PASSED"
 
 echo ""
-echo "[3/5] Running unit tests with race detector..."
+echo "[4/6] Running unit tests with race detector..."
 go test -race -coverprofile=coverage.out ./...
 echo "  -> Unit tests: PASSED"
 
 echo ""
-echo "[4/5] Building static binaries for Linux & Windows..."
+echo "[5/6] Building static binaries for Linux & Windows..."
 mkdir -p bin
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w" -o bin/ops ./cmd/opspulse
 cp bin/ops bin/opspulse 2>/dev/null || true
@@ -70,7 +75,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o bin/ops.exe
 echo "  -> Build: PASSED"
 
 echo ""
-echo "[5/5] Running 1Password end-to-end verification (stub CLI)..."
+echo "[6/6] Running 1Password end-to-end verification (stub CLI)..."
 # The 1Password flows cannot be unit-tested: the real `op` needs an interactive
 # Desktop App approval, so scripts/verify-onepassword.sh drives a stub CLI and
 # asserts on the exact call sequence. Without this step the harness only ever ran

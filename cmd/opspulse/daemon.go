@@ -28,7 +28,11 @@ their cron expressions configured in $XDG_CONFIG_HOME/opspulse/backups.yaml.
 Alert notifications will be dispatched upon completion or failure according to
 $XDG_CONFIG_HOME/opspulse/notifications.yaml.
 
-Signals SIGINT and SIGTERM trigger a graceful shutdown, waiting for in-flight jobs to complete.`,
+Signals SIGINT and SIGTERM trigger a graceful shutdown, waiting for in-flight jobs to complete.
+
+Examples:
+  ops daemon          # Run the scheduler until interrupted
+  ops daemon --once   # Run every scheduled job once and exit`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		backupStore := backup.NewDefaultStore()
 		serverStore := server.NewDefaultStore()

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
@@ -314,18 +313,8 @@ func TestOnePasswordCommandWiring(t *testing.T) {
 			t.Errorf("missing subcommand %q", want)
 		}
 	}
-	// The retired names stay registered so that an old invocation reaches the
-	// message naming its replacement instead of an "unknown command" error.
-	for _, want := range []string{"push", "pull"} {
-		if !names[want] {
-			t.Errorf("missing retired subcommand %q", want)
-		}
-	}
 	if onePasswordRestoreCmd.ValidArgsFunction == nil {
 		t.Error("restore should complete server names")
-	}
-	if !onePasswordLegacyPushCmd.Hidden || !onePasswordLegacyPullCmd.Hidden {
-		t.Error("the retired push/pull commands should be hidden from help")
 	}
 }
 
@@ -360,30 +349,6 @@ func TestOnePasswordRestoreCommandFlags(t *testing.T) {
 	for _, flag := range []string{"from-vault", "materialize", "all", "filter", "inventory"} {
 		if onePasswordRestoreCmd.Flags().Lookup(flag) != nil {
 			t.Errorf("ops 1p restore should not expose --%s", flag)
-		}
-	}
-}
-
-// TestLegacyPushPullAreRetired pins the retirement contract: the old names must
-// fail with a pointer at the replacement, and the old flags must still parse so
-// that the failure is the message rather than Cobra's "unknown flag".
-func TestLegacyPushPullAreRetired(t *testing.T) {
-	if err := onePasswordLegacyPushCmd.RunE(nil, nil); err == nil || !strings.Contains(err.Error(), "ops 1p backup") {
-		t.Errorf("push should be retired in favour of backup, got %v", err)
-	}
-	if err := onePasswordLegacyPullCmd.RunE(nil, nil); err == nil || !strings.Contains(err.Error(), "ops 1p restore") {
-		t.Errorf("pull should be retired in favour of restore, got %v", err)
-	}
-
-	for _, cmd := range []*cobra.Command{onePasswordLegacyPushCmd, onePasswordLegacyPullCmd} {
-		for _, name := range []string{"materialize", "from-vault", "delete-local", "inventory"} {
-			f := cmd.Flags().Lookup(name)
-			if f == nil {
-				t.Fatalf("%s should still accept the retired --%s flag", cmd.Name(), name)
-			}
-			if !f.Hidden {
-				t.Errorf("%s --%s should be hidden", cmd.Name(), name)
-			}
 		}
 	}
 }

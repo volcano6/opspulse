@@ -25,7 +25,13 @@ var (
 var serverSetCmd = &cobra.Command{
 	Use:   "set <name>",
 	Short: "Update selected fields of an existing server",
-	Args:  cobra.ExactArgs(1),
+	Long: `Update selected fields of an existing server entry.
+
+Examples:
+  ops server set blog-vps --host 203.0.113.10
+  ops server set blog-vps --port 2222 --key ~/.ssh/blog_ed25519
+  ops server set blog-vps --skip-batch`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var host *string
 		var port *int
@@ -81,13 +87,15 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 		srv.Host = *host
 	}
 	if port != nil {
-		if *port <= 0 || *port > 65535 {
-			return fmt.Errorf("--port must be between 1 and 65535")
+		// Mirrors Server.Validate: 0 means "unset" and Save() resolves it to 22.
+		if *port < 0 || *port > 65535 {
+			return fmt.Errorf("%w: %d is outside the valid range 1-65535", server.ErrInvalidPort, *port)
 		}
 		srv.Port = *port
 	}
 	if key != nil {
 		if srv.KeyPath != "" && srv.KeyPath != *key {
+			fmt.Printf("Replacing private key for server %q: %s -> %s\n", srv.Name, srv.KeyPath, *key)
 			_ = CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, false)
 		}
 		srv.KeyPath = *key
@@ -105,7 +113,16 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 var serverEditCmd = &cobra.Command{
 	Use:   "edit <name>",
 	Short: "Edit the server inventory and validate it before saving",
-	Args:  cobra.ExactArgs(1),
+	Long: `Edit the server inventory and validate it before saving.
+
+The entry for the named server is opened in $VISUAL or $EDITOR (vi when neither
+is set). The inventory is only replaced once the edited document parses and
+still contains that server, so a malformed edit cannot corrupt servers.yaml.
+
+Examples:
+  ops server edit blog-vps
+  EDITOR=nano ops server edit blog-vps`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		return editServerConfig(server.NewDefaultStore(), args[0])
 	},

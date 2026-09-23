@@ -170,9 +170,10 @@ var logsCmd = &cobra.Command{
 	Long: `Fetch or stream logs of a Docker container running on a remote server via SSH.
 
 Examples:
-  ops logs vps-1 nginx             # View recent 100 lines
-  ops logs vps-1 nginx --tail 50   # View recent 50 lines
-  ops logs vps-1 nginx -f          # Follow logs in real-time (Ctrl+C to exit)`,
+  ops logs vps-1 nginx                    # View recent 100 lines
+  ops logs vps-1 nginx --tail 50          # View recent 50 lines
+  ops logs vps-1 nginx --follow           # Follow logs in real-time (Ctrl+C to exit)
+  ops logs vps-1 nginx --timestamps       # Prefix each line with its timestamp`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(_ *cobra.Command, args []string) error {
 		serverName := args[0]
@@ -272,9 +273,9 @@ func init() {
 	psCmd.Flags().BoolVarP(&psAll, "all", "a", false, "Show all containers (default shows just running)")
 	psCmd.ValidArgsFunction = completeServerNames
 
-	logsCmd.Flags().BoolVarP(&logsFollow, "follow", "f", false, "Follow log output")
+	logsCmd.Flags().BoolVar(&logsFollow, "follow", false, "Follow log output")
 	logsCmd.Flags().StringVarP(&logsTail, "tail", "n", "100", "Number of lines to show from the end of the logs")
-	logsCmd.Flags().BoolVarP(&logsTimestamps, "timestamps", "t", false, "Show timestamps")
+	logsCmd.Flags().BoolVar(&logsTimestamps, "timestamps", false, "Show timestamps")
 	logsCmd.ValidArgsFunction = completeLogsArgs
 
 	rootCmd.AddCommand(psCmd)

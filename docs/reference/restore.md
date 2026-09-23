@@ -46,6 +46,9 @@ ops restore run web-data --asset blog-mysql
 
 # Dry-Run：预览文件列表
 ops restore run web-data --dry-run
+
+# 非交互执行（脚本 / CI）：跳过确认提示
+ops restore run web-data --target-server new-vps --yes
 ```
 
 ### 查看还原历史
@@ -70,11 +73,12 @@ ops restore history web-data --limit 5
 | `<job-name>` | — | 备份任务名称（必填，对应 `backups.yaml` 中的 `name`） |
 | `--snapshot` | `latest` | 快照 ID，或 `latest` 自动查询最新快照 |
 | `--target-server` | 与源相同 | 目标服务器名（用于跨机迁移） |
-| `--target-path` | `/`（原路径） | 还原目标路径（用于路径重映射） |
+| `--target-path` | （空 = 快照中的原始绝对路径） | 还原目标路径（用于路径重映射） |
 | `--as` | （原名） | 重命名还原后的容器/服务名 |
 | `--no-start` | `false` | 抑制自动启动：仅解压文件，不拉起容器也不灌库 |
 | `--asset` | （空=全部还原） | 指定资产 ID，仅还原该资产对应的文件 |
-| `--dry-run` | `false` | 预览模式：仅列出文件，不执行实际还原 |
+| `--dry-run` | `false` | 预览模式：仅列出文件，不执行实际还原（同样跳过确认提示） |
+| `--yes` / `-y` | `false` | 跳过执行前的交互式确认；脚本、CI 等非交互场景必须显式传入 |
 
 ---
 
