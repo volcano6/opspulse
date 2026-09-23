@@ -26,6 +26,7 @@ func TestBuildSSHArgs(t *testing.T) {
 		name      string
 		srv       server.Server
 		extraArgs []string
+		remoteCmd string
 		want      []string
 	}{
 		{
@@ -64,9 +65,26 @@ func TestBuildSSHArgs(t *testing.T) {
 				Port: 22,
 				User: "admin",
 			},
-			extraArgs: []string{"-o", "StrictHostKeyChecking=no", "tmux"},
+			extraArgs: []string{"-o", "StrictHostKeyChecking=no", "-v"},
 			want: []string{"ssh",
-				"-o", "StrictHostKeyChecking=no", "tmux", "admin@1.2.3.4",
+				"-o", "StrictHostKeyChecking=no", "-v", "admin@1.2.3.4",
+			},
+		},
+		{
+			name: "remote command is placed after the destination",
+			srv: server.Server{
+				Name: "vps-exec",
+				Host: "1.2.3.6",
+				Port: 2222,
+				User: "deploy",
+			},
+			extraArgs: []string{"-o", "ConnectTimeout=5"},
+			remoteCmd: "uname -a",
+			want: []string{"ssh",
+				"-p", "2222",
+				"-o", "ConnectTimeout=5",
+				"deploy@1.2.3.6",
+				"uname -a",
 			},
 		},
 		{
@@ -145,7 +163,7 @@ func TestBuildSSHArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, testStore)
+			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, tt.remoteCmd, testStore)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildSSHArgs() =\n%v\nwant:\n%v", got, tt.want)
 			}
@@ -163,7 +181,7 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 
 	// The socket directory does not exist yet. ssh exits 255 rather than
 	// degrading when it cannot bind a ControlPath, so the flags must be absent.
-	if got := buildSSHArgs("ssh", srv, nil, nil); strings.Contains(strings.Join(got, " "), "ControlMaster") {
+	if got := buildSSHArgs("ssh", srv, nil, "", nil); strings.Contains(strings.Join(got, " "), "ControlMaster") {
 		t.Fatalf("buildSSHArgs() = %v, want no multiplexing before the directory exists", got)
 	}
 
@@ -171,7 +189,7 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 		t.Fatalf("EnsureControlMasterDir() error: %v", err)
 	}
 
-	got := buildSSHArgs("ssh", srv, nil, nil)
+	got := buildSSHArgs("ssh", srv, nil, "", nil)
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"-o ControlMaster=auto", "-o ControlPath=", "-o ControlPersist=10m"} {
 		if !strings.Contains(joined, want) {
@@ -184,7 +202,7 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 
 	// A user who passes their own ControlMaster option must win, which means
 	// ours has to appear earlier in argv.
-	overridden := buildSSHArgs("ssh", srv, []string{"-o", "ControlMaster=no"}, nil)
+	overridden := buildSSHArgs("ssh", srv, []string{"-o", "ControlMaster=no"}, "", nil)
 	mine, theirs := -1, -1
 	for i, a := range overridden {
 		if a == "ControlMaster=auto" {
