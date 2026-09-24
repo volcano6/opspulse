@@ -75,11 +75,28 @@ fi
 		retryLockVar{"RETRY_LOCK_5M", "5m"},
 	) + "\n")
 
-	// 3. Auto-initialize repository if not initialized
-	sb.WriteString(`# Check if repository is initialized, if not initialize it
-if ! restic snapshots $RETRY_LOCK_1M >/dev/null 2>&1; then
-  echo "Repository not initialized. Running restic init..."
-  restic init
+	// 3. Initialize the repository only when restic says it is genuinely absent
+	sb.WriteString(`# Initialize the repository only when restic reports it is missing.
+# Any other failure (unreachable backend, lock timeout, bad credentials) is
+# fatal: initializing there would silently create a fresh, empty repository and
+# every later backup would "succeed" against the wrong history.
+set +e
+SNAP_OUT=$(restic snapshots $RETRY_LOCK_1M 2>&1)
+SNAP_RC=$?
+set -e
+
+if [ "$SNAP_RC" -ne 0 ]; then
+  case "$SNAP_OUT" in
+    *"repository does not exist"*|*"unable to open config file"*|*"Is there a repository at"*)
+      echo "Repository does not exist. Running restic init..."
+      restic init
+      ;;
+    *)
+      echo "$SNAP_OUT" >&2
+      echo "Error: refusing to initialize the repository: 'restic snapshots' failed for a reason other than a missing repository (exit $SNAP_RC)." >&2
+      exit "$SNAP_RC"
+      ;;
+  esac
 fi
 ` + "\n")
 
@@ -257,6 +274,10 @@ fi
 
 // BuildRestoreDryRunScript generates a shell script that uses `restic ls` to preview
 // which files would be restored from a snapshot, without actually writing any data.
+//
+// `restic ls` only accepts --host/--tag/--path (by contrast, `restic restore`
+// has --include). Using --include here made every `ops restore run --dry-run
+// --asset <id>` invocation die with "unknown flag: --include".
 func BuildRestoreDryRunScript(job Job, snapshotID string, includePatterns []string) string {
 	var sb strings.Builder
 	sb.WriteString("#!/bin/bash\n")
@@ -277,7 +298,7 @@ fi
 	sb.WriteString("restic ls $RETRY_LOCK_30S " + shellquote.Quote(snapshotID))
 
 	for _, pattern := range includePatterns {
-		sb.WriteString(" --include " + shellquote.Quote(pattern))
+		sb.WriteString(" --path " + shellquote.Quote(pattern))
 	}
 
 	sb.WriteString("\n")

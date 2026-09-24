@@ -202,3 +202,63 @@ func TestServerYAMLLine(t *testing.T) {
 		t.Fatalf("serverYAMLLine() = %d, want 4", got)
 	}
 }
+
+// The replaced key is cleaned up only after the new path is on disk: the old
+// implementation deleted it first and discarded the error.
+func TestSetServerFieldsKeepsReplacedKeyWhenSaveFails(t *testing.T) {
+	root := t.TempDir()
+	setTestHome(t, root)
+
+	oldKey := filepath.Join(root, ".ssh", "opspulse_web")
+	writeTestFile(t, oldKey)
+	store := server.NewDefaultStore()
+	if err := store.Save(server.Server{Name: "web", Host: "10.0.0.1", KeyPath: oldKey}); err != nil {
+		t.Fatal(err)
+	}
+	blockStoreWrites(t, store.FilePath())
+
+	newKey := "~/.ssh/id_ed25519_new"
+	if err := setServerFields(store, "web", nil, nil, &newKey, nil); err == nil {
+		t.Fatal("expected the update to fail while the inventory cannot be written")
+	}
+	if _, err := os.Stat(oldKey); err != nil {
+		t.Errorf("replaced key was deleted even though the inventory write failed: %v", err)
+	}
+	srv, err := server.NewDefaultStore().Get("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.KeyPath != oldKey {
+		t.Errorf("key path = %q despite the failed write, want %q", srv.KeyPath, oldKey)
+	}
+}
+
+func TestSetServerFieldsRemovesReplacedManagedKey(t *testing.T) {
+	root := t.TempDir()
+	setTestHome(t, root)
+
+	oldKey := filepath.Join(root, ".ssh", "opspulse_web")
+	writeTestFile(t, oldKey)
+	writeTestFile(t, oldKey+".pub")
+	store := server.NewDefaultStore()
+	if err := store.Save(server.Server{Name: "web", Host: "10.0.0.1", KeyPath: oldKey}); err != nil {
+		t.Fatal(err)
+	}
+
+	newKey := "~/.ssh/id_ed25519_new"
+	if err := setServerFields(store, "web", nil, nil, &newKey, nil); err != nil {
+		t.Fatalf("setServerFields() error: %v", err)
+	}
+	for _, path := range []string{oldKey, oldKey + ".pub"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("replaced managed key %s should have been deleted", path)
+		}
+	}
+	srv, err := store.Get("web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srv.KeyPath != newKey {
+		t.Errorf("key path = %q, want %q", srv.KeyPath, newKey)
+	}
+}

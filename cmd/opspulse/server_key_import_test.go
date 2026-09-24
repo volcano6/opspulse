@@ -288,3 +288,56 @@ func TestCleanupManagedKeyWithRefCheck(t *testing.T) {
 		t.Errorf("single key should be cleaned up when no other server references it")
 	}
 }
+
+// isManagedKey decides which private keys OpsPulse may delete, so its boundary
+// has to be measured per path component. The previous prefix-only test called
+// a same-prefix sibling directory and a path escaping ~/.ssh managed keys.
+func TestIsManagedKeyPathBoundary(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	sshDir := filepath.Join(home, ".ssh")
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"same-prefix sibling directory", filepath.Join(sshDir, "opspulse_archive", "id_rsa"), false},
+		{"traversal out of ~/.ssh", sshDir + "/opspulse_x/../../etc/foo", false},
+		{"managed key", filepath.Join(sshDir, "opspulse_a"), true},
+		{"same prefix outside ~/.ssh", filepath.Join(string(filepath.Separator), "tmp", "opspulse_a"), false},
+		{"unmanaged key in ~/.ssh", filepath.Join(sshDir, "id_rsa"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isManagedKey(tt.path); got != tt.want {
+				t.Errorf("isManagedKey(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCleanupManagedKeySparesPathsOutsideTheManagedNamespace(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	sshDir := filepath.Join(home, ".ssh")
+
+	sibling := filepath.Join(sshDir, "opspulse_archive", "id_rsa")
+	writeTestFile(t, sibling)
+	// The traversal resolves to <home>/etc/foo. It goes through the sibling
+	// directory created above, so it is a path the kernel can actually reach -
+	// the old prefix check accepted it and deleted the file behind it.
+	escaped := filepath.Join(home, "etc", "foo")
+	writeTestFile(t, escaped)
+	traversal := filepath.Join(sshDir, "opspulse_archive") + "/../../etc/foo"
+
+	cleanupManagedKey(sibling)
+	cleanupManagedKey(traversal)
+
+	for _, path := range []string{sibling, escaped} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("cleanupManagedKey deleted %s, which OpsPulse does not manage: %v", path, err)
+		}
+	}
+}

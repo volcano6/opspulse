@@ -14,7 +14,6 @@ import (
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/docker"
 	"github.com/volcano6/opspulse/internal/executor"
-	"github.com/volcano6/opspulse/internal/pathutil"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/shellquote"
@@ -64,6 +63,16 @@ func NewRestoreRunner(
 func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, consoleOut io.Writer) (*storage.RestoreRun, error) {
 	if err := job.Validate(); err != nil {
 		return nil, err
+	}
+
+	// The alias reaches generated shell scripts (COMPOSE_PROJECT_NAME, compose
+	// project directory names) and must never carry shell metacharacters.
+	if opts.AliasName != "" {
+		alias := strings.TrimSpace(opts.AliasName)
+		if err := validateContainerAlias(alias); err != nil {
+			return nil, err
+		}
+		opts.AliasName = alias
 	}
 
 	if consoleOut == nil {
@@ -359,30 +368,88 @@ func (r *RestoreRunner) autoStartContainers(
 		execToUse = r.localExecutor
 	}
 
-	candidateDirs := []string{fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)}
-	candidateDirs = append(candidateDirs, job.Paths...)
+	candidateDirs := dedupPaths(append([]string{fmt.Sprintf("/var/lib/opspulse/containers/%s", job.Name)}, job.Paths...))
+
+	// A located container package: the parsed manifest plus the directory its
+	// relative archive/dump paths are resolved against and the project
+	// directory compose is started from.
+	type manifestCandidate struct {
+		manifest    *docker.ContainerManifest
+		packageRoot string
+		dir         string
+	}
+
+	var candidates []manifestCandidate
+	seenManifestPaths := make(map[string]bool)
+	for _, cand := range candidateDirs {
+		rDir := RestoredPath(opts.TargetPath, cand)
+		// Probe the namespaced location first, then the legacy one, so that
+		// snapshots taken before artifacts moved under ".opspulse/" remain
+		// restorable.
+		for _, mPath := range []string{docker.ManifestPath(rDir), docker.LegacyManifestPath(rDir)} {
+			if seenManifestPaths[mPath] {
+				continue
+			}
+			seenManifestPaths[mPath] = true
+
+			readManifestScript := fmt.Sprintf("cat %s 2>/dev/null || true", shellquote.Quote(mPath))
+			var mBuf bytes.Buffer
+			res, err := execToUse.Execute(ctx, target, "read-manifest-"+job.Name, readManifestScript, &mBuf)
+			if err != nil || res == nil || !res.Success || len(bytes.TrimSpace(mBuf.Bytes())) == 0 {
+				continue
+			}
+			m, parseErr := docker.UnmarshalManifest(mBuf.Bytes())
+			if parseErr != nil || m == nil {
+				_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: found container manifest %s but could not parse it: %v\n", mPath, parseErr)
+				continue
+			}
+			candidates = append(candidates, manifestCandidate{
+				manifest:    m,
+				packageRoot: path.Dir(mPath),
+				dir:         rDir,
+			})
+		}
+	}
+
+	// Only a manifest whose app names this job (or the requested alias) may
+	// drive the restore. Silently using "the last manifest we found" started a
+	// different application (C72).
+	var matched []manifestCandidate
+	for _, c := range candidates {
+		if strings.EqualFold(c.manifest.App, job.Name) || (opts.AliasName != "" && strings.EqualFold(c.manifest.App, opts.AliasName)) {
+			matched = append(matched, c)
+		}
+	}
 
 	var (
 		manifest           *docker.ContainerManifest
 		restoredProjectDir string
+		packageRoot        string
 	)
-
-	for _, cand := range candidateDirs {
-		rDir := RestoredPath(opts.TargetPath, cand)
-		mPath := path.Join(rDir, docker.ManifestFileName)
-		readManifestScript := fmt.Sprintf("cat %s 2>/dev/null || true", shellquote.Quote(mPath))
-		var mBuf bytes.Buffer
-		res, err := execToUse.Execute(ctx, target, "read-manifest-"+job.Name, readManifestScript, &mBuf)
-		if err == nil && res != nil && res.Success && len(bytes.TrimSpace(mBuf.Bytes())) > 0 {
-			m, parseErr := docker.UnmarshalManifest(mBuf.Bytes())
-			if parseErr == nil && m != nil {
-				manifest = m
-				restoredProjectDir = rDir
-				if strings.EqualFold(m.App, job.Name) || (opts.AliasName != "" && strings.EqualFold(m.App, opts.AliasName)) {
-					break
-				}
+	switch {
+	case len(matched) > 0:
+		manifest = matched[0].manifest
+		restoredProjectDir = matched[0].dir
+		packageRoot = matched[0].packageRoot
+		if len(matched) > 1 {
+			locations := make([]string, 0, len(matched))
+			for _, c := range matched {
+				locations = append(locations, path.Join(c.packageRoot, docker.ManifestFileName))
 			}
+			_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: %d manifests match app %q (%s); using %s.\n",
+				len(matched), matched[0].manifest.App, strings.Join(locations, ", "), packageRoot)
 		}
+	case len(candidates) > 0:
+		found := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			found = append(found, fmt.Sprintf("%q at %s", c.manifest.App, path.Join(c.packageRoot, docker.ManifestFileName)))
+		}
+		aliasNote := ""
+		if opts.AliasName != "" {
+			aliasNote = fmt.Sprintf(" or alias %q", opts.AliasName)
+		}
+		_, _ = fmt.Fprintf(consoleOut, "  ⚠️ Warning: found container manifest(s) %s, but none matches job %q%s. Skipping manifest-driven restore and falling back to auto-start.\n",
+			strings.Join(found, "; "), job.Name, aliasNote)
 	}
 
 	if manifest != nil {
@@ -390,7 +457,10 @@ func (r *RestoreRunner) autoStartContainers(
 
 		// A. Check external mounts
 		for _, em := range manifest.ExternalMounts {
-			if em.Reason == "system_mount" || pathutil.HasPathPrefix(em.Source, "/var/run") || pathutil.HasPathPrefix(em.Source, "/dev") {
+			// docker.IsSystemMount is the single source of truth for "this is a
+			// host runtime dependency, not operator data" and matches on path
+			// boundaries, so "/development" is never mistaken for "/dev".
+			if em.Reason == "system_mount" || docker.IsSystemMount(em.Source) {
 				checkScript := fmt.Sprintf("test -e %s || echo 'MISSING'", shellquote.Quote(em.Source))
 				var checkBuf bytes.Buffer
 				_, _ = execToUse.Execute(ctx, target, "check-mount", checkScript, &checkBuf)
@@ -403,7 +473,7 @@ func (r *RestoreRunner) autoStartContainers(
 		// B. Restore named volumes
 		for _, v := range manifest.Volumes {
 			if v.Archive != "" {
-				archivePath := path.Join(restoredProjectDir, v.Archive)
+				archivePath := path.Join(packageRoot, v.Archive)
 				_, _ = fmt.Fprintf(consoleOut, "  -> Restoring volume %q from %s...\n", v.OriginalName, v.Archive)
 				volScript := docker.BuildVolumeImportScript(v.OriginalName, archivePath)
 				vRes, vErr := execToUse.Execute(ctx, target, "restore-vol-"+v.OriginalName, volScript, consoleOut)
@@ -445,7 +515,7 @@ fi
 		}
 		// D. Import Database
 		if manifest.Database != nil && manifest.Database.Dump != "" {
-			dumpPath := path.Join(restoredProjectDir, manifest.Database.Dump)
+			dumpPath := path.Join(packageRoot, manifest.Database.Dump)
 			targetContainer := manifest.Database.Container
 			if opts.AliasName != "" && targetContainer == manifest.App {
 				targetContainer = opts.AliasName
@@ -477,9 +547,8 @@ fi
 	if opts.TargetPath != "" && opts.TargetPath != "/" {
 		fallbackCandidateDirs = append(fallbackCandidateDirs, opts.TargetPath)
 	}
-	fallbackCandidateDirs = append(fallbackCandidateDirs, restoredProjectDir)
-	for _, p := range job.Paths {
-		fallbackCandidateDirs = append(fallbackCandidateDirs, RestoredPath(opts.TargetPath, p))
+	for _, cand := range candidateDirs {
+		fallbackCandidateDirs = append(fallbackCandidateDirs, RestoredPath(opts.TargetPath, cand))
 	}
 
 	autoOpts := docker.AutoStartOptions{

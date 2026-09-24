@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/asset"
+	"github.com/volcano6/opspulse/internal/backup"
 )
 
 var assetCmd = &cobra.Command{
@@ -157,10 +158,21 @@ var assetRemoveCmd = &cobra.Command{
 	Use:     "remove <id>",
 	Aliases: []string{"rm", "delete"},
 	Short:   "Remove an asset from configuration",
-	Args:    cobra.ExactArgs(1),
+	Long: `Remove an asset entry from assets.yaml.
+
+Backup jobs that still list the asset are reported as a warning; such a job
+fails at its next run, which is not a reason to keep a broken asset entry.
+The removal is never blocked and never prompts.
+
+Examples:
+  ops asset remove old-mysql`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		id := args[0]
 		store := asset.NewDefaultStore()
+
+		check := loadBackupRefCheck(backup.NewDefaultStore(), store)
+		warnBackupRefCheck(os.Stderr, check, check.jobsReferencingAsset(id), fmt.Sprintf("asset %q", id))
 
 		if err := store.Delete(id); err != nil {
 			return err

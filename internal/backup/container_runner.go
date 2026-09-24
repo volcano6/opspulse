@@ -26,26 +26,25 @@ type ContainerBackupOptions struct {
 	AliasName     string // Optional alias to rename the container in generated Compose and backup job
 }
 
-// validateContainerAlias rejects aliases that cannot serve as a single path
-// component. The alias becomes the directory name under
-// /var/lib/opspulse/containers and is written into the generated Compose
-// project, so separators, traversal and leading dots must never get through.
+// validateContainerAlias rejects aliases that cannot serve as a Compose
+// project name and a single path component. The alias becomes both the backup
+// job name and the directory name under /var/lib/opspulse/containers, and it
+// is written into the generated Compose project as COMPOSE_PROJECT_NAME.
+//
+// The job-name shape is owned by ValidateJobName (the single source of truth);
+// this function only adds the narrower Compose project-name charset.
 func validateContainerAlias(name string) error {
-	if name == "" || len(name) > 255 {
-		return fmt.Errorf("invalid container alias %q: must be between 1 and 255 characters", name)
+	if err := ValidateJobName(name); err != nil {
+		return fmt.Errorf("invalid container alias: %w", err)
 	}
-	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
-		return fmt.Errorf("invalid container alias %q: cannot start with '.' or '-'", name)
-	}
-	if strings.Contains(name, "..") {
-		return fmt.Errorf("invalid container alias %q: cannot contain '..'", name)
-	}
+	// A Compose project name is narrower than a job name: Unicode letters and
+	// '@' pass ValidateJobName but are rejected here.
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		case r == '-', r == '_', r == '.':
 		default:
-			return fmt.Errorf("invalid container alias %q: contains invalid character %q", name, r)
+			return fmt.Errorf("invalid container alias %q: character %q is not valid in a Compose project name", name, r)
 		}
 	}
 	return nil
@@ -133,15 +132,22 @@ func (r *Runner) RunContainerBackup(
 		tempDumpPath     string
 		tempFilesToClean []string
 		projectDir       string
+		scratchDir       string
 	)
 
-	// Clean up any temporary files created on target host upon exit
+	// Clean up any temporary files created on target host upon exit. The list
+	// is filtered against the scratch directory so that a future change to
+	// tempFilesToClean can never make this delete user data.
 	defer func() {
-		if len(tempFilesToClean) > 0 {
-			var rmParts []string
-			for _, f := range tempFilesToClean {
-				rmParts = append(rmParts, shellquote.Quote(f))
+		var rmParts []string
+		for _, f := range tempFilesToClean {
+			if !pathutil.HasPathPrefix(f, scratchDir) {
+				_, _ = fmt.Fprintf(consoleOut, "Warning: refusing to clean up %q: outside OpsPulse scratch directory %q. Please remove it manually.\n", f, scratchDir)
+				continue
 			}
+			rmParts = append(rmParts, shellquote.Quote(f))
+		}
+		if len(rmParts) > 0 {
 			cleanScript := fmt.Sprintf("rm -rf %s", strings.Join(rmParts, " "))
 			cleanCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -174,12 +180,23 @@ func (r *Runner) RunContainerBackup(
 		composePath = path.Join(projectDir, composeFileName)
 	}
 
-	// Pre-run sanitization: remove stale dumps and volume archives from prior aborted runs
-	staleCleanupScript := fmt.Sprintf("rm -rf %s %s 2>/dev/null || true",
-		shellquote.Quote(path.Join(projectDir, "dumps")),
-		shellquote.Quote(path.Join(projectDir, "volumes")),
+	// Every artifact OpsPulse generates (hot dumps, volume archives and the
+	// manifest) lives under a private scratch directory. For Compose projects
+	// projectDir is the operator's own working directory, where "dumps/" and
+	// "volumes/" are common live-data locations, so nothing may be written to
+	// or removed from those paths directly.
+	scratchDir = docker.ScratchDir(projectDir)
+
+	// Pre-run sanitization: drop only OpsPulse-owned scratch subdirectories
+	// left over from a prior aborted run.
+	staleCleanupScript := fmt.Sprintf("rm -rf %s %s",
+		shellquote.Quote(docker.ScratchDumpsDir(projectDir)),
+		shellquote.Quote(docker.ScratchVolumesDir(projectDir)),
 	)
-	_, _ = execToUse.Execute(ctx, target, "clean-stale-dumps", staleCleanupScript, io.Discard)
+	staleRes, staleErr := execToUse.Execute(ctx, target, "clean-stale-dumps", staleCleanupScript, consoleOut)
+	if staleErr != nil || (staleRes != nil && !staleRes.Success) {
+		_, _ = fmt.Fprintf(consoleOut, "Warning: failed to remove stale scratch artifacts under %s: %v\n", scratchDir, staleErr)
+	}
 
 	manifest := &docker.ContainerManifest{
 		FormatVersion: 1,
@@ -199,7 +216,7 @@ func (r *Runner) RunContainerBackup(
 				continue
 			}
 			archiveRel := fmt.Sprintf("volumes/%s/data.tar", volName)
-			archiveFull := path.Join(projectDir, archiveRel)
+			archiveFull := path.Join(scratchDir, archiveRel)
 			manifest.Volumes = append(manifest.Volumes, docker.ManifestVolume{
 				OriginalName: volName,
 				Archive:      archiveRel,
@@ -242,7 +259,7 @@ func (r *Runner) RunContainerBackup(
 		engine := info.DatabaseEngine()
 		dumpFileName := docker.DumpFileName(finalName)
 		dumpRel := fmt.Sprintf("dumps/%s", dumpFileName)
-		dumpFull := path.Join(projectDir, dumpRel)
+		dumpFull := path.Join(scratchDir, dumpRel)
 		tempDumpPath = dumpFull
 		tempFilesToClean = append(tempFilesToClean, dumpFull)
 
@@ -285,10 +302,10 @@ func (r *Runner) RunContainerBackup(
 	if mErr != nil {
 		return nil, fmt.Errorf("failed to marshal container manifest: %w", mErr)
 	}
-	manifestFile := path.Join(projectDir, docker.ManifestFileName)
+	manifestFile := docker.ManifestPath(projectDir)
 	encodedManifest := base64.StdEncoding.EncodeToString([]byte(manifestYAML))
 	writeManifestScript := fmt.Sprintf("mkdir -p %s && printf '%%s' %s | base64 -d > %s\n",
-		shellquote.Quote(projectDir), shellquote.Quote(encodedManifest), shellquote.Quote(manifestFile))
+		shellquote.Quote(scratchDir), shellquote.Quote(encodedManifest), shellquote.Quote(manifestFile))
 	mRes, mErr := execToUse.Execute(ctx, target, "write-manifest-"+finalName, writeManifestScript, io.Discard)
 	if mErr != nil || (mRes != nil && !mRes.Success) {
 		return nil, fmt.Errorf("failed to write manifest.yaml on target %s: %v", serverName, mErr)

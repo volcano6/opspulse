@@ -3,6 +3,8 @@ package docker
 import (
 	"fmt"
 	"strings"
+
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 // AutoStartOptions defines parameters for auto-starting restored container services.
@@ -35,7 +37,7 @@ echo "Using Compose engine: $COMPOSE"
 `)
 
 	if opts.AliasName != "" {
-		_, _ = fmt.Fprintf(&sb, "export COMPOSE_PROJECT_NAME=%q\n", opts.AliasName)
+		_, _ = fmt.Fprintf(&sb, "export COMPOSE_PROJECT_NAME=%s\n", shellquote.Quote(opts.AliasName))
 	}
 
 	sb.WriteString("\n# 2. Start container services in identified project directories\n")
@@ -43,16 +45,21 @@ echo "Using Compose engine: $COMPOSE"
 		if dir == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(&sb, `if [ -d %q ]; then
+		// Every interpolated value is single-quoted with shellquote.Quote; Go's
+		// %q is a Go escape, not a shell one, and left $(), backticks and !
+		// live. The directory is never embedded inside the double-quoted echo
+		// string either: command substitution still runs inside double quotes.
+		quotedDir := shellquote.Quote(dir)
+		_, _ = fmt.Fprintf(&sb, `if [ -d %[1]s ]; then
   for compose_file in "compose.yaml" "compose.yml" "docker-compose.yaml" "docker-compose.yml"; do
-    if [ -f %q/"$compose_file" ]; then
-      echo "Starting services in %q using $compose_file..."
-      (cd %q && $COMPOSE -f "$compose_file" up -d)
+    if [ -f %[1]s/"$compose_file" ]; then
+      echo "Starting services in " %[1]s " using $compose_file..."
+      (cd %[1]s && $COMPOSE -f "$compose_file" up -d)
       break
     fi
   done
 fi
-`, dir, dir, dir, dir)
+`, quotedDir)
 	}
 
 	// 3. Database import if applicable

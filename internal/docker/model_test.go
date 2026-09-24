@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -173,6 +174,80 @@ func TestIsSystemMount(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsSystemMount(tt.source); got != tt.want {
 				t.Errorf("IsSystemMount(%q) = %v, want %v", tt.source, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPortMappingString covers the generated compose.yaml "ports" entries. An
+// unpublished port used to be rendered as "127.0.0.1::80", which compose
+// rejects.
+func TestPortMappingString(t *testing.T) {
+	tests := []struct {
+		name string
+		p    PortMapping
+		want string
+	}{
+		{"published", PortMapping{HostPort: "8080", ContainerPort: "80", Protocol: "tcp"}, "8080:80"},
+		{"published udp", PortMapping{HostPort: "8080", ContainerPort: "53", Protocol: "udp"}, "8080:53/udp"},
+		{"bound to loopback", PortMapping{HostIP: "127.0.0.1", HostPort: "8080", ContainerPort: "80", Protocol: "tcp"}, "127.0.0.1:8080:80"},
+		{"wildcard host ip is elided", PortMapping{HostIP: "0.0.0.0", HostPort: "8080", ContainerPort: "80", Protocol: "tcp"}, "8080:80"},
+		{"ipv6 wildcard host ip is elided", PortMapping{HostIP: "::", HostPort: "8080", ContainerPort: "80", Protocol: "tcp"}, "8080:80"},
+		{"exposed only", PortMapping{ContainerPort: "80", Protocol: "tcp"}, "80"},
+		{"exposed only, udp", PortMapping{ContainerPort: "53", Protocol: "udp"}, "53/udp"},
+		{"host ip without host port stays malformed-free", PortMapping{HostIP: "127.0.0.1", ContainerPort: "80", Protocol: "tcp"}, "80"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.p.String()
+			if got != tt.want {
+				t.Errorf("PortMapping%+v.String() = %q, want %q", tt.p, got, tt.want)
+			}
+			if strings.Contains(got, "::") || strings.HasSuffix(got, ":") {
+				t.Errorf("PortMapping%+v.String() = %q, which is not a valid port mapping", tt.p, got)
+			}
+		})
+	}
+}
+
+func TestDatabaseEngine(t *testing.T) {
+	tests := []struct {
+		image string
+		want  string
+	}{
+		// Recognized databases, including registry, library and bitnami prefixes.
+		{"mysql:8.0", "mysql"},
+		{"mariadb:10", "mysql"},
+		{"percona:8", "mysql"},
+		{"library/postgres:16-alpine", "postgres"},
+		{"postgres", "postgres"},
+		{"postgresql:15", "postgres"},
+		{"bitnami/mysql:8.0", "mysql"},
+		{"bitnami/postgresql:16", "postgres"},
+		{"docker.io/library/mysql", "mysql"},
+		{"registry.example.com:5000/team/mysql:8", "mysql"},
+		{"registry.example.com/team/postgres@sha256:deadbeef", "postgres"},
+		{"MySQL:8.0", "mysql"},
+
+		// Look-alikes must not be treated as databases: doing so skips the
+		// physical volume and triggers a dump that can never succeed.
+		{"my-mysql-exporter:1.0", ""},
+		{"mysql-exporter", ""},
+		{"postgres-backup", ""},
+		{"postgresql-exporter", ""},
+		{"nginx:alpine", ""},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.image, func(t *testing.T) {
+			info := &ContainerInfo{Image: tt.image}
+			if got := info.DatabaseEngine(); got != tt.want {
+				t.Errorf("DatabaseEngine(%q) = %q, want %q", tt.image, got, tt.want)
+			}
+			if info.IsDatabase() != (tt.want != "") {
+				t.Errorf("IsDatabase(%q) = %v, want %v", tt.image, info.IsDatabase(), tt.want != "")
 			}
 		})
 	}

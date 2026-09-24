@@ -11,6 +11,41 @@ import (
 // ManifestFileName is the standard manifest file name in container backup packages.
 const ManifestFileName = "manifest.yaml"
 
+// ScratchDirName is the OpsPulse-owned working directory inside a container
+// project directory. Hot dumps, volume archives and manifest.yaml all live
+// under it so that cleanup can never touch the operator's own "dumps/" or
+// "volumes/" directories, which are common live-data locations in Compose
+// projects (e.g. "./volumes/db:/var/lib/postgresql/data").
+const ScratchDirName = ".opspulse"
+
+// ScratchDir returns the OpsPulse scratch directory for a project directory.
+func ScratchDir(projectDir string) string {
+	return path.Join(projectDir, ScratchDirName)
+}
+
+// ScratchDumpsDir returns the hot-dump directory inside the scratch directory.
+func ScratchDumpsDir(projectDir string) string {
+	return path.Join(ScratchDir(projectDir), "dumps")
+}
+
+// ScratchVolumesDir returns the volume-archive directory inside the scratch directory.
+func ScratchVolumesDir(projectDir string) string {
+	return path.Join(ScratchDir(projectDir), "volumes")
+}
+
+// ManifestPath returns the container manifest location for new snapshots,
+// i.e. "<projectDir>/.opspulse/manifest.yaml".
+func ManifestPath(projectDir string) string {
+	return path.Join(ScratchDir(projectDir), ManifestFileName)
+}
+
+// LegacyManifestPath returns the manifest location used by snapshots taken
+// before artifacts were namespaced under ScratchDirName. Restore must still
+// accept it for as long as such snapshots exist in repositories.
+func LegacyManifestPath(projectDir string) string {
+	return path.Join(projectDir, ManifestFileName)
+}
+
 // ContainerManifest defines the structured, self-describing metadata for a backed-up container application package.
 type ContainerManifest struct {
 	FormatVersion  int                     `json:"format_version" yaml:"format_version"`
@@ -21,10 +56,10 @@ type ContainerManifest struct {
 	Database       *ManifestDatabase       `json:"database,omitempty" yaml:"database,omitempty"`
 }
 
-// ManifestVolume represents a named volume archived as tar in the project directory.
+// ManifestVolume represents a named volume archived as tar inside the package scratch directory.
 type ManifestVolume struct {
 	OriginalName string `json:"original_name" yaml:"original_name"`
-	Archive      string `json:"archive" yaml:"archive"` // relative path inside project, e.g. "volumes/my-vol/data.tar"
+	Archive      string `json:"archive" yaml:"archive"` // relative to the package root, e.g. "volumes/my-vol/data.tar"
 	Target       string `json:"target" yaml:"target"`   // container target mount path, e.g. "/var/lib/app"
 }
 
@@ -62,6 +97,10 @@ func UnmarshalManifest(data []byte) (*ContainerManifest, error) {
 }
 
 // BuildVolumeExportScript generates a bash script to archive a Docker named volume into a tar file on the host.
+//
+// The archive file name is passed through shellquote as part of the whole
+// helper command, so a file name carrying shell metacharacters cannot break
+// out of the `sh -c` argument.
 func BuildVolumeExportScript(volumeName, hostArchivePath string) string {
 	dir := path.Dir(hostArchivePath)
 	file := path.Base(hostArchivePath)
@@ -76,15 +115,18 @@ if ! docker image inspect "$HELPER_IMG" >/dev/null 2>&1; then
     HELPER_IMG="busybox"
   fi
 fi
-docker run --rm -v %s:/src:ro -v %s:/dst "$HELPER_IMG" sh -c 'cd /src && tar cpf /dst/%s .'`,
+docker run --rm -v %s:/src:ro -v %s:/dst "$HELPER_IMG" sh -c %s`,
 		shellquote.Quote(dir),
 		shellquote.Quote(volumeName),
 		shellquote.Quote(dir),
-		file,
+		shellquote.Quote(fmt.Sprintf("cd /src && tar cpf /dst/%s .", file)),
 	)
 }
 
 // BuildVolumeImportScript generates a bash script to restore a tar archive into a Docker named volume.
+//
+// As with BuildVolumeExportScript, the archive file name is shellquoted as
+// part of the whole helper command.
 func BuildVolumeImportScript(volumeName, hostArchivePath string) string {
 	dir := path.Dir(hostArchivePath)
 	file := path.Base(hostArchivePath)
@@ -99,10 +141,10 @@ if ! docker image inspect "$HELPER_IMG" >/dev/null 2>&1; then
   fi
 fi
 docker volume create %s >/dev/null
-docker run --rm -v %s:/dst -v %s:/src:ro "$HELPER_IMG" sh -c 'cd /dst && tar xpf /src/%s'`,
+docker run --rm -v %s:/dst -v %s:/src:ro "$HELPER_IMG" sh -c %s`,
 		shellquote.Quote(volumeName),
 		shellquote.Quote(volumeName),
 		shellquote.Quote(dir),
-		file,
+		shellquote.Quote(fmt.Sprintf("cd /dst && tar xpf /src/%s", file)),
 	)
 }

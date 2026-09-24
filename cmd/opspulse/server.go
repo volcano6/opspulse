@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/asset"
+	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
@@ -210,6 +212,10 @@ var serverRemoveCmd = &cobra.Command{
 Removing an entry also deletes the private key file OpsPulse manages for it,
 unless --keep-key is given or another server still references the same key.
 
+Backup jobs that still reference the server are listed as a warning and, in an
+interactive shell, confirmed separately: such a job keeps working from its own
+inventory until its next run, so the reference never blocks the removal.
+
 Examples:
   ops server remove old-vps             # Confirm interactively, then remove
   ops server remove old-vps --yes       # Skip the confirmation prompt
@@ -233,18 +239,29 @@ Examples:
 				name, len(dependents), strings.Join(depNames, ", "))
 		}
 
+		check := loadBackupRefCheck(backup.NewDefaultStore(), asset.NewDefaultStore())
+		referencingJobs := check.jobsReferencingServer(name)
+		warnBackupRefCheck(os.Stderr, check, referencingJobs, fmt.Sprintf("server %q", name))
+
 		if err := confirmServerRemoval(os.Stdin, os.Stdout, *srv, removeKeepKey, removeYes, stdinIsInteractive()); err != nil {
 			return err
 		}
-
-		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
-			return fmt.Errorf("clean up private key %s of server %q: %w", srv.KeyPath, srv.Name, err)
+		if err := confirmReferencingJobs(os.Stdin, os.Stdout, fmt.Sprintf("server %q", name), referencingJobs, removeYes, stdinIsInteractive()); err != nil {
+			return err
 		}
+
+		// The inventory entry goes first: a failed write must never leave the
+		// entry pointing at a private key that is already gone.
 		if err := store.Delete(name); err != nil {
 			if srv.KeyPath != "" {
-				return fmt.Errorf("remove server %q from inventory (private key: %s): %w", name, srv.KeyPath, err)
+				return fmt.Errorf("remove server %q from inventory: %w (private key %s was not deleted)", name, err, srv.KeyPath)
 			}
 			return fmt.Errorf("remove server %q from inventory: %w", name, err)
+		}
+		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, removeKeepKey); err != nil {
+			// The user asked for the entry to go, and it is gone; a key file
+			// that outlives it is a leftover, not a reason to report failure.
+			fmt.Fprintf(os.Stderr, "⚠️  Server %q was removed, but its private key %s was not deleted: %v\n", name, srv.KeyPath, err)
 		}
 		if srv.KeyPath != "" {
 			fmt.Printf("✅ Server %q removed successfully from inventory (private key: %s).\n", name, srv.KeyPath)
@@ -253,6 +270,93 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// backupRefCheck is the best-effort scan of the backup inventory performed
+// before a destructive removal.
+//
+// Neither file is trusted: removing a broken inventory entry has to stay
+// possible, so a config that cannot be read or parsed downgrades this check to
+// a warning rather than failing the command. Warnings is empty when both files
+// were consulted successfully.
+type backupRefCheck struct {
+	Jobs     []backup.Job
+	Warnings []string
+}
+
+// loadBackupRefCheck reads backups.yaml and assets.yaml for reference checks.
+func loadBackupRefCheck(backupStore *backup.Store, assetStore *asset.Store) backupRefCheck {
+	var check backupRefCheck
+	if jobs, err := backupStore.List(); err != nil {
+		check.Warnings = append(check.Warnings, fmt.Sprintf("could not read %s (%v); backup job references were not checked", backupStore.FilePath(), err))
+	} else {
+		check.Jobs = jobs
+	}
+	// assets.yaml is read for its readability alone: a job resolves its paths
+	// through it, so an unreadable list means the reference picture above is
+	// incomplete and has to be reported as such.
+	if _, err := assetStore.List(); err != nil {
+		check.Warnings = append(check.Warnings, fmt.Sprintf("could not read %s (%v); asset references were not checked", assetStore.FilePath(), err))
+	}
+	return check
+}
+
+// jobsReferencingServer returns the names of the backup jobs bound to
+// serverName through their `server:` field, in file order.
+func (c backupRefCheck) jobsReferencingServer(serverName string) []string {
+	var names []string
+	for _, j := range c.Jobs {
+		if j.Server == serverName {
+			names = append(names, j.Name)
+		}
+	}
+	return names
+}
+
+// jobsReferencingAsset returns the names of the backup jobs that list assetID
+// under `assets:`, in file order.
+func (c backupRefCheck) jobsReferencingAsset(assetID string) []string {
+	var names []string
+	for _, j := range c.Jobs {
+		for _, id := range j.Assets {
+			if id == assetID {
+				names = append(names, j.Name)
+				break
+			}
+		}
+	}
+	return names
+}
+
+// warnBackupRefCheck reports, without blocking, what the scan found. A backup
+// job that references what is removed only fails at its next run, and its
+// reference is trivially repairable, so it is never treated like the jump host
+// dependency that blocks the removal outright.
+func warnBackupRefCheck(out io.Writer, check backupRefCheck, jobNames []string, what string) {
+	for _, warning := range check.Warnings {
+		_, _ = fmt.Fprintf(out, "⚠️  %s\n", warning)
+	}
+	if len(jobNames) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "⚠️  %d backup job(s) still reference %s and will fail until reconfigured: %s\n",
+		len(jobNames), what, strings.Join(jobNames, ", "))
+}
+
+// confirmReferencingJobs asks for a second, reference-specific confirmation in
+// an interactive shell. --yes answers it as well, and a non-interactive shell
+// is already refused by confirmServerRemoval, so this gate can only ever add a
+// question — it never makes a scripted removal fail.
+func confirmReferencingJobs(in io.Reader, out io.Writer, what string, jobNames []string, yes, interactive bool) error {
+	if len(jobNames) == 0 || yes || !interactive {
+		return nil
+	}
+	prompt := fmt.Sprintf("⚠️  %d backup job(s) still reference %s (%s) and will fail until reconfigured.\nRemove anyway? [y/N]: ",
+		len(jobNames), what, strings.Join(jobNames, ", "))
+	if !promptConfirm(in, out, prompt, false) {
+		return fmt.Errorf("removal cancelled by user")
+	}
+	return nil
 }
 
 // confirmServerRemoval gates a removal that drops the inventory entry and, with

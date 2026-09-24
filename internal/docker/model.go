@@ -43,15 +43,19 @@ func (p PortMapping) String() string {
 		proto = "/" + strings.ToLower(p.Protocol)
 	}
 
+	// An unpublished port has no host side at all. Emitting "<host_ip>:" would
+	// produce a malformed mapping such as "127.0.0.1::80", so only the
+	// container port is rendered in that case.
+	if p.HostPort == "" {
+		return p.ContainerPort + proto
+	}
+
 	host := p.HostPort
 	if p.HostIP != "" && p.HostIP != "0.0.0.0" && p.HostIP != "::" {
 		host = p.HostIP + ":" + p.HostPort
 	}
 
-	if host != "" {
-		return fmt.Sprintf("%s:%s%s", host, p.ContainerPort, proto)
-	}
-	return fmt.Sprintf("%s%s", p.ContainerPort, proto)
+	return fmt.Sprintf("%s:%s%s", host, p.ContainerPort, proto)
 }
 
 // VolumeMount represents a bind mount or named volume attached to the container.
@@ -115,17 +119,40 @@ func (c *ContainerInfo) IsDatabase() bool {
 	return c.DatabaseEngine() != ""
 }
 
+// databaseImageEngines maps a normalized image repository name to its database
+// dialect. Matching is exact on the final path component of the image
+// reference, so look-alikes such as "my-mysql-exporter" or "postgres-backup"
+// are not treated as databases.
+var databaseImageEngines = map[string]string{
+	"mysql":      "mysql",
+	"mariadb":    "mysql",
+	"percona":    "mysql",
+	"postgres":   "postgres",
+	"postgresql": "postgres",
+}
+
+// imageRepoName reduces an image reference to its bare repository name:
+// "docker.io/library/mysql:8.0" and "bitnami/mysql" both become "mysql".
+// Registry hosts, tags and digests are stripped first.
+func imageRepoName(image string) string {
+	ref := strings.TrimSpace(strings.ToLower(image))
+	if i := strings.IndexByte(ref, '@'); i >= 0 {
+		ref = ref[:i]
+	}
+	// A tag separator must follow the last slash; a colon before it belongs to
+	// a registry "host:port" prefix.
+	if i := strings.LastIndexByte(ref, ':'); i > strings.LastIndexByte(ref, '/') {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndexByte(ref, '/'); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return ref
+}
+
 // DatabaseEngine identifies the database dialect ("mysql" or "postgres") if recognized.
 func (c *ContainerInfo) DatabaseEngine() string {
-	img := strings.ToLower(c.Image)
-	// Match image names like "mysql", "mysql:8", "mariadb:10", "library/postgres:16-alpine", "bitnami/postgresql"
-	if strings.Contains(img, "mysql") || strings.Contains(img, "mariadb") {
-		return "mysql"
-	}
-	if strings.Contains(img, "postgres") {
-		return "postgres"
-	}
-	return ""
+	return databaseImageEngines[imageRepoName(c.Image)]
 }
 
 // IsSystemMount returns true if the mount source represents a host system socket,

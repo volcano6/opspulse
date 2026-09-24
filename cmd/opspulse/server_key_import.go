@@ -104,18 +104,21 @@ func validatePrivateKeyContent(data []byte) error {
 	return fmt.Errorf("not a valid SSH private key (ensure you selected a private key, not a .pub or plain text file): %w", err)
 }
 
+// managedKeyPrefix marks the private keys OpsPulse creates for a server.
+const managedKeyPrefix = "opspulse_"
+
+// isManagedKey reports whether OpsPulse owns the private key at keyPath, and
+// may therefore delete it. Both halves of the test matter: the directory check
+// keeps a same-prefix sibling such as ~/.ssh/opspulse_archive/id_rsa outside
+// the deletion set, and the basename check keeps an unrelated ~/.ssh/id_rsa in
+// place. A bare prefix match on the full path gets both of them wrong.
 func isManagedKey(keyPath string) bool {
 	trimmed := strings.TrimSpace(keyPath)
 	if trimmed == "" {
 		return false
 	}
 	expanded := expandHome(trimmed)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	managedPrefix := filepath.Join(home, ".ssh", "opspulse_")
-	return strings.HasPrefix(expanded, managedPrefix)
+	return isInsideSSHDir(expanded) && strings.HasPrefix(filepath.Base(expanded), managedKeyPrefix)
 }
 
 // IsKeyUsedByOtherServers checks if any server in the store other than excludeServerName uses the given keyPath.
@@ -167,21 +170,18 @@ func CleanupManagedKeyWithRefCheck(out io.Writer, store *server.Store, serverNam
 	return nil
 }
 
+// cleanupManagedKey deletes a managed private key and its .pub companion.
+// Anything isManagedKey rejects is left untouched, and a removal failure is
+// ignored: callers report the outcome, they do not act on it.
 func cleanupManagedKey(keyPath string) {
-	trimmed := strings.TrimSpace(keyPath)
-	if trimmed == "" {
+	if !isManagedKey(keyPath) {
 		return
 	}
-	expanded := expandHome(trimmed)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	managedPrefix := filepath.Join(home, ".ssh", "opspulse_")
-	// Only delete if inside ~/.ssh/ and starts with opspulse_
-	if strings.HasPrefix(expanded, managedPrefix) {
-		_ = os.Remove(expanded)
-		_ = os.Remove(expanded + ".pub")
+	expanded := expandHome(strings.TrimSpace(keyPath))
+	_ = os.Remove(expanded)
+	pub := expanded + ".pub"
+	if isManagedKey(pub) {
+		_ = os.Remove(pub)
 	}
 }
 

@@ -6,22 +6,72 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/volcano6/opspulse/internal/config"
 )
 
 // LogPathFor generates the standard log file path for a server operation and ensures the directory exists.
+//
+// The name arrives from three callers: bootstrap's server name, and the backup
+// and restore runners' job names (already prefixed with "backup-"/"restore-").
+// Job names are validated by internal/backup, but this is the single place that
+// turns an arbitrary string into a file path, so it sanitises instead of
+// trusting its callers: a name carrying a separator or ".." must never be able
+// to place a log file outside logDir.
 func LogPathFor(serverName string, timestamp time.Time) (string, error) {
 	logDir := filepath.Join(config.DataDir(), "logs")
 	if err := os.MkdirAll(logDir, 0o750); err != nil {
 		return "", fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
-	fileName := fmt.Sprintf("bootstrap-%s-%s.log", serverName, timestamp.Format("20060102T150405"))
-	return filepath.Join(logDir, fileName), nil
+	fileName := fmt.Sprintf("bootstrap-%s-%s.log", sanitizeLogSegment(serverName), timestamp.Format("20060102T150405"))
+	path := filepath.Join(logDir, fileName)
+
+	// Belt and braces: sanitizeLogSegment already removes separators, so a
+	// result outside logDir means a bug in it rather than hostile input. Better
+	// to fail than to write somewhere unexpected.
+	if rel, err := filepath.Rel(logDir, path); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("refusing to place the log file outside %s", logDir)
+	}
+	return path, nil
 }
+
+// sanitizeLogSegment reduces s to something safe as a single path segment.
+//
+// Separators, NUL and control characters become "_", leading dots are dropped
+// so the name can never be "." or "..", and the result is capped in runes so a
+// long name cannot push the path past the filesystem's limit. It deliberately
+// does not try to whitelist characters: job and server names carry Unicode, and
+// the only property that matters here is "cannot escape its directory".
+func sanitizeLogSegment(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '/' || r == '\\' || r == 0 || unicode.IsControl(r) {
+			b.WriteRune('_')
+			continue
+		}
+		b.WriteRune(r)
+	}
+
+	out := strings.TrimLeft(strings.TrimSpace(b.String()), ".")
+	if out == "" {
+		return "unnamed"
+	}
+	if runes := []rune(out); len(runes) > maxLogSegmentRunes {
+		out = string(runes[:maxLogSegmentRunes])
+	}
+	return out
+}
+
+// maxLogSegmentRunes caps the caller-supplied part of a log file name. Server
+// and job names are far shorter than this in practice; the cap exists only so a
+// pathological name cannot produce a path the filesystem rejects.
+const maxLogSegmentRunes = 96
 
 // PrefixedWriter prefixes every new line of output with a tag (e.g. "[vps-01] ").
 type PrefixedWriter struct {

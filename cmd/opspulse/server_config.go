@@ -93,10 +93,13 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 		}
 		srv.Port = *port
 	}
+	// The key that is being replaced is only cleaned up once the new path is on
+	// disk, so a failed save cannot leave the entry pointing at a deleted key.
+	var replacedKey string
 	if key != nil {
 		if srv.KeyPath != "" && srv.KeyPath != *key {
 			fmt.Printf("Replacing private key for server %q: %s -> %s\n", srv.Name, srv.KeyPath, *key)
-			_ = CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, srv.KeyPath, false)
+			replacedKey = srv.KeyPath
 		}
 		srv.KeyPath = *key
 	}
@@ -105,6 +108,11 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 	}
 	if err := store.Save(*srv); err != nil {
 		return fmt.Errorf("update server %q: %w", srv.Name, err)
+	}
+	if replacedKey != "" {
+		if err := CleanupManagedKeyWithRefCheck(os.Stdout, store, srv.Name, replacedKey, false); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Server %q was updated, but the replaced private key %s was not deleted: %v\n", srv.Name, replacedKey, err)
+		}
 	}
 	fmt.Printf("Server %q updated successfully.\n", srv.Name)
 	return nil

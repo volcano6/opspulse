@@ -443,3 +443,119 @@ func TestRunContainerBackup_ComposeAndDatabase(t *testing.T) {
 		t.Errorf("savedAsset.Engine = %q, want mysql", savedAsset.Engine)
 	}
 }
+
+// TestRunContainerBackup_ScratchNamespaceIsolatesUserDirs is the regression for
+// the P0 data-loss defect: a Compose container's working directory is the
+// operator's own project directory, where "dumps/" and "volumes/" are common
+// live-data locations. Every artifact and every cleanup target must therefore
+// be namespaced under ".opspulse/".
+func TestRunContainerBackup_ScratchNamespaceIsolatesUserDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	backupRepo := storage.NewBackupRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-07", Host: "10.0.0.7", User: "root"})
+	_ = backupStore.Save(Job{Name: "seed", Server: "vps-07", Paths: []string{"/var/log"}, Backend: "/mnt/repo"})
+
+	const projectDir = "/opt/blog"
+	const scratchDir = "/opt/blog/.opspulse"
+
+	// A database container in a Compose project: its physical data volume is
+	// replaced by a logical hot dump, and an unrelated named volume must be
+	// archived as a tar.
+	inspectJSON := `[{
+		"Id": "bcd12345",
+		"Name": "/blog-db",
+		"Config": {
+			"Image": "postgres:16",
+			"Labels": {
+				"com.docker.compose.project": "blog",
+				"com.docker.compose.service": "db",
+				"com.docker.compose.project.working_dir": "/opt/blog"
+			}
+		},
+		"Mounts": [
+			{"Type": "volume", "Name": "blog-db-data", "Source": "/var/lib/docker/volumes/blog-db-data/_data", "Destination": "/var/lib/postgresql/data", "RW": true},
+			{"Type": "volume", "Name": "blog-uploads", "Source": "/var/lib/docker/volumes/blog-uploads/_data", "Destination": "/var/lib/app/uploads", "RW": true}
+		]
+	}]`
+
+	exec := &dynamicMockExecutor{
+		inspectJSON:  inspectJSON,
+		resticOutput: `{"message_type":"summary","files_new":1,"data_added":1,"total_duration":0.1,"snapshot_id":"snap-scratch"}`,
+	}
+
+	runner := NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
+
+	var buf bytes.Buffer
+	res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+		Server:        "vps-07",
+		ContainerName: "blog-db",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RunContainerBackup() error: %v", err)
+	}
+
+	// The pre-run cleanup is the exact command that used to destroy live data.
+	const wantCleanup = "rm -rf '/opt/blog/.opspulse/dumps' '/opt/blog/.opspulse/volumes'"
+	if got := exec.executedScripts["clean-stale-dumps"]; got != wantCleanup {
+		t.Errorf("stale cleanup script = %q, want %q", got, wantCleanup)
+	}
+	for _, forbidden := range []string{"'/opt/blog/dumps'", "'/opt/blog/volumes'"} {
+		if strings.Contains(exec.executedScripts["clean-stale-dumps"], forbidden) {
+			t.Errorf("stale cleanup must never target the operator's own directory %s: %q",
+				forbidden, exec.executedScripts["clean-stale-dumps"])
+		}
+		// The user's live directories must not be named as cleanup targets anywhere.
+		for task, script := range exec.executedScripts {
+			if task == "clean-stale-dumps" {
+				continue
+			}
+			if strings.Contains(script, "rm -rf "+forbidden) {
+				t.Errorf("task %s removes the operator's own directory %s: %q", task, forbidden, script)
+			}
+		}
+	}
+
+	// Volume archives, dumps and the manifest all land in the scratch namespace.
+	exportScript := exec.executedScripts["export-vol-blog-uploads"]
+	if !strings.Contains(exportScript, "'/opt/blog/.opspulse/volumes/blog-uploads':/dst") {
+		t.Errorf("volume archive directory is not namespaced under %s: %q", scratchDir, exportScript)
+	}
+	if !strings.Contains(exportScript, "tar cpf /dst/data.tar") {
+		t.Errorf("volume export does not write data.tar into the archive directory: %q", exportScript)
+	}
+	if !strings.Contains(exportScript, "-v 'blog-uploads':/src:ro") {
+		t.Errorf("volume export lost the source volume: %q", exportScript)
+	}
+
+	dumpScript := exec.executedScripts["dump-blog-db"]
+	if !strings.Contains(dumpScript, "/opt/blog/.opspulse/dumps/blog-db.sql.gz") {
+		t.Errorf("hot dump is not namespaced under %s: %q", scratchDir, dumpScript)
+	}
+
+	manifestScript := exec.executedScripts["write-manifest-blog-db"]
+	if !strings.Contains(manifestScript, "/opt/blog/.opspulse/manifest.yaml") {
+		t.Errorf("manifest is not written under %s: %q", scratchDir, manifestScript)
+	}
+
+	// The restic read root stays the project directory, which now contains the
+	// scratch artifacts; nothing was dropped from the backup set.
+	hasPath := false
+	for _, p := range res.Paths {
+		if p == projectDir {
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		t.Errorf("res.Paths = %v, want it to contain %q", res.Paths, projectDir)
+	}
+}

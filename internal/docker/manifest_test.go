@@ -1,6 +1,9 @@
 package docker
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -81,4 +84,66 @@ func containsAll(s string, substrings ...string) bool {
 		}
 	}
 	return true
+}
+
+// runWithStubDocker executes a generated script against a stub `docker` that
+// echoes its argv, so the test observes what the helper container would
+// actually receive.
+func runWithStubDocker(t *testing.T, script string) string {
+	t.Helper()
+	shell, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+
+	binDir := t.TempDir()
+	stub := `#!/bin/sh
+case "$1" in
+  image|volume) exit 0 ;;
+esac
+for a in "$@"; do printf 'DARG:%s\n' "$a"; done
+`
+	if err := os.WriteFile(filepath.Join(binDir, "docker"), []byte(stub), 0o755); err != nil { // #nosec G306 -- test stub
+		t.Fatalf("write docker stub: %v", err)
+	}
+
+	cmd := exec.Command(shell, "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated script failed: %v\n%s", err, out)
+	}
+	return string(out)
+}
+
+// TestVolumeScripts_FileNameIsShellQuoted covers a name containing both a space
+// and a single quote. The file name used to be interpolated into a single-quoted
+// `sh -c '...'` argument, so such a name escaped the quoting and split the
+// command into several arguments.
+func TestVolumeScripts_FileNameIsShellQuoted(t *testing.T) {
+	const weird = "we ird'name.tar"
+	base := "/var/lib/opspulse/containers/app/.opspulse/volumes/my-vol"
+
+	exportOut := runWithStubDocker(t, BuildVolumeExportScript("my-vol", base+"/"+weird))
+	wantExport := "DARG:cd /src && tar cpf /dst/" + weird + " ."
+	if !strings.Contains(exportOut, wantExport+"\n") {
+		t.Errorf("archive name was not passed as one intact argument, want line %q; got:\n%s", wantExport, exportOut)
+	}
+	if !strings.Contains(exportOut, "DARG:"+base+":/dst\n") {
+		t.Errorf("archive directory argument missing or malformed; got:\n%s", exportOut)
+	}
+
+	importOut := runWithStubDocker(t, BuildVolumeImportScript("my-vol", base+"/"+weird))
+	wantImport := "DARG:cd /dst && tar xpf /src/" + weird
+	if !strings.Contains(importOut, wantImport+"\n") {
+		t.Errorf("archive name was not passed as one intact argument, want line %q; got:\n%s", wantImport, importOut)
+	}
+
+	// The old behaviour split the argument, leaving the bare file name as its
+	// own argv entry. That must not happen.
+	for name, out := range map[string]string{"export": exportOut, "import": importOut} {
+		if strings.Contains(out, "DARG:name.tar\n") {
+			t.Errorf("%s script leaked a split file name; got:\n%s", name, out)
+		}
+	}
 }
