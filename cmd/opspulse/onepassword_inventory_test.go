@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -295,5 +296,211 @@ func TestWarnMissingLocalKeyFiles(t *testing.T) {
 	warnMissingLocalKeyFiles(&out, []server.Server{{Name: "managed", KeyPath: "op://Personal/x/y"}})
 	if out.Len() != 0 {
 		t.Errorf("no warning should be printed when nothing is missing, got %q", out.String())
+	}
+}
+
+// TestCountPlaintextPasswordsToWrite pins the count the confirmation gate is
+// taken on. The bug it guards: counting the credential plan instead, which is
+// built after the merge has already written the passwords to disk, reports zero
+// and skips the question entirely.
+func TestCountPlaintextPasswordsToWrite(t *testing.T) {
+	ref := "op://Personal/opspulse_web_password/password"
+
+	tests := []struct {
+		name   string
+		local  []server.Server
+		merged []server.Server
+		want   int
+	}{
+		{
+			name:   "a password on a server this machine does not have counts",
+			merged: []server.Server{{Name: "web", Password: "pw"}},
+			want:   1,
+		},
+		{
+			name:   "a password filling a local empty field counts",
+			local:  []server.Server{{Name: "web"}},
+			merged: []server.Server{{Name: "web", Password: "pw"}},
+			want:   1,
+		},
+		{
+			name:   "a plaintext password already on disk does not count",
+			local:  []server.Server{{Name: "web", Password: "pw"}},
+			merged: []server.Server{{Name: "web", Password: "pw"}},
+			want:   0,
+		},
+		{
+			name:   "a changed plaintext password counts",
+			local:  []server.Server{{Name: "web", Password: "old"}},
+			merged: []server.Server{{Name: "web", Password: "new"}},
+			want:   1,
+		},
+		{
+			name:   "an op:// reference is not a plaintext password",
+			local:  nil,
+			merged: []server.Server{{Name: "web", Password: ref}},
+			want:   0,
+		},
+		{
+			name:   "no password at all counts nothing",
+			local:  nil,
+			merged: []server.Server{{Name: "web"}, {Name: "db"}},
+			want:   0,
+		},
+		{
+			name:   "a legacy reference replaced by plaintext counts",
+			local:  []server.Server{{Name: "web", Password: ref}},
+			merged: []server.Server{{Name: "web", Password: "pw"}},
+			want:   1,
+		},
+		{
+			name:   "only the servers whose password would be new are counted",
+			local:  []server.Server{{Name: "keep", Password: "pw"}, {Name: "legacy", Password: ref}},
+			merged: []server.Server{{Name: "keep", Password: "pw"}, {Name: "legacy", Password: "pw"}, {Name: "fresh", Password: "pw"}, {Name: "nopass"}},
+			want:   2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := countPlaintextPasswordsToWrite(tt.local, tt.merged); got != tt.want {
+				t.Errorf("countPlaintextPasswordsToWrite = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestInheritMissingKeys pins the rule that keeps a local read failure from
+// deleting the off-machine copy of a key: the previous document is the one thing
+// that still has the key, and the write about to happen replaces it.
+func TestInheritMissingKeys(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     server.BackupFile
+		previous    *server.BackupFile
+		unreadable  []string
+		wantKeys    map[string]string
+		wantInherit []string
+		wantDropped []string
+	}{
+		{
+			name:       "a first backup has nothing to inherit from",
+			payload:    server.BackupFile{Servers: []server.Server{{Name: "web"}}},
+			unreadable: []string{"web"},
+		},
+		{
+			name:        "an unreadable key is carried over from the previous document",
+			payload:     server.BackupFile{Servers: []server.Server{{Name: "web"}}},
+			previous:    &server.BackupFile{Keys: map[string]string{"web": "PEM"}},
+			unreadable:  []string{"web"},
+			wantKeys:    map[string]string{"web": "PEM"},
+			wantInherit: []string{"web"},
+		},
+		{
+			name:       "a previous document with no keys has nothing to give",
+			payload:    server.BackupFile{Servers: []server.Server{{Name: "web"}, {Name: "db"}}},
+			previous:   &server.BackupFile{},
+			unreadable: []string{"web"},
+		},
+		{
+			name:       "a key that was read off disk wins over the stored copy",
+			payload:    server.BackupFile{Servers: []server.Server{{Name: "web"}}, Keys: map[string]string{"web": "FRESH"}},
+			previous:   &server.BackupFile{Keys: map[string]string{"web": "STALE"}},
+			unreadable: []string{"web"},
+			wantKeys:   map[string]string{"web": "FRESH"},
+		},
+		{
+			name:        "a server removed from servers.yaml is reported as dropped",
+			payload:     server.BackupFile{Servers: []server.Server{{Name: "web"}}, Keys: map[string]string{"web": "PEM"}},
+			previous:    &server.BackupFile{Keys: map[string]string{"web": "PEM", "gone": "OLD", "also": "OLD"}},
+			wantKeys:    map[string]string{"web": "PEM"},
+			wantDropped: []string{"also", "gone"},
+		},
+		{
+			name:        "a key reported unreadable and dropped is never both",
+			payload:     server.BackupFile{Servers: []server.Server{{Name: "web"}, {Name: "db"}}},
+			previous:    &server.BackupFile{Keys: map[string]string{"db": "PEM", "gone": "OLD"}},
+			unreadable:  []string{"db"},
+			wantKeys:    map[string]string{"db": "PEM"},
+			wantInherit: []string{"db"},
+			wantDropped: []string{"gone"},
+		},
+		{
+			name:       "servers without keys are never reported as dropped",
+			payload:    server.BackupFile{Servers: []server.Server{{Name: "bare"}}},
+			previous:   &server.BackupFile{Keys: nil},
+			unreadable: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, inherited, dropped := inheritMissingKeys(tt.payload, tt.previous, tt.unreadable)
+			if !reflect.DeepEqual(got.Keys, tt.wantKeys) {
+				t.Errorf("keys = %v, want %v", got.Keys, tt.wantKeys)
+			}
+			if !reflect.DeepEqual(inherited, tt.wantInherit) {
+				t.Errorf("inherited = %v, want %v", inherited, tt.wantInherit)
+			}
+			if !reflect.DeepEqual(dropped, tt.wantDropped) {
+				t.Errorf("dropped = %v, want %v", dropped, tt.wantDropped)
+			}
+		})
+	}
+}
+
+// TestReadLocalKeysNamesUnreadableFiles pins what the inheritance depends on:
+// a key that could not be read has to come back named, not just printed. The
+// warning alone is what let the backup drop the key and overwrite the only copy.
+func TestReadLocalKeysNamesUnreadableFiles(t *testing.T) {
+	dir := t.TempDir()
+	readable := filepath.Join(dir, "id_here")
+	if err := os.WriteFile(readable, []byte("PEM"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	keys, unreadable := readLocalKeys([]server.Server{
+		{Name: "here", KeyPath: readable},
+		{Name: "gone", KeyPath: filepath.Join(dir, "id_gone")},
+		{Name: "password-only"},
+		{Name: "managed", KeyPath: "op://Personal/opspulse_managed_key/opspulse_private_key"},
+	}, &out)
+
+	if !reflect.DeepEqual(keys, map[string]string{"here": "PEM"}) {
+		t.Errorf("keys = %v, want only the readable one", keys)
+	}
+	if !reflect.DeepEqual(unreadable, []string{"gone"}) {
+		t.Errorf("unreadable = %v, want [gone]", unreadable)
+	}
+	if !strings.Contains(out.String(), "gone") {
+		t.Errorf("the unreadable key should be reported to the user:\n%s", out.String())
+	}
+}
+
+// TestBackupItemAbsent pins the fail-closed reading of a failed `op read`: only
+// the CLI's "the item is not there" wording counts as a first backup. Anything
+// else must stop the write, because the alternative is replacing a document that
+// was never read.
+func TestBackupItemAbsent(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "the edit wording is accepted", err: errors.New(`unable to process line 1: could not find item to edit`), want: true},
+		{name: "the read wording is accepted", err: errors.New(`[ERROR] could not find item "opspulse_inventory_host"`), want: true},
+		{name: "the alternate wording is accepted", err: errors.New("item not found"), want: true},
+		{name: "a locked vault is not a first backup", err: errors.New("[ERROR] error initializing client: vault is locked"), want: false},
+		{name: "a missing vault is not a first backup", err: errors.New(`vault "Personal" was not found`), want: false},
+		{name: "a stalled call is not a first backup", err: errors.New("context deadline exceeded"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := backupItemAbsent(tt.err); got != tt.want {
+				t.Errorf("backupItemAbsent(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }

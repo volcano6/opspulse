@@ -23,7 +23,7 @@ import (
 // One document rather than one item per credential because every op call is a
 // full round trip through the Desktop App (3-9s, uncached on Windows): on a
 // large fleet the old design spent dozens of calls and over two minutes backing
-// up, against two calls and a few seconds now.
+// up, against three calls and a few seconds now.
 
 // errInventoryAborted reports that the user quit at a conflict prompt. It is a
 // cancellation, not a failure, but it must still reach the exit code: a merge
@@ -158,15 +158,18 @@ func backupTitle() string {
 	return secret.InventoryItemTitleFor(machineName())
 }
 
-// readLocalKeys collects the private key of every server that names one.
+// readLocalKeys collects the private key of every server that names one, and
+// names the servers whose key file could not be read.
 //
-// A key file that cannot be read is reported and skipped rather than failing the
-// backup: a missing file is exactly the state a restore is meant to repair, and
-// refusing to back up the other twelve servers over it would be perverse. The
-// server still travels in the payload, so its host, user and password are not
-// lost - only the key is.
-func readLocalKeys(servers []server.Server, out io.Writer) map[string]string {
-	keys := make(map[string]string, len(servers))
+// An unreadable key file does not fail the backup on its own - a missing file is
+// exactly the state a restore is meant to repair, and refusing to back up the
+// other twelve servers over it would be perverse - but it must not be silently
+// accepted either. The caller is told which keys are missing from the document,
+// because the item it is about to write replaces the only off-machine copy of
+// them, and that copy is what a machine that has since lost a key file needs
+// back.
+func readLocalKeys(servers []server.Server, out io.Writer) (keys map[string]string, unreadable []string) {
+	keys = make(map[string]string, len(servers))
 	for i := range servers {
 		srv := &servers[i]
 		if strings.TrimSpace(srv.KeyPath) == "" {
@@ -180,32 +183,29 @@ func readLocalKeys(servers []server.Server, out io.Writer) map[string]string {
 		data, err := os.ReadFile(expandHome(srv.KeyPath))
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "⚠️  %q: no private key in the backup: cannot read %s: %v\n", srv.Name, srv.KeyPath, err)
+			unreadable = append(unreadable, srv.Name)
 			continue
 		}
 		keys[srv.Name] = string(data)
 	}
-	return keys
+	return keys, unreadable
 }
 
-// buildBackup assembles this machine's backup document, returning the payload
-// and the number of private keys that made it in.
+// buildBackup assembles this machine's backup document, returning the document
+// and the servers whose private key could not be read from disk.
 //
 // Passwords need no special handling: servers.yaml holds them as plaintext, so
 // they travel inside Servers. Only private keys live outside the file, which is
-// what readLocalKeys adds - and the count is what the progress line reports, so
-// a key that could not be read is visibly missing rather than silently absent.
-func buildBackup(servers []server.Server, out io.Writer) ([]byte, int, error) {
-	keys := readLocalKeys(servers, out)
-	file := server.BackupFile{
+// what readLocalKeys adds. The document is returned unencoded so that
+// backupMachineToOnePassword can fold the keys the vault still holds for the
+// unreadable ones in before it is written.
+func buildBackup(servers []server.Server, out io.Writer) (server.BackupFile, []string) {
+	keys, unreadable := readLocalKeys(servers, out)
+	return server.BackupFile{
 		Machine: machineName(),
 		Servers: servers,
 		Keys:    keys,
-	}
-	payload, err := server.MarshalBackup(file)
-	if err != nil {
-		return nil, 0, err
-	}
-	return payload, len(keys), nil
+	}, unreadable
 }
 
 // itemMissingMarker is the fragment `op item edit` reports when the title names
@@ -216,82 +216,6 @@ func buildBackup(servers []server.Server, out io.Writer) ([]byte, int, error) {
 // matched on the message rather than the exit code, which is 1 for every kind of
 // failure.
 const itemMissingMarker = "could not find item"
-
-// writeBackupItem stores the payload in this machine's item, in one call.
-//
-// `op item edit` goes first because it is the only form that can update an
-// existing item without reading it first: the title resolves the item, so no
-// `op item list` and no `op item get` is needed. `op item create` is deliberately
-// NOT the first attempt - it does not deduplicate by title, so calling it for an
-// item that already exists quietly produces a second item with the same name,
-// after which the read-back below has no way to say which one it read.
-//
-// The document is built locally instead of fetched with `op item template get`,
-// which is what keeps the write to a single call. See secret.BuildInventoryItem
-// for what that trades away.
-func writeBackupItem(ctx context.Context, cli secret.CLI, vault, title string, payload []byte) error {
-	doc, err := secret.BuildInventoryItem(title, string(payload))
-	if err != nil {
-		return err
-	}
-
-	_, editErr := cli.RunWithStdin(ctx, doc, "item", "edit", title, "--vault", vault)
-	if editErr == nil {
-		return nil
-	}
-	if !strings.Contains(editErr.Error(), itemMissingMarker) {
-		return fmt.Errorf("%s\n\nupdate 1Password item %q: %w", onePasswordFailureHint(cli, editErr), title, editErr)
-	}
-
-	if _, err := cli.RunWithStdin(ctx, doc, "item", "create", "--vault", vault, "-"); err != nil {
-		return fmt.Errorf("%s\n\ncreate 1Password item %q: %w", onePasswordFailureHint(cli, err), title, err)
-	}
-	return nil
-}
-
-// verifyBackupItem reads the item back and refuses to call the backup done
-// unless the vault holds the payload byte for byte.
-//
-// 1Password's CLI has silently discarded fields before: it accepts an SSH Key
-// document, echoes the key, exits 0, and stores nothing. A backup that is
-// quietly wrong is worse than no backup, because it is only discovered on the
-// new machine, with nothing left to fall back on.
-func verifyBackupItem(ctx context.Context, cli secret.CLI, vault, title string, payload []byte) error {
-	ref := secret.BuildInventoryRef(vault, title)
-	out, err := cli.Run(ctx, "read", ref, "--no-newline")
-	if err != nil {
-		return fmt.Errorf("%s\n\nread the backup back to verify it: %w", onePasswordFailureHint(cli, err), err)
-	}
-	if string(out) != string(payload) {
-		return fmt.Errorf("1Password did not store the backup verbatim (%d bytes written, %d read back); not trusting the backup", len(payload), len(out))
-	}
-	return nil
-}
-
-// backupMachineToOnePassword writes this machine's backup and verifies it, in
-// two op calls in the steady state (three on the very first backup, where the
-// item has to be created).
-func backupMachineToOnePassword(ctx context.Context, cli secret.CLI, vault string, servers []server.Server, out io.Writer) error {
-	title := backupTitle()
-	payload, keys, err := buildBackup(servers, out)
-	if err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(out, "⬆️  Backing up %d server(s) and %d private key(s) into %q in vault %q...\n",
-		len(servers), keys, title, vault)
-	if err := writeBackupItem(ctx, cli, vault, title, payload); err != nil {
-		return err
-	}
-	if err := verifyBackupItem(ctx, cli, vault, title, payload); err != nil {
-		return err
-	}
-
-	_, _ = fmt.Fprintf(out, "🎉 Backed up %d server(s) to %q in vault %q (%d bytes, verified byte for byte).\n", len(servers), title, vault, len(payload))
-	_, _ = fmt.Fprintln(out, "   servers.yaml was left unchanged: local disk stays the source of truth.")
-	_, _ = fmt.Fprintln(out, "   Restore on another machine with: ops 1p restore")
-	return nil
-}
 
 // backupBlob is one machine's backup as read from the vault, with the title it
 // came from so that a report can name it.
@@ -470,9 +394,17 @@ func marshalInventory(servers []server.Server) ([]byte, error) {
 // The per-machine backups are passed in rather than read here: the caller needs
 // them anyway to restore private keys, and reading them twice would double the
 // op calls on the one path where they matter.
-func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault string, index *itemIndex, blobs []backupBlob) (found bool, err error) {
+//
+// The plaintext confirmation is taken here, in front of the write, because this
+// write is the first thing a restore puts on disk: the passwords the backup
+// document carries reach servers.yaml at this point, before a single credential
+// is read. Gating it with the credential pass instead would gate nothing - by the
+// time that pass builds its plan the passwords are already local, and it would
+// find nothing left to ask about. The reader, writer, interactivity verdict and
+// --yes are parameters so that the policy is testable without a real terminal.
+func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault string, index *itemIndex, blobs []backupBlob, in io.Reader, out io.Writer, interactive, yes bool) (found bool, err error) {
 	store := server.NewDefaultStore()
-	prompt := newInventoryConflictPrompt(os.Stdin, os.Stdout, stdinIsInteractive(), onePasswordPreferLocal, onePasswordPreferRemote)
+	prompt := newInventoryConflictPrompt(in, out, interactive, onePasswordPreferLocal, onePasswordPreferRemote)
 
 	local, err := store.List()
 	if err != nil {
@@ -506,7 +438,7 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 			return false, nil
 		}
 		if len(remote) == 0 {
-			fmt.Printf("The inventory backup in vault %q is empty; nothing to restore.\n", vault)
+			_, _ = fmt.Fprintf(out, "The inventory backup in vault %q is empty; nothing to restore.\n", vault)
 			return true, nil
 		}
 		merged, added, updated, _, err = server.MergeInventories(local, remote, prompt.decider())
@@ -522,15 +454,24 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 		keptFrom = "the legacy shared item"
 	}
 	if len(merged) == 0 {
-		fmt.Printf("The inventory backup in vault %q is empty; nothing to restore.\n", vault)
+		_, _ = fmt.Fprintf(out, "The inventory backup in vault %q is empty; nothing to restore.\n", vault)
 		return true, nil
 	}
 
 	// Compare the merge result against this machine's file: that is what decides
 	// whether there is anything to write.
 	if server.SameInventory(merged, local) {
-		fmt.Printf("✨ servers.yaml already contains every server in %s (%d server(s)); nothing to restore.\n", keptFrom, len(local))
+		_, _ = fmt.Fprintf(out, "✨ servers.yaml already contains every server in %s (%d server(s)); nothing to restore.\n", keptFrom, len(local))
 		return true, nil
+	}
+
+	// The write below is the first landing point of a restore, so the plaintext
+	// confirmation has to stand in front of it. Refusing here leaves
+	// servers.yaml exactly as it was, which is what makes "no" mean no.
+	if plaintext := countPlaintextPasswordsToWrite(local, merged); plaintext > 0 {
+		if err := confirmPlaintextRestore(in, out, plaintext, interactive, yes); err != nil {
+			return true, err
+		}
 	}
 
 	payload, err := marshalInventory(merged)
@@ -541,13 +482,46 @@ func restoreInventoryFromOnePassword(ctx context.Context, cli secret.CLI, vault 
 		return true, fmt.Errorf("write servers.yaml: %w", err)
 	}
 
-	fmt.Printf("🎉 Restored the server list from vault %q (%s): %d server(s) total, %d added, %d updated.\n", vault, keptFrom, len(merged), added, updated)
+	_, _ = fmt.Fprintf(out, "🎉 Restored the server list from vault %q (%s): %d server(s) total, %d added, %d updated.\n", vault, keptFrom, len(merged), added, updated)
 	if keptLocal := countLocalOnly(local, incoming); keptLocal > 0 {
-		fmt.Printf("   Kept %d server(s) that only this machine had; a restore never deletes.\n", keptLocal)
+		_, _ = fmt.Fprintf(out, "   Kept %d server(s) that only this machine had; a restore never deletes.\n", keptLocal)
 	}
-	fmt.Println("   Note: a restore rewrites servers.yaml, so YAML comments in it are not preserved.")
-	warnMissingLocalKeyFiles(os.Stdout, merged)
+	_, _ = fmt.Fprintln(out, "   Note: a restore rewrites servers.yaml, so YAML comments in it are not preserved.")
+	warnMissingLocalKeyFiles(out, merged)
 	return true, nil
+}
+
+// countPlaintextPasswordsToWrite counts the servers whose password the merge
+// would newly put into servers.yaml in the clear.
+//
+// It counts on the merge result, against what the file already holds, and it is
+// deliberately not a count of the credential plan: the plan is built after the
+// merge has been written, so a password that arrived with the manifest is
+// already local by then and the plan sees nothing left to ask about. That is
+// exactly how the confirmation came to be skipped.
+//
+// A local password that is unchanged is not counted: nothing about it moves to
+// disk, and asking again about a value the user already has on disk would train
+// them to answer "yes" without reading.
+func countPlaintextPasswordsToWrite(local, merged []server.Server) int {
+	current := make(map[string]string, len(local))
+	for _, srv := range local {
+		current[srv.Name] = srv.Password
+	}
+
+	count := 0
+	for _, srv := range merged {
+		if strings.TrimSpace(srv.Password) == "" || secret.Is1PRef(srv.Password) {
+			// An op:// reference is not a password: it is what a restore is
+			// supposed to resolve, and it is already on disk in that shape.
+			continue
+		}
+		if was, ok := current[srv.Name]; ok && was == srv.Password {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // countLocalOnly counts the servers this machine's file holds that the incoming
@@ -566,39 +540,4 @@ func countLocalOnly(local []server.Server, incoming map[string]struct{}) int {
 		}
 	}
 	return only
-}
-
-// serversWithMissingKeyFiles returns the names of servers whose private key is
-// a local path that does not exist on this machine.
-//
-// A server can be configured perfectly and still be unusable: servers.yaml
-// survives a reinstall, a rename, or a careless `rm` in ~/.ssh, and nothing
-// notices until the first connection dies with a bare "no such file".
-func serversWithMissingKeyFiles(servers []server.Server) []string {
-	var missing []string
-	for _, srv := range servers {
-		if srv.KeyPath == "" || secret.Is1PRef(srv.KeyPath) {
-			continue
-		}
-		if _, err := os.Stat(expandHome(srv.KeyPath)); err != nil {
-			missing = append(missing, srv.Name)
-		}
-	}
-	return missing
-}
-
-// warnMissingLocalKeyFiles points out restored servers whose private key is a
-// local path that does not exist here.
-//
-// This is the expected outcome of a restore onto a fresh machine: the inventory
-// travelled, the key files did not. Saying so once, with the command that fixes
-// it, is far better than letting the first connection fail with a bare "no such
-// file".
-func warnMissingLocalKeyFiles(w io.Writer, servers []server.Server) {
-	missing := serversWithMissingKeyFiles(servers)
-	if len(missing) == 0 {
-		return
-	}
-	_, _ = fmt.Fprintf(w, "\n⚠️  %d restored server(s) point at a private key file that is not on this machine: %s\n", len(missing), strings.Join(missing, ", "))
-	_, _ = fmt.Fprintln(w, "   Run 'ops 1p restore <name>' to write the backed-up key to disk.")
 }

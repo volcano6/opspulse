@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -211,7 +212,14 @@ func handleRead(args []string) {
 	}
 	ref := args[0]
 	if strings.HasSuffix(ref, "/notesPlain") {
-		// The inventory backup's body, served from the note store.
+		// The inventory backup's body, served from the note store. A read of an
+		// item the vault does not hold has to fail the way the real CLI fails:
+		// OpsPulse reads the previous document before it overwrites anything,
+		// and "could not find item" is what tells it that this is a first backup
+		// rather than a read that must stop the write.
+		if parts := strings.Split(strings.TrimPrefix(ref, "op://"), "/"); len(parts) >= 2 && !inventoryItemExists(parts[1]) {
+			fatalf("could not find item %q", parts[1])
+		}
 		fmt.Print(readNoteDocument())
 		return
 	}
@@ -232,6 +240,26 @@ func handleRead(args []string) {
 		fatalf("stub: read key: %v", err)
 	}
 	fmt.Print(string(key))
+}
+
+// inventoryItemExists reports whether the vault holds a backup item to read.
+//
+// STUB_OP_EXISTING is the harness's whole model of the vault's contents, but a
+// `item create` inside the same run has to be visible to the read-back that
+// immediately follows it. The stub serves one note body rather than a vault per
+// item, so the stored body doubles as the item's existence: `item create`/`edit`
+// write it, and the harness removes it (rm -f "$NOTE_STORE") to model an item
+// that was never created.
+func inventoryItemExists(title string) bool {
+	if itemExists(title) {
+		return true
+	}
+	path := noteStorePath()
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Clean(path)) // #nosec G304 G703
+	return err == nil && len(bytes.TrimSpace(data)) > 0
 }
 
 // itemExists reports whether STUB_OP_EXISTING names this item, accepting either

@@ -8,7 +8,7 @@
 # enough to pin the parts that actually break:
 #
 #   * a backup puts the whole servers.yaml and every local private key into ONE
-#     Secure Note named after this machine, and costs two op calls rather than
+#     Secure Note named after this machine, and costs three op calls rather than
 #     one per credential
 #   * a backup never rewrites servers.yaml: local disk stays the source of truth
 #   * a server still holding an op:// reference fails the backup before
@@ -17,11 +17,18 @@
 #     no `item get` first and no `item create`
 #   * a first backup falls back to `item create` only on the CLI's own
 #     "could not find item" answer
-#   * a write that does not read back verbatim fails the backup
+#   * a write that does not read back verbatim fails the backup, and the
+#     document it replaced is written back
+#   * a private key this machine can no longer read is carried over from the
+#     document it already replaced, instead of being dropped and deleting the
+#     only remaining copy
 #   * a restore reads the backup document and writes the keys it carries to
 #     ~/.ssh, without a single per-credential op call
+#   * a no-argument restore refuses to write plaintext passwords without
+#     confirmation BEFORE it touches servers.yaml, leaving the file byte for
+#     byte as it was; a key-only restore never asks
 #   * a restore that would write a plaintext password refuses in a pipe without
-#     --yes, while a key-only restore never asks
+#     --yes
 #   * a foreign key on disk blocks the restore until --force says otherwise
 #   * a no-argument restore bootstraps a fresh machine: the server list comes
 #     back from the backup document, then every credential follows
@@ -189,8 +196,12 @@ check "the vault is listed once for the whole run" 1 "$(grep -c 'vault list --fo
 check "the write is attempted as an edit first" 1 "$(grep -c 'item edit opspulse_inventory_' "$STUB_OP_LOG")"
 check "the create fallback runs exactly once" 1 "$(grep -c 'item create --vault Personal -' "$STUB_OP_LOG")"
 check "the create received a non-empty stdin" 1 "$(grep -c 'item create --vault Personal - | stdin=[1-9]' "$STUB_OP_LOG")"
-check "the document is read back once" 1 "$(grep -c 'op read op://Personal/opspulse_inventory_.*/notesPlain' "$STUB_OP_LOG")"
-check "a first backup costs four calls (list, edit, create, read)" 4 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
+check "the document is read once before the write and once back" 2 "$(grep -c 'op read op://Personal/opspulse_inventory_.*/notesPlain' "$STUB_OP_LOG")"
+# The previous document is read before anything is written, even on a first
+# backup: there is nothing to inherit from yet, but the read is what tells
+# OpsPulse that (it fails with the CLI's own "could not find item") and it is
+# what stops a write when the item exists but could not be read.
+check "a first backup costs five calls (list, read, edit, create, read-back)" 5 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
 # Nothing fetches a template any more: the document is built locally, which is
 # what keeps a backup to a single write. A regression here would add a call back.
 check "no item template is ever fetched" 0 "$(grep -c 'item template get' "$STUB_OP_LOG")"
@@ -216,26 +227,35 @@ opspulse_inventory_*)
 esac
 
 echo
-echo "==> a repeat backup is two calls: one edit, one read-back"
+echo "==> a repeat backup is three calls: read, edit, read-back"
 # This is the change in one assertion. The old per-credential design spent one
 # call per key and one per password, plus a listing; on a large fleet that ran
 # to dozens of calls and over two minutes. Here the whole inventory is refreshed
-# by editing the document in place, which needs no listing and no
-# read-before-write.
+# by reading the document that is there, editing it in place and reading it
+# back, which needs no listing and no per-credential call.
+#
+# The first read is not overhead: it is the only copy of this machine's keys
+# when a local key file has gone missing since the last backup.
 #
 # No --vault is passed, which is the point: the vault the first backup had to
 # discover is remembered, so the steady state never lists vaults again. Paying
-# for that listing on every run would make this three calls, not two.
+# for that listing on every run would make this four calls, not three.
 : > "$STUB_OP_LOG"
 STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p backup > "$WORK_NATIVE/backup2.out" 2>&1
-check "the whole backup costs two calls" 2 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
+check "the whole backup costs three calls" 3 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
 check "the document is updated in place" 1 "$(grep -c 'item edit opspulse_inventory_.* --vault Personal | stdin=[1-9]' "$STUB_OP_LOG")"
 check "nothing is re-created" 0 "$(grep -c 'item create' "$STUB_OP_LOG")"
 check "the discovered vault was remembered, so nothing is listed" 0 "$(grep -c 'vault list' "$STUB_OP_LOG")"
-check "the update is verified by reading it back" 1 "$(grep -c 'op read op://Personal/opspulse_inventory_.*/notesPlain' "$STUB_OP_LOG")"
+# Once before the write, once after it to verify. The count is what proves the
+# document that is about to be replaced is actually read first.
+check "the previous document is read and the new one verified" 2 "$(grep -c 'op read op://Personal/opspulse_inventory_.*/notesPlain' "$STUB_OP_LOG")"
 
 echo
-echo "==> a key file that cannot be read is skipped, not fatal"
+echo "==> on a first backup a key file that cannot be read is reported, not inherited"
+# There is nothing to inherit from yet - the item does not exist - so the
+# document travels without the key. What must not happen is silence: the key is
+# named in the report, so a machine that backs up while a key file is missing is
+# visibly missing it rather than quietly so.
 cat > "$YAML" <<YAML
 servers:
   - name: web
@@ -253,6 +273,54 @@ check "the missing key file is reported" 1 "$(printf '%s' "$MISSING_KEY_OUT" | g
 check "the backup still reports one server" 1 "$(printf '%s' "$MISSING_KEY_OUT" | grep -c 'Backing up 2 server(s) and 0 private key(s)')"
 check "the backup still succeeds" 1 "$(printf '%s' "$MISSING_KEY_OUT" | grep -c 'verified byte for byte')"
 check "the server list still travelled" 1 "$(grep -c 'name: web' "$NOTE_STORE")"
+
+echo
+echo "==> a key this machine can no longer read is carried over, not dropped"
+# The failure this guards: a key file is deleted (or becomes unreadable) between
+# two backups. The payload would leave the key out, `item edit` replaces the
+# whole document, and the only remaining copy of that key is gone - while the
+# command still reports success. The vault's copy is exactly what a machine in
+# that state needs back, so it is carried over and the carry-over is reported.
+ssh-keygen -q -t ed25519 -N '' -f "$WORK_NATIVE/id_spare" -C opspulse-spare
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: $WORK_NATIVE/id_web
+  - name: spare
+    host: 10.0.0.14
+    user: root
+    key_path: $WORK_NATIVE/id_spare
+YAML
+rm -f "$NOTE_STORE"
+STUB_OP_EXISTING= "$OPS" 1p backup --vault Personal > "$WORK_NATIVE/backup-keys.out" 2>&1
+check "a first backup carries both keys" 2 "$(grep -c 'BEGIN OPENSSH PRIVATE KEY' "$NOTE_STORE")"
+rm -f "$WORK_NATIVE/id_spare"
+KEPT="$(STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p backup --vault Personal 2>&1)"
+check "the backup still succeeds" 1 "$(printf '%s' "$KEPT" | grep -c 'verified byte for byte')"
+check "the unreadable key is named" 1 "$(printf '%s' "$KEPT" | grep -c 'no private key in the backup: cannot read')"
+check "the key count in the stored document did not drop" 2 "$(grep -c 'BEGIN OPENSSH PRIVATE KEY' "$NOTE_STORE")"
+check "the carry-over is reported by server name" 1 "$(printf '%s' "$KEPT" | grep -c '↺ spare')"
+check "the carried-over key is the stored copy, not re-derived" 2 "$(grep -c 'BEGIN OPENSSH PRIVATE KEY' "$NOTE_STORE")"
+
+echo
+echo "==> a key whose server left servers.yaml is reported, not dropped in silence"
+# Removing the server does drop its key - that is the user's instruction - but
+# the write that drops it has to say so, because it is also the moment the
+# document holding it is replaced.
+cat > "$YAML" <<YAML
+servers:
+  - name: web
+    host: 10.0.0.10
+    user: ubuntu
+    key_path: $WORK_NATIVE/id_web
+YAML
+DROPPED="$(STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p backup --vault Personal 2>&1)"
+check "the backup still succeeds" 1 "$(printf '%s' "$DROPPED" | grep -c 'verified byte for byte')"
+check "the dropped key is called out" 1 "$(printf '%s' "$DROPPED" | grep -c 'no longer in servers.yaml')"
+check "the dropped key is named by server" 1 "$(printf '%s' "$DROPPED" | grep -c 'spare')"
+check "the stored document no longer carries it" 1 "$(grep -c 'BEGIN OPENSSH PRIVATE KEY' "$NOTE_STORE")"
 
 echo
 echo "==> a leftover op:// reference fails the backup before 1Password is touched"
@@ -292,6 +360,27 @@ check "the mismatch fails the backup" 1 "$MISMATCH_RC"
 check "the failure explains itself" 1 "$(printf '%s' "$MISMATCH" | grep -c 'did not store the backup verbatim')"
 check "servers.yaml was left unchanged" 1 "$(grep -c "key_path: $WORK_NATIVE/id_web" "$YAML")"
 check "no op:// reference was written" 0 "$(grep -c 'op://' "$YAML")"
+# The item was replaced before the mismatch could be seen, so the run has to put
+# the document it found back - and say that it did.
+check "the previous document is written back" 1 "$(printf '%s' "$MISMATCH" | grep -c 'Wrote the previous document')"
+check "the vault holds the previous document again" 1 "$(grep -c 'name: phantom' "$NOTE_STORE")"
+
+echo
+echo "==> a failed first write has nothing to roll back to, and says so"
+# Same failure, but the item did not exist beforehand, so there is no previous
+# document to restore. The report must not pretend the item is trustworthy: the
+# only copy it holds is one that failed its own verification.
+NOPREV_RC=0
+# The note store is removed as well: without it the vault holds a document from
+# a previous scenario, and the run would have a previous document to roll back
+# to, which is the case the other scenario covers.
+rm -f "$NOTE_STORE"
+NOPREV="$(STUB_OP_EXISTING= \
+	STUB_OP_NOTE_READ=$'version: 1\nservers:\n  - name: phantom\n    host: 10.0.0.50\n' \
+	"$OPS" 1p backup --vault Personal 2>&1)" || NOPREV_RC=$?
+check "the mismatch still fails the backup" 1 "$NOPREV_RC"
+check "the absence of a previous document is stated" 1 "$(printf '%s' "$NOPREV" | grep -c 'no previous document')"
+check "the way out is stated" 1 "$(printf '%s' "$NOPREV" | grep -c 'by hand in 1Password')"
 
 echo
 echo "==> status is offline and reports local credentials"
@@ -449,15 +538,51 @@ servers:
     password: restored-pw
 YAML
 seed_blob
+
+echo
+echo "==> a no-argument restore refuses plaintext passwords before it touches servers.yaml"
+# The gate has to stand in front of the manifest write, not in front of the
+# credential pass: the manifest is what carries the backup's plaintext passwords
+# onto local disk, and it is written first. Counting the credential plan instead
+# reports zero - the passwords are already in servers.yaml by then - and skips
+# the question entirely, which is how a pipe came to write secrets nobody agreed
+# to, with a half-merged file left behind when the user answered "no".
+#
+# The fixture is a file with one local server and a backup that would add two
+# more, one of them password-protected, so a merge really is pending here.
+HOME3="$WORK_NATIVE/home3"
+rm -rf "$HOME3"
+mkdir -p "$HOME3"
+cat > "$HOME3/servers.yaml" <<YAML
+servers:
+  - name: localonly
+    host: 10.0.0.31
+    user: root
+YAML
+cp "$HOME3/servers.yaml" "$WORK_NATIVE/servers.before"
+# stdin is a pipe on purpose: a redirect from /dev/null would look like a
+# terminal to stdinIsInteractive() and the prompt would block.
+REFUSE_RC=0
+printf '' | STUB_OP_EXISTING="$BLOB_TITLE" OPSPULSE_HOME="$HOME3" "$OPS" 1p restore > "$WORK_NATIVE/refuse.out" 2>&1 || REFUSE_RC=$?
+check "the unconfirmed restore exits non-zero" 1 "$REFUSE_RC"
+check "the refusal points at --yes" 1 "$(grep -c -- '--yes' "$WORK_NATIVE/refuse.out")"
+check "the refusal counts the passwords it would write" 1 "$(grep -c 'refusing to write 1 plaintext password' "$WORK_NATIVE/refuse.out")"
+check "servers.yaml is byte for byte unchanged" 1 "$(cmp -s "$WORK_NATIVE/servers.before" "$HOME3/servers.yaml" && echo 1 || echo 0)"
+check "the backup's servers were not merged in" 0 "$(grep -c 'name: vps1' "$HOME3/servers.yaml")"
+check "the server that was already there survived" 1 "$(grep -c 'name: localonly' "$HOME3/servers.yaml")"
+
 rm -rf "$HOME2"
 mkdir -p "$HOME2"
 rm -f "$KEY" "$KEY.pub" "$WORK_POSIX/fakehome/.ssh/opspulse_vps1"
 BOOTSTRAP_RC=0
 STUB_OP_EXISTING="$BLOB_TITLE" \
-	OPSPULSE_HOME="$HOME2" "$OPS" 1p restore > "$WORK_NATIVE/bootstrap.out" 2>&1 || BOOTSTRAP_RC=$?
+	OPSPULSE_HOME="$HOME2" "$OPS" 1p restore --yes > "$WORK_NATIVE/bootstrap.out" 2>&1 || BOOTSTRAP_RC=$?
 check "the bootstrap succeeds" 0 "$BOOTSTRAP_RC"
 check "the server list came back" 1 "$(grep -c 'name: vps1' "$HOME2/servers.yaml")"
 check "the second server came back too" 1 "$(grep -c 'name: vps2' "$HOME2/servers.yaml")"
+# --yes is what the gate above asked for, so this run both proves the gate is a
+# gate (the refusal above) and that it opens on request.
+check "the confirmed restore wrote the plaintext password" 1 "$(grep -c "password: restored-pw" "$HOME2/servers.yaml")"
 check "the restore reports the list" 1 "$(grep -c 'Restored the server list' "$WORK_NATIVE/bootstrap.out")"
 check "the key followed onto disk" 1 "$([ -f "$WORK_POSIX/fakehome/.ssh/opspulse_vps1" ] && echo 1 || echo 0)"
 check "the key on disk is the backed-up copy" "$KEY_WANT" "$(key_fpr "$WORK_POSIX/fakehome/.ssh/opspulse_vps1")"
@@ -475,8 +600,10 @@ servers:
     user: root
 YAML
 MERGE_RC=0
+# --yes because the merge brings vps2's plaintext password to a file that does
+# not have it yet, which is exactly what the confirmation covers.
 STUB_OP_EXISTING="$BLOB_TITLE" \
-	OPSPULSE_HOME="$HOME2" "$OPS" 1p restore > "$WORK_NATIVE/merge.out" 2>&1 || MERGE_RC=$?
+	OPSPULSE_HOME="$HOME2" "$OPS" 1p restore --yes > "$WORK_NATIVE/merge.out" 2>&1 || MERGE_RC=$?
 check "the merge succeeds" 0 "$MERGE_RC"
 check "the local-only server survived" 1 "$(grep -c 'name: localonly' "$HOME2/servers.yaml")"
 check "the vault servers were restored" 1 "$(grep -c 'name: vps1' "$HOME2/servers.yaml")"
@@ -497,6 +624,31 @@ check "the run still succeeds" 0 "$ORPHAN_RC"
 check "the orphaned item is reported" 1 "$(printf '%s' "$ORPHAN" | grep -c 'opspulse_orphan_key')"
 check "the backup document is not called an orphan" 0 "$(printf '%s' "$ORPHAN" | grep -c "$BLOB_TITLE")"
 check "the orphan did not become a server" 0 "$(grep -c 'name: orphan' "$YAML")"
+
+echo
+echo "==> doctor reports the whole path without changing anything"
+cp "$YAML" "$WORK_NATIVE/servers.doctor.before"
+: > "$STUB_OP_LOG"
+DOCTOR_RC=0
+STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p doctor > "$WORK_NATIVE/doctor.out" 2>&1 || DOCTOR_RC=$?
+check "doctor succeeds on a healthy machine" 0 "$DOCTOR_RC"
+check "it reports the op build it found" 1 "$(grep -c '✅ op executable:' "$WORK_NATIVE/doctor.out")"
+check "it reports the account it can see" 1 "$(grep -c '✅ account:' "$WORK_NATIVE/doctor.out")"
+check "it reports the vault it would use" 1 "$(grep -c '✅ vault:' "$WORK_NATIVE/doctor.out")"
+check "it reports the backup item and its contents" 1 "$(grep -cE '✅ backup item: [0-9]+ byte\(s\): [0-9]+ server\(s\), [0-9]+ private key\(s\)' "$WORK_NATIVE/doctor.out")"
+check "it says the integration is healthy" 1 "$(grep -c 'The 1Password integration is healthy' "$WORK_NATIVE/doctor.out")"
+check "it never prints key material" 0 "$(grep -c 'OPENSSH PRIVATE KEY' "$WORK_NATIVE/doctor.out")"
+check "it never prints a plaintext password value" 0 "$(grep -c "$LOCAL_PW" "$WORK_NATIVE/doctor.out")"
+check "doctor leaves servers.yaml byte for byte unchanged" 1 "$(cmp -s "$WORK_NATIVE/servers.doctor.before" "$YAML" && echo 1 || echo 0)"
+
+echo
+echo "==> doctor --offline makes no 1Password call at all"
+: > "$STUB_OP_LOG"
+OFFLINE_RC=0
+"$OPS" 1p doctor --offline > "$WORK_NATIVE/doctor-offline.out" 2>&1 || OFFLINE_RC=$?
+check "the offline pass succeeds" 0 "$OFFLINE_RC"
+check "it says the round trips were skipped" 1 "$(grep -c '1Password round trips: skipped by --offline' "$WORK_NATIVE/doctor-offline.out")"
+check "it invoked op zero times" 0 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
