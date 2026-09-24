@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/doctor"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
@@ -20,7 +21,7 @@ import (
 
 var (
 	doctorFilter         string
-	doctorParallel       int
+	doctorParallel       string
 	doctorTimeout        time.Duration
 	doctorIncludeSkipped bool
 )
@@ -34,8 +35,14 @@ Checks SSH connectivity, root filesystem disk utilization, and Docker daemon sta
 Examples:
   ops doctor                       # Inspect all servers
   ops doctor -f "provider=oracle"  # Inspect specific cluster
-  ops doctor -j 10                 # Control concurrency`,
-	RunE: func(_ *cobra.Command, _ []string) error {
+  ops doctor -j 10                 # 10 at a time (default 5, 'unlimited' for none)`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		// Resolve --parallel before listing servers so a typo fails immediately.
+		parallel, err := cliutil.ParseParallelism(doctorParallel, cmd.Flags().Changed("parallel"), os.Stderr)
+		if err != nil {
+			return err
+		}
+
 		store := server.NewDefaultStore()
 		servers, err := store.List()
 		if err != nil {
@@ -58,21 +65,26 @@ Examples:
 			return nil
 		}
 
-		if doctorParallel <= 0 {
-			doctorParallel = 5
+		// A raw 0 must never reach the semaphore below, where a zero-sized
+		// channel would block every probe forever.
+		switch {
+		case parallel == cliutil.Unlimited:
+			parallel = len(targets)
+		case parallel <= 0:
+			parallel = cliutil.DefaultParallel
 		}
-		if doctorParallel > len(targets) {
-			doctorParallel = len(targets)
+		if parallel > len(targets) {
+			parallel = len(targets)
 		}
 
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
-		fmt.Printf("🩺 Running health checks on %d server(s) (concurrency: %d)...\n\n", len(targets), doctorParallel)
+		fmt.Printf("🩺 Running health checks on %d server(s) (concurrency: %d)...\n\n", len(targets), parallel)
 		startTime := time.Now()
 
 		results := make([]doctor.ServerHealth, len(targets))
-		sem := make(chan struct{}, doctorParallel)
+		sem := make(chan struct{}, parallel)
 		var wg sync.WaitGroup
 
 		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
@@ -170,7 +182,7 @@ func renderDoctorTable(w io.Writer, results []doctor.ServerHealth) error {
 
 func init() {
 	doctorCmd.Flags().StringVarP(&doctorFilter, "filter", "f", "all", "Filter target servers (e.g. 'all', 'provider=oracle', tag)")
-	doctorCmd.Flags().IntVarP(&doctorParallel, "parallel", "j", 5, "Maximum number of concurrent server probes")
+	doctorCmd.Flags().StringVarP(&doctorParallel, "parallel", "j", "", "Maximum concurrent server probes (default 5, 'unlimited' for no limit)")
 	doctorCmd.Flags().DurationVarP(&doctorTimeout, "timeout", "T", 15*time.Second, "Per-server probe timeout")
 	doctorCmd.Flags().BoolVar(&doctorIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in health checks")
 

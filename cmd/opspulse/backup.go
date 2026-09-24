@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/backup"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
@@ -83,7 +84,7 @@ var backupListCmd = &cobra.Command{
 
 var (
 	backupRunDryRun   bool
-	backupRunParallel int
+	backupRunParallel string
 	backupRunAs       string
 )
 
@@ -95,9 +96,17 @@ var backupRunCmd = &cobra.Command{
 Examples:
   ops backup run blog-backup                # Run one job
   ops backup run blog-backup,db-backup -j 2 # Run several jobs, two at a time
+  ops backup run all -j unlimited           # Drop the default concurrency limit
   ops backup run vps-1:blog-db --as blog    # Back up container blog-db on vps-1 as job "blog"`,
 	Args: cobra.MinimumNArgs(1),
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Resolve --parallel up front so a typo fails before any connection,
+		// storage access or container inspection.
+		parallel, err := cliutil.ParseParallelism(backupRunParallel, cmd.Flags().Changed("parallel"), os.Stderr)
+		if err != nil {
+			return err
+		}
+
 		// Check for container target syntax: ops backup run <server>:<container> [--as <alias>]
 		if len(args) == 1 {
 			if srv, ctr, isContainer := backup.ParseContainerTarget(args[0]); isContainer {
@@ -210,7 +219,7 @@ Examples:
 		// Wrap with multi-target capability: if target is local, runner uses LocalExecutor
 		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
 
-		pool := backup.NewPool(runner, backupRunParallel)
+		pool := backup.NewPool(runner, parallel)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
 
@@ -459,7 +468,7 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 
 func init() {
 	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic (not supported for <server>:<container> targets)")
-	backupRunCmd.Flags().IntVarP(&backupRunParallel, "parallel", "j", 0, "Maximum concurrent jobs (0 = unlimited)")
+	backupRunCmd.Flags().StringVarP(&backupRunParallel, "parallel", "j", "", "Maximum concurrent jobs (default 5, 'unlimited' for no limit)")
 	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "Rename container in generated Compose and backup job (when using <server>:<container>)")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "Maximum number of history records to show")

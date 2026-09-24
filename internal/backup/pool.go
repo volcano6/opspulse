@@ -29,7 +29,12 @@ type Pool struct {
 }
 
 // NewPool creates a new backup Pool with the specified concurrency limit.
-// If maxParallel <= 0, jobs run concurrently without limit.
+//
+// Function-level semantics: maxParallel <= 0 means "no limit" (every job runs at
+// once). This differs from the CLI convention, where 0 is the default (5) and
+// "unlimited" is explicit -- that mapping happens in cmd/opspulse via
+// cliutil.ParseParallelism, so callers must pass either a positive limit or
+// cliutil.Unlimited (negative), never a raw 0.
 func NewPool(runner *Runner, maxParallel int) *Pool {
 	return &Pool{
 		runner:      runner,
@@ -95,7 +100,8 @@ func (p *Pool) RunAll(ctx context.Context, jobs []Job, dryRun bool, out io.Write
 		return res, nil
 	}
 
-	// Concurrency limiter channel
+	// Concurrency limiter channel. maxParallel <= 0 is the function-level
+	// "unlimited" (see NewPool); the CLI maps its own "unlimited" onto it.
 	limit := p.maxParallel
 	if limit <= 0 || limit > len(jobs) {
 		limit = len(jobs)

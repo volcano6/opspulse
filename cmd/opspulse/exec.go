@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 )
@@ -23,7 +24,7 @@ import (
 var (
 	execTimeout        time.Duration
 	execFilter         string
-	execParallel       int
+	execParallel       string
 	execIncludeSkipped bool
 )
 
@@ -42,10 +43,19 @@ Examples:
   ops exec vps-1 df -h /                          # -h belongs to the remote command
   ops exec --filter all "uptime"                  # All servers in parallel
   ops exec --filter "provider=racknerd" "df -h"   # Filter by label or tag
-  ops exec -f all -j 10 "docker ps -q | wc -l"    # Concurrency control`,
+  ops exec -f all -j 10 "docker ps -q | wc -l"    # 10 at a time (default 5, 'unlimited' for none)`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Resolve --parallel before connecting anywhere: a typo should not cost
+		// a round trip to the first server. It is validated on the single-server
+		// path too, where the flag is accepted but unused.
+		parallel, err := cliutil.ParseParallelism(execParallel, cmd.Flags().Changed("parallel"), os.Stderr)
+		if err != nil {
+			return err
+		}
+
 		store := server.NewDefaultStore()
+		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 
 		if execFilter != "" {
 			if len(args) < 1 {
@@ -60,7 +70,7 @@ Examples:
 				}
 			}
 			commandStr := strings.Join(args, " ")
-			return executeFiltered(store, execFilter, commandStr, execParallel, execTimeout, execIncludeSkipped)
+			return executeFiltered(store, exec, os.Stdout, os.Stderr, execFilter, commandStr, parallel, execTimeout, execIncludeSkipped)
 		}
 
 		if len(args) < 2 {
@@ -101,7 +111,6 @@ Examples:
 			defer cancelTimeout()
 		}
 
-		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
 		target := executor.NewServerTarget(*srv)
 
 		res, err := exec.Execute(ctx, target, "exec", commandStr, os.Stdout)
@@ -202,7 +211,13 @@ func selectBatchServers(servers []server.Server, filter string, includeSkipped b
 	return targets, skipped
 }
 
-func executeFiltered(store *server.Store, filter, commandStr string, parallel int, timeout time.Duration, includeSkipped bool) error {
+// executeFiltered runs commandStr on every server matched by filter.
+//
+// out carries the remote commands' own output and nothing else, so it stays safe
+// to redirect ('ops exec -f all "cat /etc/nginx/nginx.conf" > conf.txt'). Every
+// diagnostic OpsPulse adds itself -- the skipped-servers notice, per-server
+// failure lines and the summary -- goes to errOut.
+func executeFiltered(store *server.Store, exec executor.Executor, out, errOut io.Writer, filter, commandStr string, parallel int, timeout time.Duration, includeSkipped bool) error {
 	allServers, err := store.List()
 	if err != nil {
 		return err
@@ -211,17 +226,23 @@ func executeFiltered(store *server.Store, filter, commandStr string, parallel in
 	targets, skipped := selectBatchServers(allServers, filter, includeSkipped)
 
 	if len(skipped) > 0 {
-		fmt.Printf("ℹ️  Skipped %d server(s) configured with skip_batch: %s (use --include-skipped to run on all)\n",
+		fmt.Fprintf(errOut, "ℹ️  Skipped %d server(s) configured with skip_batch: %s (use --include-skipped to run on all)\n",
 			len(skipped), strings.Join(skipped, ", "))
 	}
 
 	if len(targets) == 0 {
-		fmt.Printf("No servers matched filter %q.\n", filter)
+		fmt.Fprintf(errOut, "No servers matched filter %q.\n", filter)
 		return nil
 	}
 
-	if parallel <= 0 {
-		parallel = 5
+	// --parallel is already resolved by the caller (cliutil.ParseParallelism);
+	// a raw 0 must never reach the semaphore below, where a zero-sized channel
+	// would block every worker forever.
+	switch {
+	case parallel == cliutil.Unlimited:
+		parallel = len(targets)
+	case parallel <= 0:
+		parallel = cliutil.DefaultParallel
 	}
 	if parallel > len(targets) {
 		parallel = len(targets)
@@ -261,10 +282,9 @@ func executeFiltered(store *server.Store, filter, commandStr string, parallel in
 				return
 			}
 
-			writer := NewLinePrefixWriter(s.Name, clr, os.Stdout, &sharedMu)
+			writer := NewLinePrefixWriter(s.Name, clr, out, &sharedMu)
 			defer writer.Flush()
 
-			exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(writer)
 			target := executor.NewServerTarget(s)
 
 			res, runErr := exec.Execute(ctx, target, "exec-batch", commandStr, writer)
@@ -278,9 +298,9 @@ func executeFiltered(store *server.Store, filter, commandStr string, parallel in
 					errMsg = res.Error.Error()
 				}
 				if clr != "" {
-					fmt.Printf("%s[%s]\033[0m ❌ Command failed: %s\n", clr, s.Name, errMsg)
+					fmt.Fprintf(errOut, "%s[%s]\033[0m ❌ Command failed: %s\n", clr, s.Name, errMsg)
 				} else {
-					fmt.Printf("[%s] ❌ Command failed: %s\n", s.Name, errMsg)
+					fmt.Fprintf(errOut, "[%s] ❌ Command failed: %s\n", s.Name, errMsg)
 				}
 				sharedMu.Unlock()
 			} else {
@@ -292,7 +312,7 @@ func executeFiltered(store *server.Store, filter, commandStr string, parallel in
 	wg.Wait()
 	elapsed := time.Since(startTime)
 
-	fmt.Printf("\n--> Summary: %d succeeded, %d failed across %d servers (took %.2fs)\n",
+	fmt.Fprintf(errOut, "\n--> Summary: %d succeeded, %d failed across %d servers (took %.2fs)\n",
 		succeeded, failed, len(targets), elapsed.Seconds())
 
 	if failed > 0 {
@@ -339,7 +359,7 @@ func hasExecFilterToken(args []string) bool {
 func init() {
 	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "T", 60*time.Second, "Command execution timeout (0 to disable)")
 	execCmd.Flags().StringVarP(&execFilter, "filter", "f", "", "Filter target servers (e.g. 'all', 'provider=racknerd', or tag)")
-	execCmd.Flags().IntVarP(&execParallel, "parallel", "j", 5, "Maximum number of parallel server executions")
+	execCmd.Flags().StringVarP(&execParallel, "parallel", "j", "", "Maximum parallel server executions (default 5, 'unlimited' for no limit)")
 	execCmd.Flags().BoolVar(&execIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in batch execution")
 	execCmd.ValidArgsFunction = completeExecArgs
 	// Everything after the server name is the remote command, so a command may

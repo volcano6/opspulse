@@ -10,12 +10,41 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/notify"
+	"github.com/volcano6/opspulse/internal/storage"
 )
+
+const (
+	// notifyWorkers is the fixed number of goroutines that deliver queued
+	// notifications. It is deliberately small: notifications are best-effort
+	// and must never compete with backup execution for resources.
+	notifyWorkers = 2
+	// notifyQueueSize bounds pending notifications. When it fills up, new
+	// notifications are dropped with a warning instead of blocking the caller
+	// or growing without bound.
+	notifyQueueSize = 64
+	// notifyDeliveryTimeout bounds one dispatch attempt chain so a wedged
+	// webhook cannot hold a worker forever.
+	notifyDeliveryTimeout = 30 * time.Second
+	// dispatcherDrainTimeout bounds how long shutdown waits for queued
+	// notifications to be delivered.
+	dispatcherDrainTimeout = 15 * time.Second
+	// shutdownTimeout bounds how long shutdown waits for in-flight jobs before
+	// canceling them.
+	shutdownTimeout = 30 * time.Second
+)
+
+// Runner executes a backup job and returns its recorded result. *backup.Runner
+// satisfies it; the interface exists so shutdown and notification behavior can
+// be tested without a live remote executor.
+type Runner interface {
+	Run(ctx context.Context, job backup.Job, out io.Writer) (*storage.BackupRun, error)
+}
 
 // ScheduledJob describes a registered backup job and its next execution timing.
 type ScheduledJob struct {
@@ -30,7 +59,7 @@ type ScheduledJob struct {
 // Scheduler coordinates cron scheduling of configured backup jobs.
 type Scheduler struct {
 	cron         *cron.Cron
-	runner       *backup.Runner
+	runner       Runner
 	store        *backup.Store
 	dispatcher   *notify.Dispatcher
 	out          io.Writer
@@ -38,13 +67,42 @@ type Scheduler struct {
 	jobs         map[cron.EntryID]backup.Job
 	daemonCtx    context.Context
 	daemonCancel context.CancelFunc
+
+	// Asynchronous notification delivery. Jobs only enqueue events; a fixed
+	// pool of workers delivers them so a slow webhook cannot hold the cron
+	// entry and suppress the next trigger (audit N5).
+	notifyQueue    chan notify.Event
+	notifyStop     chan struct{}
+	notifyStart    sync.Once
+	notifyStopOnce sync.Once
+	notifyWG       sync.WaitGroup
+	// notifyClosed records that the dispatcher has been shut down. Producers are
+	// supposed to stop first, so this only ever fires on a late event: without
+	// it such an event would be enqueued into a queue no worker reads any more
+	// and vanish without a word.
+	notifyClosed atomic.Bool
+}
+
+// lockedWriter serializes writes to the scheduler's output. Cron jobs and the
+// notification workers all write concurrently; a plain io.Writer shared by them
+// (a *bytes.Buffer in tests, os.Stdout in the daemon) races under -race.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.w.Write(p)
 }
 
 // New creates a new Scheduler instance.
-func New(store *backup.Store, runner *backup.Runner, dispatcher *notify.Dispatcher, out io.Writer) *Scheduler {
+func New(store *backup.Store, runner Runner, dispatcher *notify.Dispatcher, out io.Writer) *Scheduler {
 	if out == nil {
 		out = os.Stdout
 	}
+	out = &lockedWriter{w: out}
 
 	cronLogger := cron.PrintfLogger(log.New(out, "[scheduler] ", log.LstdFlags))
 	c := cron.New(
@@ -65,6 +123,8 @@ func New(store *backup.Store, runner *backup.Runner, dispatcher *notify.Dispatch
 		jobs:         make(map[cron.EntryID]backup.Job),
 		daemonCtx:    ctx,
 		daemonCancel: cancel,
+		notifyQueue:  make(chan notify.Event, notifyQueueSize),
+		notifyStop:   make(chan struct{}),
 	}
 }
 
@@ -81,15 +141,21 @@ func ValidateSchedule(spec string) error {
 	return nil
 }
 
-// RegisterJobs reads all jobs from the backup store and registers those with a non-empty Schedule.
-func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
+// RegisterJobs reads all jobs from the backup store and registers those with a
+// non-empty, valid Schedule.
+//
+// A job whose cron expression is invalid is skipped rather than aborting the
+// whole daemon: the per-job problems are returned as warnings for the caller to
+// print, and only when every scheduled job is invalid does RegisterJobs return a
+// non-nil error (audit B10).
+func (s *Scheduler) RegisterJobs() ([]ScheduledJob, []error, error) {
 	if s.store == nil {
-		return nil, fmt.Errorf("backup store is nil")
+		return nil, nil, fmt.Errorf("backup store is nil")
 	}
 
 	allJobs, err := s.store.List()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list backup jobs: %w", err)
+		return nil, nil, fmt.Errorf("failed to list backup jobs: %w", err)
 	}
 
 	s.mu.Lock()
@@ -102,15 +168,19 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 	s.jobs = make(map[cron.EntryID]backup.Job)
 
 	var registered []ScheduledJob
+	var warnings []error
+	scheduledCount := 0
 
 	for _, j := range allJobs {
 		scheduleSpec := strings.TrimSpace(j.Schedule)
 		if scheduleSpec == "" {
 			continue
 		}
+		scheduledCount++
 
 		if err := ValidateSchedule(scheduleSpec); err != nil {
-			return nil, fmt.Errorf("failed to validate schedule for job %q: %w", j.Name, err)
+			warnings = append(warnings, fmt.Errorf("job %q skipped: %w", j.Name, err))
+			continue
 		}
 
 		jobCopy := j
@@ -118,7 +188,8 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 			_ = s.executeJob(s.daemonCtx, jobCopy)
 		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to schedule job %q with spec %q: %w", j.Name, scheduleSpec, err)
+			warnings = append(warnings, fmt.Errorf("job %q skipped: %w", j.Name, err))
+			continue
 		}
 
 		s.jobs[entryID] = jobCopy
@@ -138,7 +209,11 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, error) {
 		})
 	}
 
-	return registered, nil
+	if scheduledCount > 0 && len(registered) == 0 {
+		return nil, warnings, fmt.Errorf("all %d scheduled job(s) have invalid schedules: %w", scheduledCount, errors.Join(warnings...))
+	}
+
+	return registered, warnings, nil
 }
 
 func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
@@ -173,29 +248,18 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 		errMsg = "runner is not initialized"
 	}
 
-	// Dispatch notification if dispatcher is available
-	if s.dispatcher != nil {
-		event := notify.Event{
-			JobName:         job.Name,
-			Status:          runRecordStatus,
-			Server:          job.Server,
-			Snapshot:        snapshotID,
-			DurationSeconds: durationSec,
-			Error:           errMsg,
-			Timestamp:       time.Now(),
-		}
-		notifyCtx := ctx
-		if ctx.Err() != nil {
-			var cancel context.CancelFunc
-			notifyCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-		}
-		if notifyErrs := s.dispatcher.Dispatch(notifyCtx, event); len(notifyErrs) > 0 {
-			for _, ne := range notifyErrs {
-				_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification delivery failed: %v\n", ne)
-			}
-		}
-	}
+	// Queue the notification for asynchronous delivery. Notifications must not
+	// run inside the cron task body: a wedged webhook would otherwise hold the
+	// entry until SkipIfStillRunning suppresses the next trigger (audit N5).
+	s.enqueueNotification(notify.Event{
+		JobName:         job.Name,
+		Status:          runRecordStatus,
+		Server:          job.Server,
+		Snapshot:        snapshotID,
+		DurationSeconds: durationSec,
+		Error:           errMsg,
+		Timestamp:       time.Now(),
+	})
 
 	if runRecordErr != nil {
 		_, _ = fmt.Fprintf(s.out, "[scheduler] <<< Scheduled job %q finished with error: %v\n", job.Name, runRecordErr)
@@ -205,6 +269,100 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 	_, _ = fmt.Fprintf(s.out, "[scheduler] <<< Scheduled job %q finished successfully (status: %s, duration: %.2fs)\n",
 		job.Name, runRecordStatus, durationSec)
 	return nil
+}
+
+// startDispatcher lazily launches the fixed notification worker pool. It is a
+// no-op when no dispatcher is configured, and safe to call concurrently.
+func (s *Scheduler) startDispatcher() {
+	if s.dispatcher == nil {
+		return
+	}
+	s.notifyStart.Do(func() {
+		for range notifyWorkers {
+			s.notifyWG.Add(1)
+			go s.notifyWorker()
+		}
+	})
+}
+
+// enqueueNotification hands an event to the worker pool without blocking. When
+// the bounded queue is full the notification is dropped with a warning so a
+// backlog can never stall job execution or grow without bound.
+func (s *Scheduler) enqueueNotification(event notify.Event) {
+	if s.dispatcher == nil {
+		return
+	}
+	if s.notifyClosed.Load() {
+		_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification dispatcher already stopped; dropping notification for job %q\n",
+			event.JobName)
+		return
+	}
+	s.startDispatcher()
+
+	select {
+	case s.notifyQueue <- event:
+	default:
+		_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification queue full (%d pending); dropping notification for job %q\n",
+			cap(s.notifyQueue), event.JobName)
+	}
+}
+
+func (s *Scheduler) notifyWorker() {
+	defer s.notifyWG.Done()
+	for {
+		select {
+		case event := <-s.notifyQueue:
+			s.deliverNotification(event)
+		case <-s.notifyStop:
+			// Producers have stopped by the time the dispatcher is shut down,
+			// so draining the queue cannot race with new events.
+			for {
+				select {
+				case event := <-s.notifyQueue:
+					s.deliverNotification(event)
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// deliverNotification runs a single dispatch with its own bounded context so a
+// wedged webhook cannot outlive notifyDeliveryTimeout.
+func (s *Scheduler) deliverNotification(event notify.Event) {
+	ctx, cancel := context.WithTimeout(context.Background(), notifyDeliveryTimeout)
+	defer cancel()
+	if errs := s.dispatcher.Dispatch(ctx, event); len(errs) > 0 {
+		for _, err := range errs {
+			_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification delivery failed: %v\n", err)
+		}
+	}
+}
+
+// shutdownDispatcher stops the worker pool after draining queued events, waiting
+// at most timeout. Safe to call multiple times.
+func (s *Scheduler) shutdownDispatcher(timeout time.Duration) {
+	if s.dispatcher == nil {
+		return
+	}
+	// Marked before notifyStop closes, so an enqueue racing with shutdown is
+	// rejected with a warning instead of landing in a queue nobody drains.
+	s.notifyClosed.Store(true)
+	s.notifyStopOnce.Do(func() { close(s.notifyStop) })
+
+	done := make(chan struct{})
+	go func() {
+		s.notifyWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		_, _ = fmt.Fprintf(s.out, "[scheduler] Warning: notification dispatcher did not drain within %s (%d pending); exiting anyway\n",
+			timeout, len(s.notifyQueue))
+	}
 }
 
 // ListRegistered returns all currently registered scheduled jobs with updated execution times.
@@ -236,17 +394,30 @@ func (s *Scheduler) Start() {
 	s.cron.Start()
 }
 
-// Stop stops the scheduler and returns a context that finishes when all running jobs complete.
+// Stop stops accepting new triggers and returns a context that is closed once
+// all in-flight jobs have completed.
+//
+// The daemon context is canceled only after those jobs finish, so a graceful
+// shutdown does not abort a backup mid-run (audit B1).
 func (s *Scheduler) Stop() context.Context {
-	if s.daemonCancel != nil {
-		s.daemonCancel()
-	}
-	return s.cron.Stop()
+	stopCtx := s.cron.Stop()
+
+	go func() {
+		<-stopCtx.Done()
+		if s.daemonCancel != nil {
+			s.daemonCancel()
+		}
+	}()
+
+	return stopCtx
 }
 
 // Run blocks until the provided context is canceled, handling graceful shutdown.
 func (s *Scheduler) Run(ctx context.Context) error {
-	registered, err := s.RegisterJobs()
+	registered, warnings, err := s.RegisterJobs()
+	for _, warning := range warnings {
+		_, _ = fmt.Fprintf(s.out, "[scheduler] ⚠️ %v\n", warning)
+	}
 	if err != nil {
 		return err
 	}
@@ -272,9 +443,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	select {
 	case <-stopCtx.Done():
 		_, _ = fmt.Fprintln(s.out, "[scheduler] ✅ Scheduler stopped gracefully.")
-	case <-time.After(30 * time.Second):
-		_, _ = fmt.Fprintln(s.out, "[scheduler] ⚠️ Graceful shutdown timed out after 30s.")
+	case <-time.After(shutdownTimeout):
+		_, _ = fmt.Fprintf(s.out, "[scheduler] ⚠️ Graceful shutdown timed out after %s; canceling in-flight jobs.\n", shutdownTimeout)
+		if s.daemonCancel != nil {
+			s.daemonCancel()
+		}
 	}
+
+	// In-flight jobs have stopped producing notifications, so drain the queue
+	// before returning. The caller closes its database after Run returns, and
+	// the notification workers must not outlive that.
+	s.shutdownDispatcher(dispatcherDrainTimeout)
 
 	return nil
 }
@@ -284,6 +463,10 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	if s.store == nil {
 		return fmt.Errorf("backup store is nil")
 	}
+
+	// RunOnce has no cron loop to stop, so it must drain queued notifications
+	// itself before returning (the --once command exits right after).
+	defer s.shutdownDispatcher(dispatcherDrainTimeout)
 
 	allJobs, err := s.store.List()
 	if err != nil {
