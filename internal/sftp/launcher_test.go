@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 func TestDetectAvailableClients(t *testing.T) {
@@ -85,7 +86,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 
 	t.Run("WinSCP with key path", func(t *testing.T) {
 		client := ClientInfo{Type: ClientWinSCP, Name: "WinSCP", Path: "winscp.exe"}
-		cmd, err := BuildLaunchCommand(client, srv, "/var/log")
+		cmd, err := BuildLaunchCommand(client, srv, nil, "/var/log")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -110,7 +111,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 			Password: "mysecret",
 		}
 		client := ClientInfo{Type: ClientXftp, Name: "Xftp", Path: "xftp.exe"}
-		cmd, err := BuildLaunchCommand(client, srvPass, "/root")
+		cmd, err := BuildLaunchCommand(client, srvPass, nil, "/root")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -124,7 +125,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 
 	t.Run("FileZilla", func(t *testing.T) {
 		client := ClientInfo{Type: ClientFileZilla, Name: "FileZilla", Path: "filezilla"}
-		cmd, err := BuildLaunchCommand(client, srv, "/srv/app")
+		cmd, err := BuildLaunchCommand(client, srv, nil, "/srv/app")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -135,7 +136,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 
 	t.Run("Cyberduck macOS", func(t *testing.T) {
 		client := ClientInfo{Type: ClientCyberduck, Name: "Cyberduck", Path: "/Applications/Cyberduck.app"}
-		cmd, err := BuildLaunchCommand(client, srv, "/srv/app")
+		cmd, err := BuildLaunchCommand(client, srv, nil, "/srv/app")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -146,7 +147,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 
 	t.Run("OpenSSH CLI", func(t *testing.T) {
 		client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
-		cmd, err := BuildLaunchCommand(client, srv, "/var/www")
+		cmd, err := BuildLaunchCommand(client, srv, nil, "/var/www")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -185,7 +186,7 @@ func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
 			User:    "deploy",
 			KeyPath: "op://Vault/Item/private_key",
 		}
-		_, err := BuildLaunchCommand(client, srv, "/var/log")
+		_, err := BuildLaunchCommand(client, srv, nil, "/var/log")
 		if err == nil {
 			t.Fatal("expected error for op:// key path, got nil")
 		}
@@ -202,7 +203,7 @@ func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
 			User:     "root",
 			Password: "op://Vault/Item/password",
 		}
-		_, err := BuildLaunchCommand(client, srv, "/root")
+		_, err := BuildLaunchCommand(client, srv, nil, "/root")
 		if err == nil {
 			t.Fatal("expected error for op:// password, got nil")
 		}
@@ -225,7 +226,7 @@ func TestBuildLaunchCommandOpenSSHReusesControlMaster(t *testing.T) {
 
 	// Before the socket directory exists the flags are withheld: ssh and sftp
 	// fail outright on a ControlPath they cannot bind.
-	cmd, err := BuildLaunchCommand(client, srv, "/")
+	cmd, err := BuildLaunchCommand(client, srv, nil, "/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestBuildLaunchCommandOpenSSHReusesControlMaster(t *testing.T) {
 	if err := server.EnsureControlMasterDir(); err != nil {
 		t.Fatalf("EnsureControlMasterDir() error: %v", err)
 	}
-	cmd, err = BuildLaunchCommand(client, srv, "/")
+	cmd, err = BuildLaunchCommand(client, srv, nil, "/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestBuildLaunchCommandOpenSSHLegacyHost(t *testing.T) {
 		Name: "legacy-1", Host: "192.0.2.10", Port: 22, User: "www",
 		Password: "secret", Tags: []string{"legacy-ssh"},
 	}
-	cmd, err := BuildLaunchCommand(client, legacy, "/")
+	cmd, err := BuildLaunchCommand(client, legacy, nil, "/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestBuildLaunchCommandOpenSSHLegacyHost(t *testing.T) {
 	}
 
 	modern := server.Server{Name: "web", Host: "10.0.0.1", Port: 22, User: "deploy"}
-	cmd, err = BuildLaunchCommand(client, modern, "/")
+	cmd, err = BuildLaunchCommand(client, modern, nil, "/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestBuildLaunchCommandOpenSSHPasswordServer(t *testing.T) {
 		Password: "secret",
 	}
 
-	cmd, err := BuildLaunchCommand(client, srv, "/")
+	cmd, err := BuildLaunchCommand(client, srv, nil, "/")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,6 +307,109 @@ func TestBuildLaunchCommandOpenSSHPasswordServer(t *testing.T) {
 	}
 	if !strings.HasSuffix(argsStr, "root@192.168.10.100") {
 		t.Errorf("args = %s, want the destination last", argsStr)
+	}
+}
+
+func TestBuildLaunchCommandOpenSSHJumpHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+	jump := &server.Server{
+		Name: "bastion", Host: "203.0.113.9", Port: 2222, User: "ops",
+		KeyPath: "~/.ssh/bastion.pem",
+	}
+	target := server.Server{Name: "internal", Host: "10.0.0.5", Port: 22, User: "deploy", JumpHost: "bastion"}
+
+	cmd, err := BuildLaunchCommand(client, target, jump, "/var/log")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	argsStr := strings.Join(cmd.Args, " ")
+	if !strings.Contains(argsStr, "ProxyCommand=ssh -W %h:%p") {
+		t.Fatalf("args = %s, want a ProxyCommand tunnel through the jump host", argsStr)
+	}
+	// Every hop detail comes from the jump host's own inventory entry: using
+	// the target's user, port or key would authenticate against the bastion
+	// with credentials meant for the machine behind it.
+	wantKey := shellquote.Quote(filepath.Join(home, ".ssh/bastion.pem"))
+	for _, want := range []string{"-i " + wantKey, "-p 2222", shellquote.Quote("ops@203.0.113.9")} {
+		if !strings.Contains(argsStr, want) {
+			t.Errorf("args = %s, missing %q", argsStr, want)
+		}
+	}
+	if !strings.HasSuffix(argsStr, "deploy@10.0.0.5:/var/log") {
+		t.Errorf("args = %s, want the target destination last", argsStr)
+	}
+}
+
+func TestJumpProxyCommandQuotesMetacharacters(t *testing.T) {
+	jump := &server.Server{
+		Name: "bastion", Host: "bastion.example", User: "root",
+		KeyPath: "/tmp/my keys/$(touch pwned).pem",
+	}
+
+	got := jumpProxyCommand(jump)
+
+	// ssh(1) runs the string through /bin/sh -c, so an unquoted '$(' or space
+	// would be interpreted by the shell instead of reaching ssh as one path.
+	if !strings.Contains(got, shellquote.Quote(jump.KeyPath)) {
+		t.Errorf("key path is not single-quoted: %s", got)
+	}
+	if strings.Contains(got, "-i "+jump.KeyPath) {
+		t.Errorf("key path leaks into the shell unquoted: %s", got)
+	}
+	if !strings.Contains(got, shellquote.Quote("root@bastion.example")) {
+		t.Errorf("jump destination is not single-quoted: %s", got)
+	}
+	// The tokens ssh(1) substitutes itself must survive as literals.
+	if !strings.Contains(got, "-W %h:%p") {
+		t.Errorf("placeholder tokens were mangled: %s", got)
+	}
+}
+
+func TestBuildLaunchCommandRefusesGUIThroughJumpHost(t *testing.T) {
+	target := server.Server{Name: "internal", Host: "10.0.0.5", User: "deploy", JumpHost: "bastion"}
+	jump := &server.Server{Name: "bastion", Host: "203.0.113.9", User: "ops"}
+
+	for _, client := range []ClientInfo{
+		{Type: ClientWinSCP, Name: "WinSCP", Path: "winscp.exe", IsGUI: true},
+		{Type: ClientFileZilla, Name: "FileZilla", Path: "filezilla", IsGUI: true},
+		{Type: ClientSystem, Name: "xdg-open", Path: "xdg-open", IsGUI: true},
+	} {
+		t.Run(client.Name, func(t *testing.T) {
+			_, err := BuildLaunchCommand(client, target, jump, "/")
+			if err == nil {
+				t.Fatal("a GUI client cannot tunnel; expected a refusal instead of a direct connection")
+			}
+			// The error has to name the limitation and a way forward, otherwise
+			// the user is left with a client that fails to connect.
+			for _, want := range []string{"jump host", "bastion", "ops cp", "--cli"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildLaunchCommandRejectsUnresolvedJumpHost(t *testing.T) {
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+	target := server.Server{Name: "internal", Host: "10.0.0.5", JumpHost: "bastion"}
+
+	// Without a resolved entry there is no way to build a tunnel, and building
+	// a direct command would drop the configured hop silently.
+	_, err := BuildLaunchCommand(client, target, nil, "/")
+	if err == nil {
+		t.Fatal("expected an error when the jump host was not resolved")
+	}
+	if !strings.Contains(err.Error(), "bastion") {
+		t.Errorf("error %q does not name the unresolved jump host", err)
+	}
+
+	// A server without a jump host is unaffected by the missing entry.
+	if _, err := BuildLaunchCommand(client, server.Server{Name: "direct", Host: "10.0.0.6"}, nil, "/"); err != nil {
+		t.Fatalf("direct server should not require a jump host: %v", err)
 	}
 }
 

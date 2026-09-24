@@ -17,6 +17,29 @@ var (
 	cpTimeout   time.Duration
 )
 
+// newSFTPClient is the SFTP client constructor both transfer directions use.
+// It is a variable so tests can observe the server and jump host that were
+// resolved without opening an SSH connection.
+var newSFTPClient = sftp.NewClientWithJumpAndWriter
+
+// resolveJumpServer resolves srv's configured jump host against the inventory.
+//
+// It mirrors executor.DialTarget's resolution: an empty JumpHost means a direct
+// connection, while a name that is not in the inventory is a hard error. The
+// alternative — falling back to the target's own address — would either time
+// out on an unroutable private address or, worse, silently bypass the jump host
+// whenever that address happens to be reachable.
+func resolveJumpServer(store *server.Store, srv *server.Server) (*server.Server, error) {
+	if srv.JumpHost == "" {
+		return nil, nil
+	}
+	jump, err := store.Get(srv.JumpHost)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve jump host %q for server %q: %w", srv.JumpHost, srv.Name, err)
+	}
+	return jump, nil
+}
+
 var cpCmd = &cobra.Command{
 	Use:   "cp [flags] <source> <destination>",
 	Short: "Copy files/directories between local and remote servers via SFTP",
@@ -70,7 +93,12 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 		return fmt.Errorf("%q is a directory. Use --recursive (-r) to upload directories", localPath)
 	}
 
-	client, err := sftp.NewClientWithWriter(*srv, cpTimeout, os.Stderr)
+	jump, err := resolveJumpServer(store, srv)
+	if err != nil {
+		return err
+	}
+
+	client, err := newSFTPClient(*srv, jump, cpTimeout, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -106,7 +134,12 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 		return err
 	}
 
-	client, err := sftp.NewClientWithWriter(*srv, cpTimeout, os.Stderr)
+	jump, err := resolveJumpServer(store, srv)
+	if err != nil {
+		return err
+	}
+
+	client, err := newSFTPClient(*srv, jump, cpTimeout, os.Stderr)
 	if err != nil {
 		return err
 	}

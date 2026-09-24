@@ -65,7 +65,16 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 			return fmt.Errorf("resolve SFTP client: %w", err)
 		}
 
-		cmd, err := sftp.BuildLaunchCommand(*client, *targetServer, sftpRemotePath)
+		// Resolve the jump host once. A GUI client is refused outright by
+		// BuildLaunchCommand, and the terminal client tunnels through it.
+		var jumpSrv *server.Server
+		if targetServer.JumpHost != "" {
+			if jumpSrv, err = store.Get(targetServer.JumpHost); err != nil {
+				return fmt.Errorf("failed to resolve jump host %q for server %q: %w", targetServer.JumpHost, targetServer.Name, err)
+			}
+		}
+
+		cmd, err := sftp.BuildLaunchCommand(*client, *targetServer, jumpSrv, sftpRemotePath)
 		if err != nil {
 			return fmt.Errorf("build launch command: %w", err)
 		}
@@ -94,13 +103,17 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 		}
 
 		// CLI interactive OpenSSH mode
-		fmt.Printf("--> Connecting to %s (%s) via %s...\n", targetServer.Name, targetServer.Address(), client.Name)
+		if jumpSrv != nil {
+			fmt.Printf("--> Connecting to %s (%s) via %s through jump host %s...\n", targetServer.Name, targetServer.Address(), client.Name, jumpSrv.Name)
+		} else {
+			fmt.Printf("--> Connecting to %s (%s) via %s...\n", targetServer.Name, targetServer.Address(), client.Name)
+		}
 
 		// Same multiplexing directory the ssh command uses, so the two share
 		// one authenticated socket instead of authenticating twice.
 		prepareControlMaster()
 
-		cleanupAskpass, err := attachAskpass(cmd, *targetServer)
+		cleanupAskpass, err := attachAskpass(cmd, *targetServer, jumpSrv)
 		if err != nil {
 			return err
 		}
@@ -115,13 +128,19 @@ To force terminal-based OpenSSH sftp session, pass --cli.`,
 
 // attachAskpass wires a child sftp process to this binary as its SSH_ASKPASS
 // helper, so a password-auth server connects without the user retyping a
-// password the inventory already holds.
+// password the inventory already holds. jumpSrv, when non-nil, is added to the
+// payload so the ssh(1) process the ProxyCommand spawns can answer the jump
+// host's prompt from the inventory as well.
 //
-// A key-only server needs nothing: it returns a no-op cleanup so the caller can
-// defer unconditionally.
-func attachAskpass(cmd *exec.Cmd, srv server.Server) (func(), error) {
+// A key-only server with a key-only jump host needs nothing: it returns a no-op
+// cleanup so the caller can defer unconditionally.
+func attachAskpass(cmd *exec.Cmd, srv server.Server, jumpSrv *server.Server) (func(), error) {
 	noop := func() {}
-	if srv.Password == "" {
+	var jumpPassword string
+	if jumpSrv != nil {
+		jumpPassword = jumpSrv.Password
+	}
+	if srv.Password == "" && jumpPassword == "" {
 		return noop, nil
 	}
 
@@ -130,7 +149,7 @@ func attachAskpass(cmd *exec.Cmd, srv server.Server) (func(), error) {
 		return nil, fmt.Errorf("resolve SSH password helper: %w", err)
 	}
 
-	passwordPath, cleanup, err := newAskpassFile(buildAskpassConfig(srv, nil, srv.Password, ""))
+	passwordPath, cleanup, err := newAskpassFile(buildAskpassConfig(srv, jumpSrv, srv.Password, jumpPassword))
 	if err != nil {
 		return nil, err
 	}

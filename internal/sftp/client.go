@@ -29,16 +29,6 @@ func NewClient(srv server.Server, timeout time.Duration) (*Client, error) {
 	return NewClientWithJumpAndWriter(srv, nil, timeout, nil)
 }
 
-// NewClientWithWriter establishes an SSH connection with a custom warning writer and initializes an SFTP subsystem client.
-func NewClientWithWriter(srv server.Server, timeout time.Duration, warnWriter io.Writer) (*Client, error) {
-	return NewClientWithJumpAndWriter(srv, nil, timeout, warnWriter)
-}
-
-// NewClientWithJump establishes an SSH connection (optionally through a jump host) and initializes an SFTP subsystem client.
-func NewClientWithJump(srv server.Server, jump *server.Server, timeout time.Duration) (*Client, error) {
-	return NewClientWithJumpAndWriter(srv, jump, timeout, nil)
-}
-
 // NewClientWithJumpAndWriter establishes an SSH connection (optionally through a jump host and with a custom warning writer) and initializes an SFTP subsystem client.
 func NewClientWithJumpAndWriter(srv server.Server, jump *server.Server, timeout time.Duration, warnWriter io.Writer) (*Client, error) {
 	if timeout <= 0 {
@@ -140,18 +130,64 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", tmpRemote, err)
 	}
 
-	// Rename the temporary file into place. PosixRename is atomic and replaces an
-	// existing destination, so the destination is only removed in the legacy
-	// fallback below, where plain Rename refuses to overwrite it. Removing it up
-	// front would leave the destination missing whenever both renames fail.
-	if err := c.sftpClient.PosixRename(tmpRemote, remotePath); err != nil {
-		_ = c.sftpClient.Remove(remotePath)
-		if rErr := c.sftpClient.Rename(tmpRemote, remotePath); rErr != nil {
-			_ = c.sftpClient.Remove(tmpRemote)
-			return n, fmt.Errorf("failed to rename %q to %q: %w", tmpRemote, remotePath, rErr)
-		}
+	if err := installRemoteFile(c.sftpClient, tmpRemote, remotePath); err != nil {
+		return n, err
 	}
 	return n, nil
+}
+
+// remoteFileOps is the slice of *sftp.Client that the atomic install sequence
+// needs. It exists so the fallback path can be exercised against a fake server
+// (one without the posix-rename extension) in tests.
+type remoteFileOps interface {
+	PosixRename(oldpath, newpath string) error
+	Rename(oldpath, newpath string) error
+	Remove(path string) error
+	Stat(path string) (os.FileInfo, error)
+}
+
+// installRemoteFile moves tmpPath onto destPath, replacing whatever is there.
+//
+// posix-rename is preferred because it is atomic and overwrites the
+// destination in one step. Servers without that extension fall back to plain
+// Rename, which refuses to overwrite: the old destination is parked at a
+// sibling name first and only removed once the new file is in place, so a
+// failing destination rename costs nothing. Deleting the destination up front
+// (as an earlier version did) lost the file whenever the fallback also failed.
+func installRemoteFile(fs remoteFileOps, tmpPath, destPath string) error {
+	if err := fs.PosixRename(tmpPath, destPath); err == nil {
+		return nil
+	}
+
+	// The destination is parked rather than deleted: the only copy of the old
+	// file survives a failed fallback rename, and the parked copy is dropped
+	// after the new one is in place.
+	backupPath := fmt.Sprintf("%s.opspulse-bak.%d", destPath, time.Now().UnixNano())
+	parked := false
+	if _, err := fs.Stat(destPath); err == nil {
+		if err := fs.Rename(destPath, backupPath); err != nil {
+			return fmt.Errorf("failed to replace %q: cannot park the existing file: %w", destPath, err)
+		}
+		parked = true
+	}
+
+	if err := fs.Rename(tmpPath, destPath); err != nil {
+		if parked {
+			if rbErr := fs.Rename(backupPath, destPath); rbErr != nil {
+				// Both copies are left in place on purpose: the destination is
+				// missing, so deleting either one would discard the only copy
+				// of something.
+				return fmt.Errorf("failed to rename %q to %q: %w (the previous file is parked at %q and could not be restored: %v)", tmpPath, destPath, err, backupPath, rbErr)
+			}
+		}
+		_ = fs.Remove(tmpPath)
+		return fmt.Errorf("failed to rename %q to %q: %w", tmpPath, destPath, err)
+	}
+
+	if parked {
+		_ = fs.Remove(backupPath)
+	}
+	return nil
 }
 
 // DownloadFile downloads a single remote file to the destination local path.
@@ -199,7 +235,7 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, copyErr)
 	}
 
-	if err := tmpFile.Chmod(srcStat.Mode().Perm()); err != nil {
+	if err := tmpFile.Chmod(localPermFromRemote(srcStat.Mode())); err != nil {
 		return n, fmt.Errorf("failed to set local file permissions on %q: %w", tmpName, err)
 	}
 	if err := tmpFile.Close(); err != nil {
@@ -210,6 +246,15 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		return n, fmt.Errorf("failed to rename %q to %q: %w", tmpName, localPath, err)
 	}
 	return n, nil
+}
+
+// localPermFromRemote maps a remote file mode onto the local copy's
+// permissions: the owner bits are kept (an executable stays executable) while
+// group and other write bits are dropped. The local file is created 0600 by
+// os.CreateTemp, so copying a remote 0777 verbatim would only ever widen
+// access to the downloaded file.
+func localPermFromRemote(mode os.FileMode) os.FileMode {
+	return mode.Perm() &^ 0o022
 }
 
 // UploadDir recursively uploads a local directory to a remote directory.
@@ -288,9 +333,7 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 		}
 
 		localTarget := filepath.Join(localDir, filepath.FromSlash(relPath))
-		cleanTarget := filepath.Clean(localTarget)
-		cleanBase := filepath.Clean(localDir)
-		if cleanTarget != cleanBase && !strings.HasPrefix(cleanTarget, cleanBase+string(os.PathSeparator)) {
+		if !withinLocalBase(localDir, localTarget) {
 			return filesCount, totalBytes, fmt.Errorf("path traversal detected: remote path %q resolves outside local destination %q", currRemote, localDir)
 		}
 
@@ -316,4 +359,14 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 	}
 
 	return filesCount, totalBytes, nil
+}
+
+// withinLocalBase reports whether target resolves to base itself or to a path
+// inside it. It is the guard that keeps a remote-supplied path from writing
+// outside the download destination; it lives in its own function so tests can
+// exercise the real check instead of restating it.
+func withinLocalBase(base, target string) bool {
+	cleanBase := filepath.Clean(base)
+	cleanTarget := filepath.Clean(target)
+	return cleanTarget == cleanBase || strings.HasPrefix(cleanTarget, cleanBase+string(os.PathSeparator))
 }

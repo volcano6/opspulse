@@ -33,7 +33,7 @@ func setupTestServerStore(t *testing.T) string {
 func TestAttachAskpass(t *testing.T) {
 	t.Run("a key-only server needs no helper", func(t *testing.T) {
 		cmd := exec.Command("sftp", "root@10.0.0.1")
-		cleanup, err := attachAskpass(cmd, server.Server{Name: "web", Host: "10.0.0.1", KeyPath: "~/.ssh/id_ed25519"})
+		cleanup, err := attachAskpass(cmd, server.Server{Name: "web", Host: "10.0.0.1", KeyPath: "~/.ssh/id_ed25519"}, nil)
 		if err != nil {
 			t.Fatalf("attachAskpass() error: %v", err)
 		}
@@ -47,7 +47,7 @@ func TestAttachAskpass(t *testing.T) {
 		cmd := exec.Command("sftp", "root@10.0.0.1")
 		srv := server.Server{Name: "web", Host: "10.0.0.1", Password: "s3cret"}
 
-		cleanup, err := attachAskpass(cmd, srv)
+		cleanup, err := attachAskpass(cmd, srv, nil)
 		if err != nil {
 			t.Fatalf("attachAskpass() error: %v", err)
 		}
@@ -82,6 +82,59 @@ func TestAttachAskpass(t *testing.T) {
 		cleanup()
 		if _, err := os.Stat(filepath.Dir(payload)); !os.IsNotExist(err) {
 			t.Errorf("cleanup left %s behind (stat err: %v)", filepath.Dir(payload), err)
+		}
+	})
+
+	t.Run("a password jump host is answered too", func(t *testing.T) {
+		cmd := exec.Command("sftp", "deploy@10.0.0.5")
+		// The target authenticates by key; only the hop needs a password, and
+		// the ssh(1) the ProxyCommand spawns must be able to answer for it.
+		srv := server.Server{Name: "internal", Host: "10.0.0.5", KeyPath: "~/.ssh/id_ed25519"}
+		jump := &server.Server{Name: "bastion", Host: "203.0.113.9", Password: "jump-pass"}
+
+		cleanup, err := attachAskpass(cmd, srv, jump)
+		if err != nil {
+			t.Fatalf("attachAskpass() error: %v", err)
+		}
+		defer cleanup()
+
+		if cmd.Env == nil {
+			t.Fatal("the jump host password was not handed to the child process")
+		}
+		t.Setenv(askpassDataFile, envMapOf(cmd.Env)[askpassDataFile])
+		pass, err := readSSHAskpassPassword("ops@203.0.113.9's password: ")
+		if err != nil {
+			t.Fatalf("helper could not answer the jump host prompt: %v", err)
+		}
+		if pass != "jump-pass" {
+			t.Errorf("helper returned %q, want the jump host password", pass)
+		}
+	})
+
+	t.Run("each host is answered with its own password", func(t *testing.T) {
+		cmd := exec.Command("sftp", "root@10.0.0.5")
+		target := server.Server{Name: "internal", Host: "10.0.0.5", Password: "target-pass"}
+		jump := &server.Server{Name: "bastion", Host: "203.0.113.9", Password: "jump-pass"}
+
+		cleanup, err := attachAskpass(cmd, target, jump)
+		if err != nil {
+			t.Fatalf("attachAskpass() error: %v", err)
+		}
+		defer cleanup()
+
+		t.Setenv(askpassDataFile, envMapOf(cmd.Env)[askpassDataFile])
+		for prompt, want := range map[string]string{
+			"root@10.0.0.5's password: ":   "target-pass",
+			"ops@203.0.113.9's password: ": "jump-pass",
+		} {
+			pass, err := readSSHAskpassPassword(prompt)
+			if err != nil {
+				t.Errorf("helper could not answer %q: %v", prompt, err)
+				continue
+			}
+			if pass != want {
+				t.Errorf("helper answered %q with %q, want %q", prompt, pass, want)
+			}
 		}
 	})
 }
@@ -177,5 +230,77 @@ func TestSFTPCmd_CustomExecutableSuccess(t *testing.T) {
 	err := rootCmd.Execute()
 	if err != nil {
 		t.Fatalf("expected successful launch of mock executable, got: %v", err)
+	}
+}
+
+func TestSFTPCmd_GUIRejectsJumpHost(t *testing.T) {
+	t.Setenv(config.EnvHome, t.TempDir())
+	store := server.NewDefaultStore()
+	for _, srv := range []server.Server{
+		{Name: "bastion", Host: "203.0.113.9", User: "ops"},
+		{Name: "internal", Host: "10.0.0.5", User: "deploy", JumpHost: "bastion"},
+	} {
+		if err := store.Save(srv); err != nil {
+			t.Fatalf("failed to save server %q: %v", srv.Name, err)
+		}
+	}
+
+	mockApp := filepath.Join(t.TempDir(), "mock-gui-sftp")
+	if err := os.WriteFile(mockApp, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("failed to create mock app: %v", err)
+	}
+
+	sftpApp = ""
+	sftpRemotePath = "/"
+	sftpCLI = false
+	sftpListApps = false
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"sftp", "internal", "--app", mockApp})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("a GUI client cannot tunnel through the jump host; expected a refusal")
+	}
+	// The user needs to learn why the launch was refused and what to run
+	// instead, otherwise the only signal is a client that fails to connect.
+	for _, want := range []string{"jump host", "bastion", "ops cp", "--cli"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestSFTPCmd_UnknownJumpHostFails(t *testing.T) {
+	t.Setenv(config.EnvHome, t.TempDir())
+	store := server.NewDefaultStore()
+	srv := server.Server{Name: "internal", Host: "10.0.0.5", User: "deploy", JumpHost: "ghost"}
+	if err := store.Save(srv); err != nil {
+		t.Fatalf("failed to save server: %v", err)
+	}
+
+	mockApp := filepath.Join(t.TempDir(), "mock-sftp")
+	if err := os.WriteFile(mockApp, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatalf("failed to create mock app: %v", err)
+	}
+
+	sftpApp = ""
+	sftpRemotePath = "/"
+	sftpCLI = false
+	sftpListApps = false
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"sftp", "internal", "--app", mockApp})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected an error for a jump host that is not in the inventory")
+	}
+	if !strings.Contains(err.Error(), `"ghost"`) {
+		t.Errorf("error %q does not name the missing jump host", err)
 	}
 }
