@@ -1,6 +1,12 @@
 # ---- Build ----
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 WORKDIR /src
+
+# The official proxy is the default, but it can be overridden so the image also
+# builds on networks that cannot reach it (e.g. behind a regional mirror).
+# Build args are scoped to this stage: the runtime image below carries none.
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 
 ARG VERSION=dev
 ARG COMMIT=none

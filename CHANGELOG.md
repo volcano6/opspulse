@@ -12,6 +12,13 @@
   规则边界与写法约定见 `CONTRIBUTING.md` 的「中性化约定」。
 - README 新增「📦 安装」章节：预编译包下载、校验与解压即用（此前只有源码编译一条路径）。
 - 本文件 `CHANGELOG.md`。
+- `ops 1p doctor`：只读自检整条 1Password 链路——`op` 可执行文件的路径与构建选择（WSL 下必须是 Windows
+  版）、可见账号、保险库与选择依据、本机备份条目的字节数/服务器数/私钥数、以及 `servers.yaml` 里残留的
+  `op://` 引用和缺失的密钥文件。每步给 ok / warn / fail 与下一步命令；任一步 fail 即以非零退出，可直接
+  当预检用；`--offline` 只跑不需要网络往返的检查，全程不写任何文件、不打印任何凭据。
+- `ops server remove` / `ops asset remove` 删除前检查 `backups.yaml` 的引用：默认打印会因此失败的备份
+  job 名；交互模式下 `server remove` 追加一次二次确认，`--yes` 与非交互脚本只告警不阻断。引用检查在
+  `backups.yaml` 不可读时降级为「未检查」警告，绝不因此让删除失败。
 
 ### 变更
 
@@ -34,6 +41,40 @@
   机器在清单里出现两次。已存在的条目不会被改名；清单里已有下划线名字时，再次添加其中划线形式会提示二者只差下划线。
 - 文档与实现对齐：`ops doctor` 的说明改为「跨全部已配置服务器的只读巡检」（SSH 连通性、根分区占用、Docker 状态），
   不再是「本地环境体检」；`CONTRIBUTING.md` 的 Go 版本要求与 `go.mod` 对齐。
+- **行为变更：三个命令的并发语义统一为「默认 5」。** `ops exec` / `ops doctor` / `ops backup run` 的
+  `-j/--parallel` 现在共用一条规则：不传或传 `0` 表示默认并发 5，`unlimited`（不区分大小写）表示不设上限，
+  正整数表示该值，其它取值（含负数）直接报错退出。`ops backup run` 的默认值此前是 `0` 且表示**无限并发**，
+  现在为 5；需要旧行为请显式写 `--parallel unlimited`（显式传 `-j 0` 时会打印一条迁移提示）。
+  `-j 4` 等既有写法不受影响。
+- **行为变更：容器备份的中间产物收进项目目录下的 `.opspulse/`。** 数据库热导、命名卷归档与 `manifest.yaml`
+  此前直接写在容器的 Compose 工作目录根部（`dumps/`、`volumes/`、`manifest.yaml`），与用户自己的同名目录
+  冲突——用相对挂载（如 `./volumes/db:/var/lib/postgresql/data`）的项目会被误删数据。现在统一放在
+  `<项目目录>/.opspulse/{dumps,volumes,manifest.yaml}`，备份前的清理只碰这一个命名空间；旧快照仍可还原
+  （还原时同时探测新位置与旧位置）。
+- `ops exec` 批量输出分工收紧：各主机远程命令自己的输出仍进 stdout（按主机名加前缀），跳过提示、失败行与
+  汇总统计改走 stderr。因此 `ops exec -f all "cat /etc/hosts" > hosts.txt` 得到的是干净结果。
+- `ops 1p backup` 的 `op` 调用次数由稳定态 2 次变为 3 次（首次 4 → 5）：写入前先读回现有条目，用于继承本机
+  已读不到的私钥，并在回读校验失败时回滚。多一次授权往返，换掉一整类「远端副本被静默清掉」。
+- **门禁收敛为单一事实源**：`make ci` 成为唯一入口（`fmt-check` / `vet` / `vet-cross` / `test` / `cover` /
+  `vuln` / `lint` / `build-cross` / `e2e` / `neutrality` / `docker`），`scripts/ci.sh` 与
+  `.github/workflows/ci.yaml` 只调用这些目标，CI 的 9 个 job 全部并行。golangci-lint（v1.64.5）与
+  govulncheck（v1.1.4）的版本只在 `Makefile` 出现一次、用 `go run <pkg>@<pin>` 调用，删除旧的
+  revive/errcheck/ineffassign/gosec/staticcheck 五个 `@latest` 调用与 `make tools`——这正是「本地绿、CI 红」
+  的漂移来源。新增覆盖率阈值（`COVER_MIN ?= 65`）与依赖漏洞门禁（`make vuln`，当前 0 可达漏洞）。
+- **依赖与工具链底线提升到 Go 1.26**：`golang.org/x/crypto` v0.55.0 → v0.56.0（修复 GO-2026-6354 /
+  GO-2026-6355，两者都要求 Go 1.26），因此 `go.mod` 的 `go` 行改为 `1.26.0`，并用 `toolchain go1.26.6`
+  固定工具链补丁版本（govulncheck 报出的 14 项标准库告警全部由该补丁版本修复）。`Dockerfile` 同步到
+  `golang:1.26-alpine`，并新增可覆盖的 `GOPROXY` 构建参数，使镜像也能在无法访问官方代理的网络中构建。
+- 发布流程：`release.yaml` 新增 `make ci` 前置门禁（tag 不再绕过门禁），交叉编译加 `-trimpath`（发行包不再
+  内嵌构建机绝对路径）；新增 `.dockerignore`，`make docker` 注入 VERSION/COMMIT/DATE 并断言镜像内的版本串。
+- 新增 `.github/ISSUE_TEMPLATE/{bug_report,feature_request,config}.yml` 与 `PULL_REQUEST_TEMPLATE.md`
+  （关闭空白 Issue）；`SECURITY.md` 补充私密上报渠道（GitHub Security Advisories）、支持版本范围，以及与
+  既有安全原则对应的「凭据如何被处理」说明——含 `ops notify list` 打印完整 URL、`env:` 默认明文这两个真实例外。
+- 文档与实现对齐（其中前两处此前**照抄即报错**）：`backups.yaml` 示例根键 `jobs:` → `backups:`；`ops exec`
+  的 `--timeout` 位置；`paths` 必须是绝对路径且 `~` 不会被展开；容器备份的远端暂存目录 `<项目目录>/.opspulse/`；
+  `ops exec` 的 stdout/stderr 分工；并发默认 5 与 `--parallel unlimited`；`ops 1p backup` 的 op 调用次数。
+- `scripts/check-neutrality.sh`：去掉对 bash 4 `mapfile` 的依赖（macOS 自带 bash 3.2 上原先会静默跳过全部
+  文件），文件列表为空时改为 `exit 2`，邮箱域规则改为大小写不敏感。
 
 ### 移除
 
@@ -63,6 +104,44 @@
   再失败，读起来像投递故障；现在直接报「no notification channels configured」。
 - **`ops server add` 的 `--identity` 与 `--key` 同时给出**：二者本是同一设置的两个名字，此前 `--identity` 优先、
   `--key` 被静默忽略；现在两者给出不同值时直接报错。
+- **远端密钥副本被静默销毁**（1P）：本机某个私钥文件读不到（被 `rm`、权限不对）时，备份会生成一份不含该密钥的
+  文档、整篇覆盖远端条目，随后拿同一份文档回读校验并打印 "verified byte for byte" 退出 0——远端唯一副本就这样
+  没了。现在写入前先读回现有条目：读不到的密钥沿用上次备份的副本并在输出中说明；回读校验失败会把上一份文档原样
+  写回；连旧条目都读不到时直接拒绝盲写。服务器已从 `servers.yaml` 移除时，其密钥被丢弃也会打印聚合告警。
+- **明文密码确认门形同虚设**（1P）：无参数的 `ops 1p restore` 先把含明文密码的清单合并写进 `servers.yaml`，
+  之后才统计「将写入几个明文密码」——此时计数必为 0，于是既不提问，也不在非交互环境下拒绝。现在确认门移到
+  **任何写盘之前**；拒绝、或在非交互环境下不给 `--yes`，`servers.yaml` 逐字节不变。
+- **瞬时失败会造出空仓库**：备份脚本此前把「任何 `restic snapshots` 失败」都当成「仓库还没建」，于是网络抖动、
+  权限错误、后端不可达都会触发 `restic init`，在错误的位置创建仓库。现在只有 restic 明确报告仓库不存在时才
+  init，其它失败原样上抛。
+- **`--dry-run --asset` 必然失败**：`restic ls` 没有 `--include` 参数（正确的是 `--path`），一旦按资产做
+  dry-run 预览就得到 unknown flag；`restore run --dry-run --asset <id>` 此前完全不可用。
+- **还原可能拉起错误的容器**：manifest 探测在没有任何候选匹配当前 job 名时，会拿**最后一个**读到的 manifest
+  去 `up -d`。现在只有 `app` 与 job 名（或 `--as` 别名）一致时才用 manifest 驱动还原，否则回落自启路径并打印
+  候选清单的差异。
+- **日志文件名可穿越目录**：日志名由 job 名/服务器名拼出，此前没有任何清洗。现在统一做路径段清洗（分隔符与
+  控制字符替换、剥掉前导点、按 rune 截断），并在拼好后断言结果仍在 `logs` 目录内。
+- **受管私钥被误删**：`~/.ssh/opspulse_archive/...` 这类把 `opspulse_` 当目录名用的路径、以及经该目录穿越出
+  `~/.ssh` 的路径，此前都被当成 OpsPulse 托管的密钥删掉。现在判定改为「在 `~/.ssh` 之内**且**文件名以
+  `opspulse_` 开头」，复用同文件里已有的 `filepath.Rel` 边界实现，不再用裸字符串前缀。
+- **删除顺序倒置**：`ops server remove` 与 `ops server set --key` 此前先删私钥文件、后写清单，写盘失败就留下
+  「条目指向已删密钥」的半损坏状态。现在先写清单、成功后再清理，清理失败降为警告（错误不再被静默丢弃）。
+- **`ops cp` / `ops sftp` 不走跳板机**：两者此前完全不解析 `jump_host`，对只能经跳板机到达的主机会静默直连
+  内网地址。现在 `ops cp` 与 `ops sftp --cli` 都会把跳板机（含其端口、用户与密钥）接进连接与 `ProxyCommand`，
+  跳板机名不存在时直接报错；GUI SFTP 客户端无法隧道，遇到 `jump_host` 时明确拒绝并给出替代命令。
+- **SFTP 上传可能删掉目标文件**：上传改为「先 rename 到备份名 → 落位 → 成功后再删备份」，落位失败时回滚；
+  下载改为掩掉远端权限里的 group/other 写位（远端 0777 不再在本地变成 0777）。
+- **卡住的 webhook 会吞掉下一次触发**：通知派发此前在 cron 任务体内同步执行，配合 `SkipIfStillRunning`，一个
+  超时的 webhook 就能让该 job 的下一次触发被跳过。现在任务体只做非阻塞投递，由 2 个 worker 的有界队列异步派发
+  （队列满则丢弃并告警），关闭时先停止触发、再等在途任务、最后带超时排空通知。
+- **一个写坏的 cron 表达式拖垮整个 daemon**：`daemon` 此前遇到任意一个非法表达式就拒绝启动。现在逐 job 跳过
+  非法项并打印警告，只有全部已调度 job 都非法时才报错退出。
+- **`backups.yaml` 的坏输入会生成坏脚本**：`Job.Validate` 此前只校验名字非空。现在校验 job 名（拒绝路径分隔符、
+  `..`、空白与控制字符、前导 `.`/`-`）、`paths` 必须为绝对路径、`env` 键名合法、`schedule` 形态合法，在加载或
+  保存时就失败，而不是生成一个跑到目标机才炸的脚本。
+- **容器备份的零碎正确性**：空 `HostPort` 不再生成 `127.0.0.1:` 这种畸形端口串；镜像名改为按仓库名精确匹配
+  （`my-mysql-exporter` 不再被当成数据库容器去热导）；卷导出/导入脚本的文件名参数补上 shell 转义；还原侧的
+  系统挂载判定改为复用 `docker.IsSystemMount`（`/development`、`/system` 这类前缀不再被误判）。
 
 ### 安全
 
@@ -71,6 +150,11 @@
   与手动清理方法；`ops sftp` 在密码认证下会把口令放进 GUI 客户端的命令行参数，文档已如实说明并建议改用密钥。
 - 公开前对仓库历史与发行资产做了一次中性化处理。`v0.2.0` / `v0.3.0` 的发行包已于 2026-09-23 重建，
   内嵌 commit 指向重写后的提交，校验和与最初上传的文件不同，请以 release 页上的 `checksums.txt` 为准。
+- **远端脚本的注入面**：`ops restore run --as <别名>` 与容器反译出的自启脚本此前用 Go 的 `%q` 当作 shell
+  转义（二者不是一回事），构造出的别名可以在目标主机上执行任意命令。现在别名先过名字校验、所有插值改走
+  `shellquote.Quote`，并补了「插值只作为字面量出现」的回归测试（真跑生成的脚本 + canary 文件断言）。
+- **依赖漏洞门禁**：`make vuln` 跑 govulncheck，发现可达漏洞即失败（无忽略清单）。当前扫描结果为 0 个可达漏洞；
+  `golang.org/x/crypto` 升级到 v0.56.0，修复 GO-2026-6354 / GO-2026-6355。
 
 ## [0.3.0] - 2026-08-26
 

@@ -1,0 +1,41 @@
+# Docker build context filter.
+#
+# Dockerfile 里有 `COPY . .`，而 docker 不读 .gitignore——没有这个文件时，
+# `.git/`、`bin/`（数十 MB 的交叉编译产物）、`coverage.out`、`.trellis/`（本地守卫与
+# 审查笔记）、`.opstub-verify/` 全部会进 builder 层，既拖慢构建、又可能把仓库外的东西带进镜像。
+# 镜像只需要源码 + go.mod/go.sum。
+
+# VCS / CI
+.git
+.gitignore
+.github
+
+# 构建与测试产物
+bin
+dist
+build
+coverage.out
+*.out
+*.test
+.opstub-verify
+
+# 本地/审查工作区（.trellis 内有本地守卫词表，绝不能进镜像）
+.trellis
+.workbuddy
+.workbuddy-ai
+.gemini
+.claude
+.cursor
+.codex
+.omp
+.windsurf
+.specstory
+scratch
+
+# 文档与编辑器杂项（镜像里用不到）
+docs
+*.md
+!README.md
+.idea
+.vscode
+.DS_Store

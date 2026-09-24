@@ -1,6 +1,6 @@
 # OpsPulse 跨端环境备份与还原教程 (WSL)
 
-OpsPulse v0.8+ 提供了强大的跨端配置流转能力。无论你是从 WSL 备份环境配置并同步到 VPS，还是在新设备上还原开发环境，OpsPulse 都能借助 `op://` 零信任凭证和 `remap` 路径重映射功能，实现无损、安全的自动化流转。
+OpsPulse 提供了强大的跨端配置流转能力。无论你是从 WSL 备份环境配置并同步到 VPS，还是在新设备上还原开发环境，OpsPulse 都能借助 `op://` 零信任凭证和 `remap` 路径重映射功能，实现无损、安全的自动化流转。
 
 ## 场景一：备份 WSL 环境配置
 
@@ -11,7 +11,7 @@ OpsPulse v0.8+ 提供了强大的跨端配置流转能力。无论你是从 WSL 
 我们不推荐在 `backups.yaml` 中硬编码 AWS 密钥或 Restic 密码。相反，我们可以使用 1Password 的 `op://` 协议：
 
 ```yaml
-# ~/.opspulse/backups.yaml
+# $XDG_CONFIG_HOME/opspulse/backups.yaml（默认 ~/.config/opspulse/backups.yaml）
 backups:
   - name: my-wsl-env
     server: local  # 声明这是在本地执行的备份
@@ -21,11 +21,13 @@ backups:
       AWS_ACCESS_KEY_ID: "op://Personal/AWS/username"
       AWS_SECRET_ACCESS_KEY: "op://Personal/AWS/credential"
       RESTIC_PASSWORD: "op://Personal/Restic/password"
+    # paths 必须是绝对路径：`~` 与相对路径不会被展开，加载配置时直接报错。
+    # 下面用 /home/user 作占位，请换成你的家目录（`echo $HOME` 查看）。
     paths:
-      - ~/.zshrc.local
-      - ~/.gitconfig
-      - ~/.ssh/config
-      - ~/.aws/config
+      - /home/user/.zshrc.local
+      - /home/user/.gitconfig
+      - /home/user/.ssh/config
+      - /home/user/.aws/config
     remap:
       # 为将来的跨机还原做准备：将 /home/user 映射到 /root
       "/home/user": "/root"

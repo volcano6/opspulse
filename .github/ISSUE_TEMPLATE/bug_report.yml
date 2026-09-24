@@ -1,0 +1,79 @@
+name: 🐞 Bug 报告
+description: 报告一个可复现的缺陷（崩溃、报错、行为与文档不符）
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**提交前请先脱敏**：把真实主机名、内网地址、用户名、`servers.yaml` 片段、
+        私钥、`op://` 引用、webhook URL 换成占位值——公开 Issue 在修复前一直公开可读。
+
+        安全漏洞请走[私密渠道](https://github.com/volcano6/opspulse/security/advisories/new)，
+        不要开公开 Issue。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 实际发生了什么？把命令、完整输出/报错、退出码原样贴出来。
+      placeholder: |
+        $ ops ...
+        <输出>
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你期望发生什么？如果是「与文档不符」，请给出文档路径与章节。
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 最小复现步骤
+      description: 从零开始的步骤（配置片段 + 命令）。不能稳定复现时请说明概率与出现条件。
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "`ops version` 的完整输出（含 commit 与构建日期）。"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      multiple: true
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - WSL
+        - 其他（在下方补充说明）
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境补充
+      description: Go 版本、shell、是否配置了跳板机 / 1Password / Docker / SSH Agent（不要贴凭据）。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经搜索过现有 Issue，没有重复。
+          required: true
+        - label: 我已经把输出里的真实主机名、地址、用户名与凭据替换成了占位值。
+          required: true

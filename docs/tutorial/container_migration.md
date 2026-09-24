@@ -95,6 +95,25 @@ Ops 将只解压全部配置文件和数据，不会执行 `docker compose up -d
 
 ---
 
+## 远端暂存目录与旧快照
+
+备份过程中在目标机上产生的中间产物统一放在**项目目录下的 `.opspulse/`**：
+
+```text
+/opt/blog/.opspulse/
+├── dumps/            # 数据库热导（<名字>.sql.gz）
+├── volumes/          # 命名卷归档（<卷名>/data.tar）
+└── manifest.yaml     # 本项目包含哪些卷/热导/compose 文件
+```
+
+- Compose 项目用它的工作目录（例如 `/opt/blog`）；野生容器用 `/var/lib/opspulse/containers/<名字>`。
+- 单独占一个 `.opspulse/` 前缀，是为了不和项目里真实存在的 `dumps/`、`volumes/` 混在一起：
+  每次备份前的清理只针对 `.opspulse/` 下的内容，绝不碰项目自身的目录。
+- 用旧版本备份出来的快照（`manifest.yaml` 直接落在项目目录下）依然可以还原，
+  `ops restore run` 会自动回退到旧位置查找清单，不需要手工搬运。
+
+---
+
 ## 常用命令速查
 
 | 操作 | 命令行示例 | 说明 |

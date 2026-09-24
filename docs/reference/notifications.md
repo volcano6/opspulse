@@ -94,10 +94,16 @@ ops notify list
 ```text
 NAME            TYPE       TRIGGER   URL
 ----            ----       -------   ---
-slack-ops       webhook    failure   https://hooks.slack.com/services/...
-discord-alerts  webhook    failure   https://discord.com/api/webhooks/...
-feishu-bot      webhook    always    https://open.feishu.cn/open-apis/bot/v2/hook/...
+slack-ops       webhook    failure   https://hooks.slack.com/services/T0000000/B0000000/XXXXXXXXXXXXXXXXXXXXXXXX
+discord-alerts  webhook    failure   https://discord.com/api/webhooks/000000000000000000/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+feishu-bot      webhook    always    https://open.feishu.cn/open-apis/bot/v2/hook/00000000-0000-0000-0000-000000000000
 ```
+
+> [!WARNING]
+> 上表里的 URL 是**原样打印的完整 URL**——webhook 的鉴权 token 就在 path 里，
+> 换句话说 `ops notify list` 会把凭据显示在终端上。请只在本地终端查看，
+> 不要把它重定向到共享文件、粘进 Issue/PR，或让它出现在 CI 日志里。
+> （当前实现不做打码；需要脱敏时请自行截断输出。）
 
 ### 测试通知投递
 

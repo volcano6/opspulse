@@ -1,0 +1,13 @@
+# 空白 Issue 关闭：模板会引导填写版本、复现步骤与脱敏确认，
+# 没有这些信息的 Issue 无法定位（尤其是「ops 报错了」这类）。
+blank_issues_enabled: false
+contact_links:
+  - name: 🔐 安全漏洞（私密上报）
+    url: https://github.com/volcano6/opspulse/security/advisories/new
+    about: 漏洞与敏感问题请走私密渠道，不要在公开 Issue 里贴细节。
+  - name: 📖 使用文档
+    url: https://github.com/volcano6/opspulse/tree/main/docs
+    about: 安装、服务器管理、备份/还原、1Password、调度与通知的完整文档。
+  - name: 🤝 贡献与中性化约定
+    url: https://github.com/volcano6/opspulse/blob/main/CONTRIBUTING.md
+    about: 提 PR 前请先看本地开发命令与「中性化约定」（已跟踪文件不得含真实环境信息）。

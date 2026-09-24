@@ -9,9 +9,35 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  # 发布门禁：tag 可以指向任意 commit，所以发版前必须把完整的 `make ci` 跑一遍
+  # （与 CI 各 job 调用的同一批 make 目标，不另写一套命令）。
+  gate:
+    name: Pre-release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Run full gate
+        run: make ci
+
   release:
     name: Build and Release
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -55,7 +81,10 @@ jobs:
             mkdir -p "$OUTPUT_DIR"
 
             echo "Building $GOOS/$GOARCH..."
+            # -trimpath：发行包不得内嵌构建机的绝对路径（go version -m 与 panic 栈都能读出）。
+            # 与 Makefile / Dockerfile 保持一致。
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
+              -trimpath \
               -ldflags "-s -w \
                 -X github.com/volcano6/opspulse/internal/version.Version=${TAG_NAME} \
                 -X github.com/volcano6/opspulse/internal/version.Commit=${COMMIT} \

@@ -50,7 +50,7 @@ backups:
   - name: local-configs
     server: local
     paths:
-      - ~/.config
+      - /home/user/.config                  # 绝对路径（~ 不会被展开）
     backend: /mnt/backups/local-repo
     schedule: "@daily"
     env:

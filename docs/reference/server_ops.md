@@ -223,11 +223,16 @@ ops exec oracle-sg -- free -m
 ops exec oracle-sg cat /var/log/nginx/access.log | grep 404 | wc -l
 
 # 3. 设置超时时间（默认 60 秒，传 0 禁用超时）
-ops exec oracle-sg "apt-get update" --timeout 120s
+#    注意：flag 必须写在服务器名之前——服务器名之后的 `-…` 一律透传给远端
+#    （ops exec oracle-sg "apt-get update" --timeout 120s 会把 --timeout 当成远程参数）
+ops exec --timeout 120s oracle-sg "apt-get update"
 
-# 4. 批量并发执行（默认自动排除配置了 --skip-batch 的服务器）
+# 4. 批量并发执行（默认自动排除配置了 --skip-batch 的服务器；默认并发 5）
+#    stdout 只承载各主机远程命令自己的输出（按主机名加前缀），跳过提示、失败行与汇总
+#    全部走 stderr，所以 `ops exec -f all "cat /etc/hosts" > hosts.txt` 拿到的是干净结果
 ops exec -f all "uptime"
 ops exec -f "provider=oracle" -j 10 "docker ps -q | wc -l"
+ops exec -f all -j unlimited "uptime"       # 不设并发上限
 
 # 5. 显式临时包含 skip-batch 服务器进行批量操作
 ops exec -f all --include-skipped "uptime"
@@ -242,14 +247,14 @@ ops exec -f all --include-skipped "uptime"
 | 传输层 | 系统 `ssh(1)` 子进程 | 进程内 Go `x/crypto/ssh` |
 | 主机密钥 | ssh(1) 原生策略，与交互式登录共用同一份 `~/.ssh/known_hosts` | 严格校验：共用同一份 `~/.ssh/known_hosts`，未记录的主机直接报错（`OPSPULSE_TRUST_NEW_HOST_KEY=1` 可显式放行首次连接），已记录但密钥不匹配同样拒绝 |
 | pty | 沿用 ssh(1) 规则：stdin 是终端即分配，`-- -T` 强制关闭 | 不分配 pty |
-| stdout / stderr | 分离；横幅走 stderr，stdout 干净可直接进管道 | 合并为同一路输出（便于按时间顺序查看全量日志） |
+| stdout / stderr | 分离；横幅走 stderr，stdout 干净可直接进管道 | 远端 stdout/stderr 合并进 stdout（便于按时间顺序查看全量日志）；ops 自身的诊断与告警走 stderr |
 | 退出码 | 原样透传 | 原样透传 |
-| 超时 | 无 ops 层超时 | `--timeout`（默认 60s，传 `0` 禁用） |
+| 超时 | 无 ops 层超时 | `--timeout`（默认 60s，传 `0` 禁用）；**flag 必须写在服务器名之前** |
 | 老旧算法 | ssh(1) 原生支持，配合 `legacy-ssh` 标签受控降级 | Go 库可协商 `ssh-rsa` 主机密钥；仅提供 `ssh-dss` 的主机不可用 |
 | 自动提权 | 不介入，命令以登录用户身份执行 | 远端为非 root 且 `sudo -n true` 可用时自动以 `sudo -E` 执行 |
 | 连接复用 | ControlMaster 多路复用（Windows 上自动关闭） | 每次调用新建连接 |
 | 命令封装 | 命令交给远端登录 shell，引号与管道按远端语义解释 | 整条命令经 base64 后交给远端 `bash -s`（行尾统一为 LF） |
-| 批量执行 | 单台 | `-f all` / `-f provider=xxx` 批量并发（`-j` 控并发度，自动跳过 `skip_batch` 服务器） |
+| 批量执行 | 单台 | `-f all` / `-f provider=xxx` 批量并发（`-j` 控并发度，默认 5，`-j unlimited` 不设上限；自动跳过 `skip_batch` 服务器） |
 
 简言之：**要 pty 与交互性、需要 ssh(1) 原生算法兼容（老机器）时选 `ops ssh --exec`；要超时控制、自动提权、批量并发时选 `ops exec`。**
 
@@ -258,6 +263,8 @@ ops exec -f all --include-skipped "uptime"
 ## 5. SFTP 统一双向文件传输 (`cp`)
 
 基于高性能 SFTP 子系统，直接在本地与远程服务器之间进行统一双向文件或目录传输（支持自动识别远端前缀、递归拷贝与断点覆盖）：
+
+> **跳板机穿透**：目标服务器配置了 `-J/--jump-host` 时，传输会自动经跳板机建立端到端隧道（与 `ops ssh` / `ops exec` 一致），不会去直连内网地址；`ops sftp` 唤起的客户端同样走这条路径。
 
 ### 本地上载到远端
 

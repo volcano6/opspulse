@@ -39,7 +39,7 @@ ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 ## 命令速览
 
 ```bash
-ops 1p backup                     # 备份本机全部私钥 + 整份 servers.yaml（一个条目，两次 op 调用）
+ops 1p backup                     # 备份本机全部私钥 + 整份 servers.yaml（一个条目，稳态 3 次 op 调用）
 ops 1p backup --vault Private     # 指定保险库（并被记住，之后不必再传）
 ops 1p restore                    # 还原清单与全部凭据（新机器一条命令起步）
 ops 1p restore web db-01          # 只还原这几台服务器的凭据（不动 servers.yaml）
@@ -69,10 +69,12 @@ ops 1p backup
 
 几个关键性质：
 
-- **两次 op 调用。** 一次写入（`op item edit`，首次改走 `op item create`）+ 一次读回校验。
+- **稳定态 3 次 op 调用。** 读一次现有备份文档（拿到本机其它副本/上次的私钥）+ 一次写入
+  （`op item edit`，首次改走 `op item create`）+ 一次读回校验。
   旧版是"每台服务器一条私钥条目 + 一条密码条目"，规模稍大就是几十次调用、两分多钟；
   而每次 `op` 调用都是一次桌面端授权往返（Windows 上 `op.exe` **没有缓存**），
   所以**调用次数就是耗时**。整机一个条目把这件事压成常数级。
+  写入前的那次读取不是多余开销：本机某个私钥文件已经读不出来时，它就是唯一的副本来源（见下）。
 - **绝不改写 `servers.yaml`。** 本地磁盘始终是唯一真相源，所以备份**不会**改变
   `ops ssh` 的连接方式，也**不会**把一台本来能连的服务器变成依赖 1Password 解锁的服务器。
   这是与旧版 `ops 1p push` 最根本的区别。
@@ -81,7 +83,13 @@ ops 1p backup
 - **不再并发。** 只有一次写入，没有 fan-out，所以 `-p/--parallel` 已移除。
 - **保险库只会列一次。** 没记住保险库、也没给 `--vault` 时，得先 `op vault list` 才知道
   往哪儿写；查到的保险库会**被记住**（效果同 `ops 1p config --vault`），所以只有第一次
-  备份付这一次调用。首次 4 次调用（列保险库 + edit + create + 回读），之后稳定 **2 次**。
+  备份付这一次调用。首次 5 次调用（列保险库 + 读旧文档 + edit + create + 回读），
+  之后稳定 **3 次**。
+- **读不出来的本机私钥会沿用上一份。** 某个 `key_path` 这次备份读不出来（文件被删、
+  权限不对、盘没挂上）时，OpsPulse 不会悄悄把它从备份里丢掉，而是从上一份备份文档里
+  取回那把私钥并在条目里保留原样，同时在终端打印一行
+  `↺ <服务器名>: this machine cannot read the private key file, so the copy from the
+  previous backup is kept`。所以「备份成功」永远不等于「少了一把钥匙而没人说」。
 - **遇到 `op://` 残留直接拒绝。** 如果 `servers.yaml` 里还有服务器持有 `op://` 引用，
   `backup` 会在**触碰 1Password 之前**就报错退出：
 
@@ -342,11 +350,41 @@ ops 1p config --vault Employee --account acme.1password.com
 > 记住的保险库如果以后被删掉，命令会**告警并自动回退**到剩余可用的库，不会一直卡住；
 > 而显式传 `--vault` 传错名字是硬报错。
 
+## `ops 1p doctor`：只读自检整条链路
+
+第一次在一台新机器上接入 1Password（或者换了环境、换了账号）时，先跑这一条：
+
+```bash
+ops 1p doctor              # 只读自检：写任何东西之前先把整条链路走一遍
+ops 1p doctor --offline    # 只跑不需要网络往返的检查
+```
+
+它按顺序检查并逐行给出 `ok` / `warn` / `fail` 与下一步该跑的命令：
+
+| 检查 | 说明 |
+|------|------|
+| `op` 可执行文件 | 找到的路径，以及用的是 Linux/Unix 版还是 Windows 版——WSL 下必须是 Windows 版，否则连不上桌面端授权 |
+| 记住的设置 | `ops 1p config` 记住的保险库与账号（只读，本次不会改动） |
+| `servers.yaml` | 清单里有多少台服务器 |
+| 账号 | `op account list` 看到的账号（这一步不需要桌面端授权） |
+| 保险库 | 能列出的保险库，以及**这次会选哪一个、依据是什么**（`--vault` / 记住的值 / 自动推断） |
+| 本机备份条目 | `opspulse_inventory_<hostname>` 是否存在，以及它的字节数、服务器数、私钥数与明文密码数——**只报数字，从不打印任何凭据内容** |
+| 本地凭据 | `servers.yaml` 里还残留多少 `op://` 引用、多少台服务器指向了不存在的密钥文件 |
+
+任一步 `fail` 就以非零状态退出，可以直接当预检用：
+
+```bash
+ops 1p doctor && ops 1p backup
+```
+
+它**不写任何东西**：不创建条目、不改 `servers.yaml`、不记住任何设置——即使它替你推断出了保险库，
+`--vault` 也只影响本次检查。`--offline` 跳过所有需要联系 `op` 的检查。
+
 ## 已删除的 `push` / `pull`
 
 旧版的 `ops 1p push` 与 `ops 1p pull` 已被**彻底删除**——它们不再是隐藏命令，旧参数
 （如 `--materialize`、`--delete-local`）也一并消失。现在运行 `ops 1p push` 只会打印 `ops 1p`
-的帮助，当前子命令仅 `backup` / `restore` / `status` / `config` 四个。
+的帮助，当前子命令是 `backup` / `restore` / `status` / `config` / `doctor` 五个。
 
 替代者是 `ops 1p backup` / `ops 1p restore`，但语义并不相同，所以没有保留别名：
 `push` 的语义是**改写 `servers.yaml` 为 `op://` 引用**，而 `backup` 恰恰相反——它绝不改写
@@ -358,7 +396,7 @@ ops 1p config --vault Employee --account acme.1password.com
 运行时按需调用 1Password 解析并注入环境变量（不落盘）：
 
 ```yaml
-jobs:
+backups:
   - name: nightly-db-dump
     server: db-01
     env:

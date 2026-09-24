@@ -16,19 +16,25 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "neutrality: 需要 git 仓库（CI 中请先 checkout）" >&2; exit 2; }
 
-mapfile -t FILES < <(git ls-files)
+# 不用 `mapfile`：macOS 自带 bash 3.2 没有这个内建命令，而本脚本是 `set -uo pipefail`
+# （没有 -e），命令失败会被静默吞掉——FILES 变成空数组，门禁在 macOS 上「通过」但
+# 一个文件都没扫。git 仓库里至少有一个已跟踪文件，所以空列表只能说明脚本自身出错。
+FILES=()
+while IFS= read -r f; do FILES+=("$f"); done < <(git ls-files)
 if [ "${#FILES[@]}" -eq 0 ]; then
-  echo "neutrality: 没有已跟踪文件，跳过"
-  exit 0
+  echo "neutrality: git ls-files 返回空——脚本或仓库状态异常，拒绝静默通过" >&2
+  exit 2
 fi
 
 VIOLATIONS=0
 
-# 按「文件:行号:取值」逐条判定；$3 为允许清单正则，命中即放过。
+# 按「文件:行号:取值」逐条判定；$3 为允许清单正则，命中即放过；
+# $4 为额外的 grep 选项（例如 `-i`：同一地址的大小写变体是同一个泄漏）。
 rule() {
-  local re="$1" desc="$2" allow="$3"
+  local re="$1" desc="$2" allow="$3" grep_opts="${4-}"
   local out line file rest ln val
-  out="$(grep -a -n -H -o -E "$re" "${FILES[@]}" 2>/dev/null || true)"
+  # shellcheck disable=SC2086  # grep_opts 需要按空格拆成多个选项
+  out="$(grep -a -n -H -o -E $grep_opts "$re" "${FILES[@]}" 2>/dev/null || true)"
   [ -z "$out" ] && return 0
   while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -45,9 +51,10 @@ rule() {
 rule '([0-9]{1,3}\.){3}[0-9]{1,3}' '非文档段 IPv4' \
   '^(10\.|127\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|169\.254\.|0\.|255\.|1\.1\.1\.[0-9]+$|1\.2\.3\.[0-9]+$|2\.2\.2\.2$|3\.3\.3\.3$|5\.6\.7\.8$|9\.9\.9\.9$)'
 
-# 2) 消费者邮箱域（真实邮箱必然落在这些域上；example.com 之类不在列）
+# 2) 消费者邮箱域（真实邮箱必然落在这些域上；example.com 之类不在列）。
+#    -i：大小写只是同一个地址的另一种写法，不该成为绕过门禁的后门。
 rule '@(gmail|googlemail|163|126|qq|foxmail|outlook|hotmail|live|yahoo|sina|sohu|icloud|protonmail)\.(com|cn|net|org)' \
-  '真实邮箱域' ''
+  '真实邮箱域' '' '-i'
 
 # 3) 家目录 / 用户目录里的真实用户名（`...` 是文档里的省略号占位）
 rule '(/home/|/Users/|[A-Za-z]:[\\/]Users[\\/])[A-Za-z0-9._-]+' '非中性用户目录' \

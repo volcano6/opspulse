@@ -1,0 +1,45 @@
+name: 💡 功能建议
+description: 提出一个新能力或对现有行为的改进建议
+title: "[feat] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先说明**问题**，再谈方案：很多看起来需要新命令的需求，用现有的
+        `servers.yaml` / `backups.yaml` / 模板机制就能解决，维护者可能会给出更小的改法。
+
+        安全问题请走[私密渠道](https://github.com/volcano6/opspulse/security/advisories/new)。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题
+      description: 现在必须做什么、哪里别扭？请描述场景，不要只给结论。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你期望的方案
+      description: 如果已有具体命令/配置形态的想法，写在这里（例如 `ops xxx --yy`）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的替代方案
+      description: 试过哪些现有手段、为什么不够用（脚本、模板、外部工具都算）。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 影响面自查
+      options:
+        - label: 这个改动需要新增/修改 CLI 标志或 YAML 字段（涉及兼容性）。
+          required: false
+        - label: 我愿意提交 PR（可以先把设计思路发在 Issue 里对齐再动手）。
+          required: false

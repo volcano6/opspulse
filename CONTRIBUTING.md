@@ -8,7 +8,7 @@
 
 ### 前置依赖
 
-- **Go 1.25+**
+- **Go 1.26+**（`go.mod` 的 `toolchain` 行固定了工具链补丁版本，`go` 命令会自动切换）
 - **golangci-lint**
 - **Docker**（可选）
 
