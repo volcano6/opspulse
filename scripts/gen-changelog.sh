@@ -6,7 +6,7 @@
 # 本脚本只做推导，不做判断——版本号与发布日期由调用方给定。
 #
 # 用法：
-#   scripts/gen-changelog.sh                          # 最近一个 tag..HEAD，打印到 stdout
+#   scripts/gen-changelog.sh                          # 上一个 tag..HEAD（HEAD 带 tag 时自动退一位），打印到 stdout
 #   scripts/gen-changelog.sh --version 0.5.0          # 指定版本号
 #   scripts/gen-changelog.sh --since v0.3.0           # 指定区间起点
 #   scripts/gen-changelog.sh --write                  # 插入 CHANGELOG.md（第一个 "## [" 之前）
@@ -35,8 +35,15 @@ while [ $# -gt 0 ]; do
 done
 
 # 默认区间起点 = 最近一个 tag；仓库还没有 tag 时取全部历史。
+# HEAD 自己带着 tag 时要退到 HEAD 之前的那一个：release.yaml 正是这个场景（tag 先推、
+# workflow 再从被 tag 的提交上生成 body），此时「最近一个 tag」就是本次要发的版本，
+# 区间会塌成 <tag>..HEAD = 空，release body 只剩一句「本次区间没有提交」。
 if [ -z "$since" ]; then
-  since="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+  if git describe --tags --exact-match HEAD >/dev/null 2>&1; then
+    since="$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)"
+  else
+    since="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+  fi
 fi
 range="HEAD"
 [ -n "$since" ] && range="${since}..HEAD"

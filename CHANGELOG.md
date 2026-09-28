@@ -3,14 +3,29 @@
 本项目的所有重要变更都记录在此。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
-> **维护方式**：0.4.0 及更早的条目为手写记录，保留原样。0.5.0 起由 `make changelog`
+> **维护方式**：0.4.0 及更早的条目为手写记录，保留原样（0.4.0 的 Release body 由脚本从提交推导，
+> 措辞与该条目不同、覆盖面相同）。0.5.0 起由 `make changelog`
 > （`scripts/gen-changelog.sh`）从 conventional commit 推导，发版时写入本文件——提交标题就是变更
 > 记录的唯一来源，不再要求每次改动手写条目。Release 页用同一脚本生成 body，两处内容同源。
 
-## [0.4.0]
+## [0.4.0] - 2026-09-28
 
 ### 新增
 
+- **1Password 集成**：`ops 1p` 顶层命名空间，把整台机器（本机全部私钥 + 整份 `servers.yaml`）备份进单个
+  `opspulse_inventory_<hostname>` Secure Note，新机一条命令还原清单与全部凭据；`pull --all` 批量撤离
+  1Password 凭据（并集合并多机备份文档，绝不删除本机独有的服务器）；备份改为每机器一个 Secure Note。
+- **WSL 跨端**：跨端路径重映射、Windows GUI 唤起与私钥安全桥接、Windows `op.exe` 路径穷尽探测（WSL 下
+  必须走 Windows 版 `op`）。
+- **SSH**：`ops ssh` 交互式直连与连接复用；跳板机穿透与老旧 `ssh-rsa` 兼容；`ops export ssh-config`；
+  新增 `--exec` 入口，把远程命令与 ssh 选项分开（`--` 之后的参数原样进入 `ssh(1)` 的选项槽位）。
+- **容器备份与跨机快起**：`ops backup run <server>:<container>` 直接备份野生容器并自动逆向转译为标准
+  `compose.yaml`；MySQL / PostgreSQL 容器内在途热 Dump 与 gzip 即时压缩；`ops restore run` 跨机自适应
+  拉起容器并自动灌库。
+- **资产与还原 CLI**：`ops asset`（add / list / show / remove）与 `ops restore run` / `ops restore history`。
+- **调度与通知**：基于 cron 表达式的备份守护进程（`ops daemon`，支持 `--once`）、Webhook 多渠道条件告警。
+- **CLI 门面统一为 `ops`**：`ops cp` 合并 SFTP 双向传输，`ops sftp` 可唤起外部 GUI 客户端；`make install`
+  的安装路径与补全脚本 PATH 形成闭环；模板库新增国内 VPS 初始化加速模板。
 - 中性化门禁 `scripts/check-neutrality.sh`：按**形状**扫描全部已跟踪文件，拦截非文档段 IP、真实邮箱域、
   真实家目录、私钥正文与非默认 `op://` 库名。CI 新增独立 `neutrality` job，`make ci` 同步接入；
   规则边界与写法约定见 `CONTRIBUTING.md` 的「中性化约定」。
@@ -96,6 +111,8 @@
   Release body 与它同源，不再手写。最后把 CLI 帮助文本整体中文化：`cmd/opspulse` 下 53 条命令摘要、74 处
   flag 说明与 34 段 `Long` 说明全部改为中文，`ops --help` 的用法/帮助模板、`-h/--help`、`-v/--version` 与
   `ops help` 命令一并中文化，`docs/reference/cli.md` 随之成为全中文页（此前是仓库里唯一全英文的文档）。
+- 严格主机密钥校验（Strict Host Key Checking）默认开启；WarnWriter 线程安全日志链路全量接线。
+- 凭据改为本地优先：`ops ssh` / `ops exec` / `ops cp` 全程不与 1Password 交互，不再弹授权框。
 
 ### 移除
 
@@ -163,6 +180,10 @@
 - **容器备份的零碎正确性**：空 `HostPort` 不再生成 `127.0.0.1:` 这种畸形端口串；镜像名改为按仓库名精确匹配
   （`my-mysql-exporter` 不再被当成数据库容器去热导）；卷导出/导入脚本的文件名参数补上 shell 转义；还原侧的
   系统挂载判定改为复用 `docker.IsSystemMount`（`/development`、`/system` 这类前缀不再被误判）。
+- 修复多路径备份还原时的重映射路径丢失与容器还原的数据一致性问题。
+- 修复并发调度的信号断链与批量执行摘要失真。
+- 修复 WSL 下未知主机 askpass 死循环；`ops ssh --` 之后的裸参数立即报错。
+- 空机器 `ops 1p restore` 不再谎报保留了本机独有的服务器。
 
 ### 安全
 
@@ -176,41 +197,34 @@
   `shellquote.Quote`，并补了「插值只作为字面量出现」的回归测试（真跑生成的脚本 + canary 文件断言）。
 - **依赖漏洞门禁**：`make vuln` 跑 govulncheck，发现可达漏洞即失败（无忽略清单）。当前扫描结果为 0 个可达漏洞；
   `golang.org/x/crypto` 升级到 v0.56.0，修复 GO-2026-6354 / GO-2026-6355。
+- 默认强制严格主机密钥校验，未知主机输出密钥类型与 SHA256 指纹后阻断连接。
+- 修复文件系统与路径安全风险；移除已废弃且不安全的 `KeyAlgoDSA`。
+- 私钥改由 1Password Login 条目承载，写入后回读逐字节校验。
 
 ## [0.3.0] - 2026-08-26
 
 ### 新增
 
-- **1Password 集成**：`ops 1p` 顶层命名空间；整台机器（本机全部私钥 + 整份 `servers.yaml`）备份进单个
-  `opspulse_inventory_<hostname>` Secure Note；新机一条命令还原清单与全部凭据；`pull --all` 批量撤离
-  1Password 凭据（并集合并多机备份文档，绝不删除本机独有的服务器）。
-- **WSL 跨端**：跨端路径重映射、Windows GUI 唤起与私钥安全桥接、Windows `op.exe` 路径穷尽探测。
-- **SSH**：`ops ssh` 交互式直连与连接复用；跳板机穿透与老旧 `ssh-rsa` 兼容；`ops export ssh-config`；
-  新增 `--exec` 入口，把远程命令与 ssh 选项分开。
-- **容器备份与跨机快起**：`ops backup run <server>:<container>` 直接备份野生容器并自动逆向转译为标准
-  `compose.yaml`；MySQL / PostgreSQL 容器内在途热 Dump 与 gzip 即时压缩；`ops restore run` 跨机自适应
-  拉起容器并自动灌库。
-- **资产与还原**：`ops asset`（add / list / show / remove）与 `ops restore run` / `ops restore history`。
-- **调度与通知**：基于 cron 表达式的备份守护进程（`ops daemon`，支持 `--once`）、Webhook 多渠道条件告警。
-- 模板库扩充，新增国内 VPS 初始化加速模板；`ops server info` 单次 SSH 聚合采集系统与硬件信息。
+- `ops server` 增强：服务器清单支持 Labels 标签与 `server list` 过滤；`ops server info` 单次 SSH 聚合采集
+  系统与硬件信息、Docker 状态，并以 ASCII 看板展示。
+- SSH：交互式原生终端直连与参数透传；远程单命令快速执行、状态码透传与超时控制；Shell 自动补全增强。
+- SFTP 文件传输（`ops transfer`，后并入 `ops cp`）。
+- 资产模型与存储：结构化 Asset 模型、YAML 存储，以及 Restore 审计所需的数据库迁移。
+- 模板库扩充：新增 timezone（时区/NTP）、swap（平滑热切换）、caddy、tmux、zsh-starship、clean、upgrade
+  等内置模板；`base` 模板集成 BBR 拥塞控制加速；`bootstrap` 支持 `-t template:arg` 内联传参。
 
 ### 变更
 
-- CLI 门面统一为 `ops`，`ops cp` 合并 SFTP 双向传输；`make install` 安装路径与补全脚本 PATH 形成闭环。
-- 严格主机密钥校验（Strict Host Key Checking）默认开启；WarnWriter 线程安全日志链路全量接线。
-- 凭据改为本地优先：`ops ssh` / `ops exec` / `ops cp` 全程不与 1Password 交互，不再弹授权框。
+- 私钥生命周期改为引用计数：不再使用的托管私钥自动清理。
 
 ### 修复
 
-- 修复多路径备份还原误匹配兄弟服务清单、重映射路径丢失与容器还原的数据一致性问题。
-- 修复并发调度的信号断链与批量执行摘要失真；空机器 restore 不再谎报保留了本机独有的服务器。
-- 修复 WSL 下未知主机 askpass 死循环；`ops ssh --` 之后的裸参数立即报错。
+- 修复并发日志竞态、IPv6 寻址、跨机熔断与配置非原子写入；SSH 输出流的并发数据竞争与高延迟网络下的脚本
+  丢包；Windows 下的路径补全兼容；`server info` 渲染里的硬编码切片索引。
 
 ### 安全
 
-- 默认强制严格主机密钥校验，未知主机输出密钥类型与 SHA256 指纹后阻断连接。
-- 修复文件系统与路径安全风险；移除已废弃且不安全的 `KeyAlgoDSA`。
-- 私钥改由 1Password Login 条目承载，写入后回读逐字节校验。
+- 收紧文件权限并修复 gosec 检查项（含测试夹具的 G306 告警）。
 
 ## [0.2.0] - 2026-08-24
 
@@ -224,6 +238,6 @@
 - restic 备份执行引擎、输出解析、并发备份调度池与完整 CLI（含 Dry-Run 与保留策略自动修剪）。
 - Shell 动态自动补全与文档指南；GitHub Actions 构建与发布工作流。
 
-[0.4.0]: https://github.com/volcano6/opspulse/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/volcano6/opspulse/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/volcano6/opspulse/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/volcano6/opspulse/releases/tag/v0.2.0

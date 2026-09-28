@@ -120,6 +120,12 @@ jobs:
               bash scripts/gen-changelog.sh
             fi
           } > "$RUNNER_TEMP/release-notes.md"
+          # 区间推导一旦出错（例如起点取成了本次 tag 自己）body 会静默退化成一句
+          # 「本次区间没有提交」，发出去就是一份没有变更记录的 release。
+          if grep -q '本次区间没有' "$RUNNER_TEMP/release-notes.md"; then
+            echo "::error::变更区间为空，release body 退化成占位句；检查 scripts/gen-changelog.sh 的区间起点" >&2
+            exit 1
+          fi
           cat "$RUNNER_TEMP/release-notes.md"
 
       - name: Create GitHub Release
