@@ -17,17 +17,17 @@ var completionInstall bool
 
 var completionCmd = &cobra.Command{
 	Use:   "completion [bash|zsh|fish|powershell]",
-	Short: "Generate shell completion script or install automatically",
-	Long: `Generate shell autocompletion scripts for Ops (ops) or install them
-into your shell configuration files automatically using the --install flag.
+	Short: "生成 Shell 补全脚本或自动安装",
+	Long: `为 Ops（ops）生成 Shell 自动补全脚本，或用 --install 选项把它们
+自动写入你的 Shell 配置文件。
 
-Supported shells: bash, zsh, fish, powershell.
+支持的 Shell：bash、zsh、fish、powershell。
 
-Examples:
-  # Install autocompletion directly into your shell profile
+示例：
+  # 把自动补全直接安装进你的 Shell profile
   ops completion --install
 
-  # Generate completion script to stdout
+  # 把补全脚本生成到标准输出
   ops completion bash
   ops completion zsh
   ops completion fish
@@ -54,7 +54,7 @@ Examples:
 }
 
 func init() {
-	completionCmd.Flags().BoolVarP(&completionInstall, "install", "i", false, "Install completion script into current user's shell profile automatically")
+	completionCmd.Flags().BoolVarP(&completionInstall, "install", "i", false, "自动把补全脚本安装进当前用户的 Shell profile")
 	rootCmd.AddCommand(completionCmd)
 }
 

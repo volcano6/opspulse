@@ -1,6 +1,10 @@
-# 日常服务器管理指南 (Server Operations)
+# 服务器与资产 (Server Operations)
 
 Ops 不仅是一键初始化与灾备迁移平台，更是日常高效管理多台 VPS 的核心入口。
+
+本文覆盖服务器、远端执行与业务资产三类主题，按命令命名空间逐条讲用法。清单字段的完整规范见[配置与模板](configuration.md)；连接是怎么
+建立的（库内 SSH 通路 vs 系统 `ssh` / `sftp`）、密码如何在不落盘的前提下交给 `ssh`，见
+[架构与信任模型](../explanation/architecture.md)；命令与 flag 的机械清单见[命令行参考](cli.md)。
 
 ---
 
@@ -31,7 +35,7 @@ ops add company-srv 10.0.0.1 --skip-batch
 ops server add oracle-sg --host 203.0.113.10 --user ubuntu -i ~/.ssh/id_ed25519
 ```
 
-> 🛡️ **密码静默输入与公钥免密直连引导**：
+> **密码静默输入与公钥免密直连引导**：
 > - **服务器名规范（下划线改中划线）**：新增时服务器名中的下划线会统一改写为中划线，`ops add web_1` 实际保存为 `web-1`，避免 `web_1` 与 `web-1` 这类肉眼难分的名字让同一台机器在清单里出现两次（会打印一行提示）。已存在的条目不会被改名；若改写后的名字已被占用，`ops add` 直接报错而不是覆盖原条目。若清单里已有下划线名字（例如从备份恢复而来），再次添加它的中划线形式时会提示二者只差下划线。
 > - **隐式批量防呆保护（SkipBatch）**：对于公司服务器、归档节点或特殊机器，配置 `--skip-batch`。在执行 `ops exec -f all` 或 `ops doctor` 等过滤式批量操作时会自动跳过，防止手滑误伤。显式单机操作（如 `ops ssh <name>`、`ops exec <name>`）不受任何影响；如确需批量包含，可临时传递 `--include-skipped` 覆盖。
 > - **跳板机穿透（Jump Host）**：通过 `-J / --jump-host <server_name>` 关联跳板机，支持连续按 `<Tab>` 补全现有服务器。内网机器的主机名（如 `vps2`）将直接由跳板机在远程内网中解析，无需事先查探内网 IP。所有 SSH、SFTP、命令执行、自动化备份与 VS Code Remote-SSH（自动导出 `ProxyJump`）均走端到端加密通道，私钥无需在跳板机上落地。
@@ -78,6 +82,12 @@ ops server remove old-vps --keep-key
 | `-y, --yes` | 布尔 | `false` | 跳过删除确认提示；非交互 shell（stdin 非终端）下必须显式提供，否则直接拒绝执行 |
 | `--keep-key` | 布尔 | `false` | 不删除磁盘上由 OpsPulse 托管的私钥文件（若有其他服务器仍引用同一密钥，本来也不会删除） |
 
+若 `backups.yaml` 里仍有备份作业引用该服务器（`server:` 字段），OpsPulse 会先打印一条警告，再在
+交互式 shell 里追加一次「是否仍然删除」的确认。这不是拒绝：`--yes` 同样能答掉这次追问，而非交互
+shell 本来就已经要求 `--yes`，所以引用**永远不会挡住删除**——那个作业会在下次执行时失败，改配置即可。
+真正会硬拦截的只有跳板机依赖：只要有别的服务器把它当跳板机，命令直接报错并列出依赖者，必须先把
+那些服务器删掉或改配置（见上文「生命周期与依赖保护」）。
+
 交互提示的默认答案是 No：回车或回答 `n` 会中止操作并报 `server removal cancelled by user`，清单与私钥都保持原样。在非交互 shell（CI、脚本、管道）中不带 `--yes` 则直接拒绝，不会挂起等待输入：
 
 ```text
@@ -111,6 +121,21 @@ NAME          HOST          PORT   USER     AUTH                    LABELS      
 ----          ----          ----   ----     ----                    ------                                                ----       -----------
 oracle-sg     203.0.113.10  22     ubuntu   key (~/.ssh/id_ed25519) purpose=blog,provider=oracle,region=singapore         prod,web   生产环境博客主节点
 ```
+
+---
+
+### 顶级快捷方式 (Shortcuts)
+
+`ops server` 下最常用的四个动作都有顶级等价写法，flag 与子命令版完全一致——手敲用短的，脚本里写全的：
+
+| 顶级写法 | 等价于 | 作用 |
+| --- | --- | --- |
+| `ops ls` | `ops server list` | 列出服务器清单 |
+| `ops add <name> [target]` | `ops server add <name> [target]` | 新增或更新服务器 |
+| `ops test <name>` | `ops server test <name>` | 单次 SSH 连通性自检 |
+| `ops info <name>` | `ops server info <name>` | 采集 OS、硬件与 Docker 状态 |
+
+`ops test` 与 `ops info` 都是只读的单次连接：前者回答「这台机器还连得上吗」，后者给出资源画像，两者都不改动远端任何状态。
 
 ---
 
@@ -347,4 +372,112 @@ rm -rf /mnt/c/Users/<你>/.ssh/opspulse
 ### 安全提示：密码会出现在命令行里
 
 当服务器使用密码认证时，Ops 会构造 `sftp://user:password@host:port/path` 形式的 URL 并作为 GUI 客户端（WinSCP / Xftp / FileZilla 等）的命令行参数传递——本机上任何能列出进程的人都能读到这个密码。GUI 场景建议先用 `ops server setup-key <name>` 切到密钥认证：密钥以文件路径传递，密码不会进入命令行。
+
+---
+
+## 7. 远端容器快捷命令 (`ps` / `logs`)
+
+不登录远端就能看容器，同样只走一条 SSH 会话：
+
+```bash
+ops ps web-01                              # 运行中的容器
+ops ps web-01 -a                           # 连已停止的一起列
+ops logs web-01 nginx                      # 最近 100 行日志
+ops logs web-01 nginx --tail 50 --follow   # 实时跟随（Ctrl+C 退出）
+```
+
+- `ops ps <server> [-a]`：输出等价于远端 `docker ps`（容器 ID、镜像、命令、状态、端口、名称）。
+- `ops logs <server> <container> [--tail <n>] [--follow] [--timestamps]`：输出等价于远端 `docker logs`。
+
+要看整个集群的健康状况用 `ops doctor`：一次遍历清单，检查 SSH 连通性、根分区占用与 Docker 守护进程状态。
+
+---
+
+## 8. 业务资产与引用保护 (Assets)
+
+`assets.yaml` 用来登记服务器上的有状态业务数据（Docker Compose 项目、Volume、数据库、
+Nginx 站点等），每个资产一个稳定 ID，备份与跨机还原时按 ID 引用。Asset、Remap 与 Snapshot
+的**定义**归[架构与信任模型](../explanation/architecture.md)所有，本节只讲怎么登记和使用。
+
+### 核心设计原则
+
+1. **稳定 ID**：`id` 用于唯一标识资产记录。
+2. **类型与来源**：`type` 描述资产类别，`source` 描述其来源路径。
+3. **跨机重映射**：还原时支持根据资产 ID 将数据还原到新 VPS 的指定路径下。
+
+### 内置资产类型 (Asset Types)
+
+| 类型标识 | 适用场景 | 关键字段 |
+|:---|:---|:---|
+| `docker_compose` | 完整的 Docker Compose 项目目录 | `source` 指向包含 `compose.yaml` 的目录 |
+| `volume` | Docker 命名数据卷或挂载数据目录 | `source` 指向宿主机挂载目录或数据卷路径 |
+| `database` | 数据库逻辑导出 Dump | `source`, `engine` (mysql/postgres), `container` |
+| `directory` | 通用配置或静态文件目录（如 Nginx 站点） | `source`, `excludes` |
+| `file` | 单个关键文件或证书文件组（如 SSL 证书） | `source` |
+
+### 配置文件 `assets.yaml` 示例
+
+路径：`$XDG_CONFIG_HOME/opspulse/assets.yaml`
+
+```yaml
+assets:
+  # Docker Compose 项目
+  - id: blog-compose
+    type: docker_compose
+    source: /opt/blog
+    description: "Ghost 博客 Compose 项目"
+
+  # MySQL 数据库资产
+  - id: blog-mysql
+    type: database
+    source: /var/lib/mysql
+    engine: mysql
+    container: blog-db
+    description: "博客数据库数据"
+
+  # Nginx 虚拟主机配置目录
+  - id: blog-nginx
+    type: directory
+    source: /etc/nginx/sites-enabled
+    description: "Nginx 反向代理配置"
+
+  # SSL 证书文件
+  - id: blog-ssl
+    type: file
+    source: /etc/letsencrypt
+    description: "Let's Encrypt SSL 证书"
+```
+
+字段含义见[配置与模板 § 业务资产定义](configuration.md#3-业务资产定义-assetsyaml)。
+
+### CLI 管理命令
+
+```bash
+# 注册或更新资产
+ops asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost 博客"
+ops asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db
+
+# 格式化表格列出所有资产
+ops asset list
+
+# 查看指定资产详情
+ops asset show blog-mysql
+
+# 删除指定资产
+ops asset remove blog-mysql
+```
+
+`ops asset remove` 只删 `assets.yaml` 里的条目，**从不阻塞、也从不追问**：如果仍有备份作业在
+`assets:` 里引用该 ID，它会打印一条警告后照常删除，那个作业会在下次执行时失败。作业侧的字段含义见
+[备份、还原与调度指南 § 字段详细规范](backup.md#字段详细规范)，命令与参数清单见[命令行参考](cli.md)。
+
+---
+
+## 9. 相关文档 (See Also)
+
+- [配置与模板](configuration.md)：`assets.yaml`、`servers.yaml` 等配置文件的目录与字段规范。
+- [备份、还原与调度指南](backup.md)：备份作业如何按资产 ID 引用数据，以及作业字段规范。
+- [架构与信任模型](../explanation/architecture.md)：Asset、Remap 与 Snapshot 的定义、非目标与信任边界。
+- [命令行参考](cli.md)：`ops asset`、`ops server`、`ops exec` 等命令与 flag 的机械清单。
+
 

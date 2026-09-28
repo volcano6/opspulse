@@ -40,7 +40,7 @@ GO_PROXY ?= $(shell go env GOPROXY)
 COVER_FILE ?= coverage.out
 COVER_MIN  ?= 65
 
-.PHONY: all build build-cross install fmt-check vet vet-cross test cover vuln lint e2e neutrality docker ci clean
+.PHONY: all build build-cross install fmt-check vet vet-cross test cover vuln lint docs-gen docs-check changelog e2e neutrality docker ci clean
 
 all: build
 
@@ -125,6 +125,27 @@ vuln:
 lint:
 	$(GOLANGCI_LINT) run
 
+# 从 cobra 命令树重新生成 docs/reference/cli.md。生成器只存在于测试代码里
+# （cmd/opspulse/cli_reference_test.go），`-update` 是它注册的测试 flag；不带 -update
+# 跑同一个测试即为「生成物与命令树逐字节一致」的断言。
+docs-gen:
+	go test ./cmd/opspulse -run TestCLIReferenceUpToDate -update
+
+# 文档对账器：cli.md 与命令树逐字节一致、相对链接与页内锚点可解析、文档里的命令与 flag
+# 都能在命令树里解析、命令树里每条命令都在手写文档里露过面。断言同样只存在于测试代码里
+# （cmd/opspulse/{cli_reference,docs_check}_test.go），所以这里只是一条 go test -run。
+# 想让对账器对着另一份语料跑（验证门禁有牙）：OPSPULSE_DOCS_CORPUS=<dir> make docs-check。
+docs-check:
+	go test ./cmd/opspulse -run 'TestCLIReferenceUpToDate|TestDocsLinksResolve|TestDocsCommandsExist|TestDocsCommandsAreDocumented' -count=1
+
+# 从 conventional commit 生成 CHANGELOG 章节——变更记录不再手写。默认区间是
+# 「最近一个 tag..HEAD」，只打印到 stdout；发版时用
+# `make changelog CHANGELOG_ARGS="--version 0.5.0 --write"` 写回 CHANGELOG.md。
+# release.yaml 用同一个脚本生成 release body（因此两处内容同源）。
+# 不接进 ci：它依赖 git 标签与提交历史，不适合当门禁。
+changelog:
+	bash scripts/gen-changelog.sh $(CHANGELOG_ARGS)
+
 # 1Password 备份/还原的离线端到端（stub op CLI）：真实 `op` 需要桌面端交互授权，
 # 无法在 CI 里驱动，这条路径是唯一能覆盖它的自动化。
 e2e:
@@ -151,7 +172,7 @@ docker:
 
 # 完整的本地门禁：与 CI 的 job 集合一一对应（见 .github/workflows/ci.yaml）。
 # cover 依赖 test，make 同一次调用不会重复执行 test。
-ci: fmt-check vet vet-cross test cover vuln lint build-cross e2e neutrality docker
+ci: fmt-check vet vet-cross test cover vuln lint docs-check build-cross e2e neutrality docker
 
 clean:
 	rm -rf bin/ dist/ $(COVER_FILE)

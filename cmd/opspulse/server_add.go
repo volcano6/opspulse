@@ -23,27 +23,26 @@ import (
 
 var addCmd = &cobra.Command{
 	Use:   "add <name> [target]",
-	Short: "Add or update a server in the inventory",
-	Long: `Add or update a managed server in servers.yaml.
+	Short: "新增或更新清单中的服务器",
+	Long: `新增或更新 servers.yaml 中的服务器。
 
-Target can be specified as positional argument [user@]host[:port] or via flags.
-Default user is root, default SSH port is 22.
+目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
+默认用户为 root，默认 SSH 端口为 22。
 
-Names are canonicalized on creation: underscores become hyphens, so "web_1" is
-stored as "web-1" and one machine cannot end up in the inventory twice under two
-names that look alike. Existing entries are never renamed.
+新增时服务器名会被规范化：下划线改写为中划线，"web_1" 保存为 "web-1"，
+避免同一台机器以两个肉眼难分的名字在清单里出现两次。已存在的条目不会被改名。
 
-Examples:
-  # Add server with silent password prompt and automatic public key injection
+示例：
+  # 静默输入密码添加服务器，并自动注入公钥
   ops add vps-1 1.2.3.4
 
-  # Add with custom user and port
+  # 指定自定义用户与端口
   ops add prod ubuntu@1.2.3.4:2222
 
-  # Add with explicit private key
+  # 指定私钥
   ops add backup 1.2.3.4 -i ~/.ssh/id_ed25519
 
-  # Add using flags
+  # 使用 flag 添加
   ops add node-1 --host 10.0.0.1 --labels env=prod,provider=racknerd`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: runServerAdd,
@@ -51,26 +50,26 @@ Examples:
 
 var serverAddCmd = &cobra.Command{
 	Use:   "add <name> [target]",
-	Short: "Add or update a server in the inventory",
+	Short: "新增或更新清单中的服务器",
 	Long:  addCmd.Long,
 	Args:  cobra.RangeArgs(1, 2),
 	RunE:  runServerAdd,
 }
 
 func setupAddFlags(cmd *cobra.Command) {
-	cmd.Flags().String("host", "", "Server IP or hostname")
-	cmd.Flags().IntP("port", "p", 22, "SSH port")
-	cmd.Flags().StringP("user", "u", "root", "SSH username")
-	cmd.Flags().StringP("identity", "i", "", "Path to private key file")
-	cmd.Flags().StringP("key", "k", "", "Path to private key file (alias for -i)")
-	cmd.Flags().StringP("jump-host", "J", "", "Jump host server name from inventory (bastion host)")
-	cmd.Flags().Bool("no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
-	cmd.Flags().Bool("skip-test", false, "Skip SSH connectivity test when adding server")
-	cmd.Flags().String("password", "", "SSH password (optional; prompted interactively if omitted and no key provided). Warning: a password passed here is recorded in plaintext in your shell history — prefer the interactive prompt or 'ops server setup-key'")
-	cmd.Flags().String("tags", "", "Comma-separated tags (e.g. prod,web)")
-	cmd.Flags().StringP("labels", "l", "", "Comma-separated key=value labels (e.g. provider=oracle,region=sg)")
-	cmd.Flags().StringP("desc", "d", "", "Server description")
-	cmd.Flags().Bool("skip-batch", false, "Exclude server from implicit batch operations (e.g. ops exec -f all, ops doctor)")
+	cmd.Flags().String("host", "", "服务器 IP 或主机名")
+	cmd.Flags().IntP("port", "p", 22, "SSH 端口")
+	cmd.Flags().StringP("user", "u", "root", "SSH 用户名")
+	cmd.Flags().StringP("identity", "i", "", "私钥文件路径")
+	cmd.Flags().StringP("key", "k", "", "私钥文件路径（-i 的别名）")
+	cmd.Flags().StringP("jump-host", "J", "", "清单中的跳板机服务器名（Bastion / Jump Host）")
+	cmd.Flags().Bool("no-copy-key", false, "私钥位于 ~/.ssh/ 之外时不提示复制到该目录")
+	cmd.Flags().Bool("skip-test", false, "添加服务器时跳过 SSH 连通性测试")
+	cmd.Flags().String("password", "", "SSH 密码（可选；未指定私钥且未提供密码时交互式输入）。注意：在此传入的密码会以明文记录在 Shell 历史中，建议改用交互式提示或 ops server setup-key")
+	cmd.Flags().String("tags", "", "逗号分隔的标签（如 prod,web）")
+	cmd.Flags().StringP("labels", "l", "", "逗号分隔的 key=value Label（如 provider=oracle,region=sg）")
+	cmd.Flags().StringP("desc", "d", "", "服务器描述")
+	cmd.Flags().Bool("skip-batch", false, "将该服务器排除在隐式批量操作之外（如 ops exec -f all、ops doctor）")
 	_ = cmd.RegisterFlagCompletionFunc("identity", completePrivateKeyPath)
 	_ = cmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 	_ = cmd.RegisterFlagCompletionFunc("jump-host", completeServerNames)

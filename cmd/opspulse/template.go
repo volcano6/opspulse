@@ -12,17 +12,17 @@ import (
 
 var templateCmd = &cobra.Command{
 	Use:   "template",
-	Short: "Manage and inspect script templates",
-	Long: `List available built-in and custom script templates or inspect their contents.
+	Short: "管理并查看脚本模板",
+	Long: `列出可用的内置与自定义脚本模板，或查看模板内容。
 
-Examples:
-  ops template list         # Show every built-in and custom template
-  ops template show base    # Print the content and metadata of one template`,
+示例：
+  ops template list         # 列出全部内置与自定义模板
+  ops template show base    # 打印某个模板的内容与元数据`,
 }
 
 var templateListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all available templates",
+	Short: "列出全部可用模板",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		loader := template.NewDefaultLoader()
 		list, err := loader.List()
@@ -69,7 +69,7 @@ var templateListCmd = &cobra.Command{
 
 var templateShowCmd = &cobra.Command{
 	Use:   "show <name>",
-	Short: "Show content and metadata of a script template",
+	Short: "查看脚本模板的内容与元数据",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]

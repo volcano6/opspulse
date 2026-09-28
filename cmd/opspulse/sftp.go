@@ -20,19 +20,18 @@ var (
 
 var sftpCmd = &cobra.Command{
 	Use:   "sftp [server] [flags]",
-	Short: "Launch a GUI SFTP client (WinSCP/Xftp/FileZilla) or CLI to manage remote files",
-	Long: `Automatically launches a graphical SFTP client connected to the target server.
+	Short: "唤起 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件",
+	Long: `自动唤起连接到目标服务器的图形化 SFTP 客户端。
 
-Supported GUI clients:
-  - Windows: WinSCP, Xftp (NetSarang), FileZilla
-  - macOS:   Cyberduck, Transmit, FileZilla
-  - Linux:   FileZilla, Nautilus, xdg-open
+支持的 GUI 客户端：
+  - Windows：WinSCP、Xftp (NetSarang)、FileZilla
+  - macOS：  Cyberduck、Transmit、FileZilla
+  - Linux：  FileZilla、Nautilus、xdg-open
 
-The client process is launched asynchronously in the background so your terminal
-remains available immediately.
+客户端以异步独立进程在后台拉起，终端立即返回可用。
 
-If no server name is provided, an interactive selector will prompt you to choose one.
-To force terminal-based OpenSSH sftp session, pass --cli.`,
+未提供服务器名时，会弹出交互式选择菜单供你挑选。
+需要强制使用终端原生 OpenSSH sftp 会话时，传入 --cli。`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		if sftpListApps {
@@ -180,10 +179,10 @@ func listAvailableSFTPApps() error {
 }
 
 func init() {
-	sftpCmd.Flags().StringVar(&sftpApp, "app", "", "Explicit GUI SFTP client name (winscp, xftp, filezilla, cyberduck) or executable path")
-	sftpCmd.Flags().StringVar(&sftpRemotePath, "path", "/", "Initial remote directory to open")
-	sftpCmd.Flags().BoolVar(&sftpCLI, "cli", false, "Use terminal OpenSSH sftp client instead of GUI")
-	sftpCmd.Flags().BoolVar(&sftpListApps, "list-apps", false, "List detected SFTP clients on the host system")
+	sftpCmd.Flags().StringVar(&sftpApp, "app", "", "显式指定 GUI SFTP 客户端名称（winscp、xftp、filezilla、cyberduck）或可执行文件路径")
+	sftpCmd.Flags().StringVar(&sftpRemotePath, "path", "/", "打开的远端初始目录")
+	sftpCmd.Flags().BoolVar(&sftpCLI, "cli", false, "使用终端原生 OpenSSH sftp 客户端而非 GUI")
+	sftpCmd.Flags().BoolVar(&sftpListApps, "list-apps", false, "列出本机检测到的 SFTP 客户端")
 	sftpCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sftpCmd)
 }

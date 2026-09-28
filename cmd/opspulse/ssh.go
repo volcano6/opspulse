@@ -24,24 +24,20 @@ import (
 
 var sshCmd = &cobra.Command{
 	Use:   "ssh [name] [flags] [-- <ssh_args...>]",
-	Short: "Establish an interactive SSH terminal session to a server",
-	Long: `Directly opens a native interactive SSH session to the specified server.
-Reads connection parameters (host, port, user, key_path) automatically from servers.yaml.
+	Short: "建立到服务器的交互式 SSH 终端会话",
+	Long: `直接打开到指定服务器的原生交互式 SSH 会话。
+自动从 servers.yaml 读取连接参数（host、port、user、key_path）。
 
-Arguments after '--' are handed to ssh(1) as options (-o, -L, -v, ...). They are
-placed ahead of the destination because that is where ssh(1) requires options to
-be, so a remote command cannot be passed this way — ssh(1) would read it as the
-host name, and ops rejects such an argument before connecting. Use --exec to run
-a command instead.
+'--' 之后的参数原样进入 ssh(1) 的选项槽位（-o、-L、-v …）。该槽位必须位于目的地址
+之前，也是 ssh(1) 唯一接受选项的位置，因此远程命令无法经 '--' 传递——ssh(1) 会把
+命令词当成主机名，ops 在建立连接前就会拒绝这类参数。需要执行命令请改用 --exec。
 
-With --exec stdout carries the command's output and nothing else (the banner goes
-to stderr) and the command's exit status becomes the exit status of ops. ops
-injects no pseudo-terminal of its own: ssh(1) keeps its native rule and allocates
-one whenever stdin is a terminal, so tmux/sudo stay usable through --exec while
-pipes and scripts get a plain non-interactive session. Pass "-- -T" to force it
-off.
+使用 --exec 时 stdout 只承载命令输出（横幅信息写 stderr），命令的退出码原样成为 ops
+的退出码。ops 不注入自己的伪终端：pty 沿用 ssh(1) 的原生规则——stdin 是终端时分配，
+因此 tmux/sudo 经 --exec 仍然可用，管道与脚本中得到纯非交互会话；需要强制关闭时追加
+"-- -T"。
 
-If no server name is provided, an interactive menu allows selecting a server to connect.`,
+未提供服务器名时，会弹出交互式菜单供选择要连接的服务器。`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(_ *cobra.Command, args []string) error {
 		var serverName string
@@ -745,8 +741,8 @@ var (
 )
 
 func init() {
-	sshCmd.Flags().BoolVar(&sshNoTitle, "no-title", false, "Do not set terminal title during SSH session")
-	sshCmd.Flags().StringVar(&sshExec, "exec", "", "Run a command on the server non-interactively and exit with its status")
+	sshCmd.Flags().BoolVar(&sshNoTitle, "no-title", false, "SSH 会话期间不改写终端标题")
+	sshCmd.Flags().StringVar(&sshExec, "exec", "", "以非交互方式在服务器上执行一条命令，并以该命令的退出码退出")
 	sshCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sshCmd)
 }

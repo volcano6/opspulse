@@ -30,20 +30,19 @@ var (
 
 var execCmd = &cobra.Command{
 	Use:   "exec [server] <command...>",
-	Short: "Execute a command on remote server(s)",
-	Long: `Execute arbitrary shell commands on a specified remote server or across multiple
-servers matched by a filter.
+	Short: "在远端服务器上执行命令",
+	Long: `在指定远端服务器上执行任意 shell 命令，或经过滤器在多台服务器上批量执行。
 
-Write flags before the server name: everything after the name is the remote
-command, so 'ops exec vps-1 df -h /' works as-is. A '--' is still accepted before
-the command, and is the way to pass a command that itself mentions --filter.
+flag 必须写在服务器名之前：服务器名之后的一切都是远程命令，因此
+'ops exec vps-1 df -h /' 可直接使用。命令之前仍可加 '--'，用于传递自身包含
+--filter 的命令。
 
-Examples:
-  ops exec vps-1 uptime                           # Single server
-  ops exec vps-1 df -h /                          # -h belongs to the remote command
-  ops exec --filter all "uptime"                  # All servers in parallel
-  ops exec --filter "provider=racknerd" "df -h"   # Filter by label or tag
-  ops exec -f all -j 10 "docker ps -q | wc -l"    # 10 at a time (default 5, 'unlimited' for none)`,
+示例：
+  ops exec vps-1 uptime                           # 单台服务器
+  ops exec vps-1 df -h /                          # -h 属于远程命令
+  ops exec --filter all "uptime"                  # 全部服务器并发执行
+  ops exec --filter "provider=racknerd" "df -h"   # 按 label 或 tag 过滤
+  ops exec -f all -j 10 "docker ps -q | wc -l"    # 每次 10 台（默认 5，'unlimited' 不设上限）`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Resolve --parallel before connecting anywhere: a typo should not cost
@@ -357,10 +356,10 @@ func hasExecFilterToken(args []string) bool {
 }
 
 func init() {
-	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "T", 60*time.Second, "Command execution timeout (0 to disable)")
-	execCmd.Flags().StringVarP(&execFilter, "filter", "f", "", "Filter target servers (e.g. 'all', 'provider=racknerd', or tag)")
-	execCmd.Flags().StringVarP(&execParallel, "parallel", "j", "", "Maximum parallel server executions (default 5, 'unlimited' for no limit)")
-	execCmd.Flags().BoolVar(&execIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in batch execution")
+	execCmd.Flags().DurationVarP(&execTimeout, "timeout", "T", 60*time.Second, "命令执行超时（传 0 禁用超时）")
+	execCmd.Flags().StringVarP(&execFilter, "filter", "f", "", "过滤目标服务器（如 'all'、'provider=racknerd' 或 tag）")
+	execCmd.Flags().StringVarP(&execParallel, "parallel", "j", "", "服务器并发执行上限（默认 5，'unlimited' 不设上限）")
+	execCmd.Flags().BoolVar(&execIncludeSkipped, "include-skipped", false, "批量执行时包含配置了 skip_batch 的服务器")
 	execCmd.ValidArgsFunction = completeExecArgs
 	// Everything after the server name is the remote command, so a command may
 	// take arguments that start with '-' without an intervening '--'.

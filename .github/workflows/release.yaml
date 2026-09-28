@@ -106,18 +106,26 @@ jobs:
           cd dist
           sha256sum * > checksums.txt
 
+      - name: Compose release notes
+        run: |
+          {
+            printf '## 安装\n\n'
+            printf '从本页附件下载对应平台的压缩包（linux / darwin / windows × amd64 / arm64），\n'
+            printf '按同页 `checksums.txt` 校验后解压即用；具体步骤见 README 的「安装 (Install)」章节。\n\n'
+            # 变更记录与 CHANGELOG.md 同源：都由 conventional commit 推导。
+            # 不用 generate_release_notes —— 它只列 PR，直推 main 的提交会整段漏掉。
+            if [ "${GITHUB_REF_NAME}" = v* ]; then
+              bash scripts/gen-changelog.sh --version "${GITHUB_REF_NAME#v}"
+            else
+              bash scripts/gen-changelog.sh
+            fi
+          } > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          # Release notes 手写：变更记录集中在 CHANGELOG.md，自动生成的 notes 只会
-          # 罗列 commit 标题，与 CHANGELOG 重复且格式不可控。
-          body: |
-            ## 安装
-
-            从本页附件下载对应平台的压缩包（linux / darwin / windows × amd64 / arm64），
-            按同页 `checksums.txt` 校验后解压即用；具体步骤见 README 的「📦 安装」章节。
-
-            完整变更记录见 [CHANGELOG.md](https://github.com/volcano6/opspulse/blob/main/CHANGELOG.md)。
+          body_path: ${{ runner.temp }}/release-notes.md
           draft: false
           prerelease: false

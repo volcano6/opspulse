@@ -111,60 +111,53 @@ var onePasswordFilter string
 var onePasswordCmd = &cobra.Command{
 	Use:     "1p",
 	Aliases: []string{"1password", "onepassword"},
-	Short:   "Back up local SSH credentials to 1Password, or restore them onto a new machine",
-	Long: `1Password is a backup and cross-machine sync target, not a runtime dependency.
+	Short:   "把本机 SSH 凭据备份到 1Password，或还原到新机器",
+	Long: `1Password 是备份与跨机器同步的目标，不是运行时依赖。
 
-  ops 1p backup             Upload every local key/password and the whole servers.yaml
-  ops 1p restore            Write them back to local disk (and restore servers.yaml)
-  ops 1p status             Show which servers have local credentials
-  ops 1p config             Show or change the remembered vault and account
-  ops 1p doctor             Check the whole path end to end, changing nothing
+  ops 1p backup             把本机全部密钥/密码与整份 servers.yaml 上传
+  ops 1p restore            把它们写回本地磁盘（并还原 servers.yaml）
+  ops 1p status             查看哪些服务器有本地凭据
+  ops 1p config             查看或修改记住的保险库与账号
+  ops 1p doctor             端到端自检整条链路，不改动任何东西
 
-Credentials normally live on local disk: servers.yaml holds a key path or a
-plaintext password, and 'ops ssh' / 'ops exec' / 'ops cp' read them directly with
-no 1Password round trip. Nothing here runs during a normal connection, which is
-what keeps those commands from prompting.
+凭据平时就放在本地磁盘：servers.yaml 里存的是密钥路径或明文密码，
+'ops ssh' / 'ops exec' / 'ops cp' 直接读取，不与 1Password 发生任何往返。
+正常连接过程中不会运行这里的任何东西，这正是那些命令从不弹授权框的原因。
 
-Keys are stored in Login items titled opspulse_<server>_key, inside a custom
-concealed field; passwords go into Login items titled opspulse_<server>_password.
-servers.yaml itself is backed up as one shared item, opspulse_inventory.
+密钥存放在标题为 opspulse_<server>_key 的 Login 条目里，位于一个自定义的
+concealed 字段中；密码存放在标题为 opspulse_<server>_password 的 Login 条目里。
+servers.yaml 本身作为共享条目 opspulse_inventory 备份。
 
-You normally do not have to name a vault at all: OpsPulse uses the one you
-remembered with 'ops 1p config --vault <name>', then $OP_VAULT, and otherwise the
-only vault the account can see. The account works the same way, with $OP_ACCOUNT
-taking precedence over the remembered value.`,
+通常你完全不必指定保险库：OpsPulse 用你通过 'ops 1p config --vault <name>'
+记住的那个，其次是 $OP_VAULT，否则就是该账号唯一可见的保险库。
+账号同理，$OP_ACCOUNT 优先于记住的值。`,
 }
 
 var onePasswordBackupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "Upload every local credential and the whole servers.yaml to 1Password",
-	Long: `Back up this machine's server list and every private key it holds to 1Password.
+	Short: "把本机全部凭据与整份 servers.yaml 上传到 1Password",
+	Long: `把本机的服务器清单与它持有的每一把私钥备份到 1Password。
 
-The whole thing travels in one Secure Note named after this machine
-(opspulse_inventory_<hostname>), which is what keeps a backup down to three op
-calls rather than one per server. It is deliberately unconditional: no server
-selection, no skip list.
+整台机器装在一个以本机名命名的 Secure Note 里（opspulse_inventory_<hostname>），
+这正是让备份只花三次 op 调用、而不是每台服务器一次的原因。它刻意是无条件的：
+不做服务器选择，也没有跳过列表。
 
-The item is read before it is written, and a private key that can no longer be
-read on this machine is carried over from the previous backup instead of being
-dropped - that copy is the only one left once the local file is gone. A read that
-fails for any other reason stops the backup rather than overwriting blind.
+条目先读后写，本机已经读不出来的私钥会从上一份备份里沿用，而不是被丢掉——
+本地文件没了之后，那份副本就是唯一的了。因其他原因导致的读取失败会中止备份，
+而不是盲目覆盖。
 
-servers.yaml is NOT rewritten. Local disk stays the source of truth, so a backup
-never changes how 'ops ssh' connects and never turns a working server into one
-that depends on 1Password being unlocked.
+servers.yaml 不会被改写。本地磁盘始终是唯一真相源，所以备份绝不会改变
+'ops ssh' 的连接方式，也绝不会把一台本来能连的服务器变成依赖 1Password 解锁的服务器。
 
   ops 1p backup
   ops 1p backup --vault Private
 
-A server still holding an 'op://' reference is refused outright: uploading it
-would push a stale reference into the backup. Run 'ops 1p restore' to migrate it
-to a local credential first.
+仍然持有 'op://' 引用的服务器会被直接拒绝：上传它等于把一条陈旧引用推进备份。
+先跑 'ops 1p restore' 把它迁移成本地凭据。
 
-Each machine backs up into its own item, so two machines never overwrite each
-other, and a restore unions them. Removing a server from a backup is therefore
-done by hand: delete it locally, then back up again - the other machines keep it
-until they back up too.`,
+每台机器备份到各自的条目，所以两台机器永远不会互相覆盖，还原时再把它们并起来。
+因此从备份里删除一台服务器只能手工做：先在本地删掉，再备份一次——
+其他机器会一直保留它，直到它们也备份一次。`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runBackupToOnePassword(cmd.Context())
@@ -173,33 +166,28 @@ until they back up too.`,
 
 var onePasswordRestoreCmd = &cobra.Command{
 	Use:   "restore [server...]",
-	Short: "Write 1Password-hosted credentials back onto local disk",
-	Long: `Restore credentials from 1Password onto this machine.
+	Short: "把 1Password 里的凭据写回本地磁盘",
+	Long: `把 1Password 里的凭据还原到本机。
 
-Without arguments this is the whole off-ramp: servers.yaml is restored from the
-per-machine backup items first, then every server's key is written to
-~/.ssh/opspulse_<server> and every password into servers.yaml. That is all a new
-machine needs after installing the 1Password CLI.
+不带参数时这是完整的脱困通道：先从各机器的备份条目还原 servers.yaml，
+再把每台服务器的密钥写到 ~/.ssh/opspulse_<server>、把每个密码写进 servers.yaml。
+一台新机器装好 1Password CLI 后，需要的就是这些。
 
-  ops 1p restore               # the server list and every credential
-  ops 1p restore web db-01     # only these servers' credentials
-  ops 1p restore --yes         # unattended
+  ops 1p restore               # 清单与全部凭据
+  ops 1p restore web db-01     # 只还原这几台服务器的凭据
+  ops 1p restore --yes         # 无人值守
 
-With arguments only the named servers' credentials are restored, and servers.yaml
-is left alone. A name that is not in servers.yaml is an error rather than a
-silent skip, since the usual cause is restoring credentials before the list.
+带参数时只还原点名服务器的凭据，servers.yaml 保持不动。名字不在 servers.yaml 里
+是报错而不是静默跳过，因为最常见的成因就是清单还没还原就先还原凭据。
 
-Because a password can only come back as plaintext, OpsPulse asks for
-confirmation before it writes anything, whenever the restore would write one. In
-a non-interactive shell the command refuses instead of hanging, unless --yes says
-the answer up front.
+密码只能以明文形式回来，所以只要本次还原会写入密码，OpsPulse 在写任何东西之前
+都会先要求确认。在非交互 shell 里命令会直接拒绝而不是挂住，除非 --yes 事先给出答案。
 
-A local key file is only replaced when it holds a different key. The comparison
-is by public key, so a key that 1Password returns in another format is recognised
-as the same key rather than treated as a conflict; --force overrides.
+本地密钥文件只在持有另一把密钥时才会被替换。比对按公钥进行，所以 1Password
+以另一种格式返回的密钥会被认作同一把密钥，而不是被当成冲突；--force 可强制覆盖。
 
-Servers whose servers.yaml still holds 'op://' references are migrated to local
-credentials as part of the restore. That compatibility path is temporary.`,
+servers.yaml 里仍然持有 'op://' 引用的服务器会在还原过程中迁移为本地凭据。
+这条兼容路径是临时的。`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRestoreFromOnePassword(cmd.Context(), args)
@@ -210,12 +198,11 @@ var onePasswordStatusRemote bool
 
 var onePasswordStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show which servers have local credentials, and which are backed up",
-	Long: `Show where each server's credentials live.
+	Short: "查看哪些服务器有本地凭据、哪些已备份",
+	Long: `查看每台服务器的凭据放在哪儿。
 
-Offline by default: it only reads servers.yaml, so it never contacts 1Password
-and never prompts. Pass --remote to also ask the vault which servers have a
-backup, which does require authentication.`,
+默认离线：只读 servers.yaml，因此从不联系 1Password、从不弹授权框。
+传 --remote 会额外查询保险库，看哪些服务器有备份，这一步需要授权。`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runOnePasswordStatus(cmd.Context())
 	},
@@ -230,15 +217,14 @@ var (
 
 var onePasswordConfigCmd = &cobra.Command{
 	Use:   "config",
-	Short: "Show or change the remembered 1Password vault and account",
-	Long: `Show or change the 1Password defaults OpsPulse remembers.
+	Short: "查看或修改记住的 1Password 保险库与账号",
+	Long: `查看或修改 OpsPulse 记住的 1Password 默认值。
 
-Without flags it prints the effective target plus the accounts and vaults the
-current account can see. With flags it records a default so that 'ops 1p backup'
-stops asking for --vault/--account every time.
+不带选项时打印当前生效的目标，以及当前账号能看到的账号与保险库。
+带选项时记录一个默认值，让 'ops 1p backup' 不再每次都要求 --vault/--account。
 
-Pass --offline to read or change the remembered defaults without contacting the
-CLI, which is what you want when the vault cannot be unlocked right now.`,
+传 --offline 可以在不联系 CLI 的情况下读取或修改记住的默认值，
+保险库暂时解不开锁时正需要它。`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runOnePasswordConfig(cmd.Context())
@@ -420,24 +406,24 @@ func rememberOnePasswordSetting(field, value string) {
 }
 
 func init() {
-	onePasswordCmd.PersistentFlags().StringVar(&onePasswordAccount, "account", "", "1Password account (sign-in address or ID); remembered for future runs")
+	onePasswordCmd.PersistentFlags().StringVar(&onePasswordAccount, "account", "", "1Password 账号（登录地址或 ID）；会被记住供后续运行使用")
 
-	onePasswordBackupCmd.Flags().StringVar(&onePasswordVault, "vault", "", "Vault to back up into (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
+	onePasswordBackupCmd.Flags().StringVar(&onePasswordVault, "vault", "", "要备份到的保险库（默认：记住的设置，其次 $OP_VAULT，最后是唯一可访问的保险库）")
 
-	onePasswordRestoreCmd.Flags().StringVar(&onePasswordVault, "vault", "", "Vault to restore from (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
-	onePasswordRestoreCmd.Flags().BoolVarP(&onePasswordRestoreYes, "yes", "y", false, "Write plaintext passwords into servers.yaml without asking for confirmation")
-	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordRestoreForce, "force", false, "Overwrite a local key file even when it holds a different key")
-	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferLocal, "prefer-local", false, "Resolve every inventory conflict in favour of this machine's servers.yaml")
-	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferRemote, "prefer-remote", false, "Resolve every inventory conflict in favour of the 1Password backup")
+	onePasswordRestoreCmd.Flags().StringVar(&onePasswordVault, "vault", "", "要从中还原的保险库（默认：记住的设置，其次 $OP_VAULT，最后是唯一可访问的保险库）")
+	onePasswordRestoreCmd.Flags().BoolVarP(&onePasswordRestoreYes, "yes", "y", false, "不询问确认就把明文密码写入 servers.yaml")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordRestoreForce, "force", false, "即使本地密钥文件持有另一把密钥也强制覆盖")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferLocal, "prefer-local", false, "所有清单冲突都以本机的 servers.yaml 为准")
+	onePasswordRestoreCmd.Flags().BoolVar(&onePasswordPreferRemote, "prefer-remote", false, "所有清单冲突都以 1Password 备份为准")
 	onePasswordRestoreCmd.ValidArgsFunction = completeServerNames
 
-	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
-	onePasswordStatusCmd.Flags().BoolVar(&onePasswordStatusRemote, "remote", false, "Also ask 1Password which servers have a backup (requires authentication)")
+	onePasswordStatusCmd.Flags().StringVarP(&onePasswordFilter, "filter", "f", "", "按 label（key=val）、tag 或名称筛选服务器")
+	onePasswordStatusCmd.Flags().BoolVar(&onePasswordStatusRemote, "remote", false, "额外查询 1Password 里哪些服务器有备份（需要授权）")
 
-	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigVault, "vault", "", "Remember this vault as the default target")
-	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigAccount, "account", "", "Remember this account as the default")
-	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigUnset, "unset", false, "Forget the remembered vault and account")
-	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigOffline, "offline", false, "Only read or write the local config; do not contact the 1Password CLI")
+	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigVault, "vault", "", "把这个保险库记为默认目标")
+	onePasswordConfigCmd.Flags().StringVar(&onePasswordConfigAccount, "account", "", "把这个账号记为默认值")
+	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigUnset, "unset", false, "忘掉记住的保险库与账号")
+	onePasswordConfigCmd.Flags().BoolVar(&onePasswordConfigOffline, "offline", false, "只读写本地配置，不联系 1Password CLI")
 
 	onePasswordCmd.AddCommand(
 		onePasswordBackupCmd,

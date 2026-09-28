@@ -22,15 +22,15 @@ import (
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
-	Short: "Manage server inventory",
-	Long:  "Add, list, inspect, test connectivity, and remove managed servers from servers.yaml.",
+	Short: "管理服务器清单",
+	Long:  "新增、列出、查看、测试连通性与删除 servers.yaml 中托管的服务器。",
 }
 
 var listFilter string
 
 var serverListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all configured servers",
+	Short: "列出所有已配置的服务器",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := server.NewDefaultStore()
 		servers, err := store.List()
@@ -115,7 +115,7 @@ func renderServerTable(w io.Writer, servers []server.Server) error {
 
 var serverInfoCmd = &cobra.Command{
 	Use:   "info <name>",
-	Short: "Inspect system OS, hardware resources, and Docker status of a server",
+	Short: "采集服务器的系统、硬件与 Docker 状态",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
@@ -162,7 +162,7 @@ var serverInfoCmd = &cobra.Command{
 
 var serverTestCmd = &cobra.Command{
 	Use:   "test <name>",
-	Short: "Test SSH connectivity to a server",
+	Short: "测试服务器的 SSH 连通性",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
@@ -206,20 +206,19 @@ var (
 var serverRemoveCmd = &cobra.Command{
 	Use:     "remove <name>",
 	Aliases: []string{"rm", "delete"},
-	Short:   "Remove a server from the inventory",
-	Long: `Remove a server entry from servers.yaml.
+	Short:   "从服务器清单中删除服务器",
+	Long: `从 servers.yaml 中删除一条服务器条目。
 
-Removing an entry also deletes the private key file OpsPulse manages for it,
-unless --keep-key is given or another server still references the same key.
+删除条目的同时还会删除 OpsPulse 为该机托管的私钥文件，除非指定 --keep-key，
+或仍有其他服务器引用同一把密钥。
 
-Backup jobs that still reference the server are listed as a warning and, in an
-interactive shell, confirmed separately: such a job keeps working from its own
-inventory until its next run, so the reference never blocks the removal.
+仍有备份作业引用该服务器时，会先打印一条警告，并在交互式 shell 中追加一次确认：
+该作业会继续使用自己的清单运行到下次执行，因此引用永远不会挡住删除。
 
-Examples:
-  ops server remove old-vps             # Confirm interactively, then remove
-  ops server remove old-vps --yes       # Skip the confirmation prompt
-  ops server remove old-vps --keep-key  # Leave the managed private key on disk`,
+示例：
+  ops server remove old-vps             # 交互确认后删除
+  ops server remove old-vps --yes       # 跳过确认提示
+  ops server remove old-vps --keep-key  # 保留磁盘上托管的私钥`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		name := args[0]
@@ -466,10 +465,10 @@ func formatTagsAndLabels(s server.Server) string {
 }
 
 func init() {
-	serverRemoveCmd.Flags().BoolVar(&removeKeepKey, "keep-key", false, "Do not delete the managed private key file from disk")
-	serverRemoveCmd.Flags().BoolVarP(&removeYes, "yes", "y", false, "Skip the removal confirmation prompt")
+	serverRemoveCmd.Flags().BoolVar(&removeKeepKey, "keep-key", false, "不删除磁盘上由 OpsPulse 托管的私钥文件")
+	serverRemoveCmd.Flags().BoolVarP(&removeYes, "yes", "y", false, "跳过删除确认提示")
 
-	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
+	serverListCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "按 Label（key=val）、Tag 或名称筛选服务器")
 
 	serverInfoCmd.ValidArgsFunction = completeServerNames
 	serverTestCmd.ValidArgsFunction = completeServerNames
@@ -480,7 +479,7 @@ func init() {
 	serverCmd.AddCommand(serverTestCmd)
 	serverCmd.AddCommand(serverRemoveCmd)
 
-	lsCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "Filter servers by key=value, tag, or name")
+	lsCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "按 Label（key=value）、Tag 或名称筛选服务器")
 
 	testCmd.ValidArgsFunction = completeServerNames
 	infoCmd.ValidArgsFunction = completeServerNames
@@ -493,7 +492,7 @@ func init() {
 
 var lsCmd = &cobra.Command{
 	Use:   "ls",
-	Short: "List all configured servers (shortcut for 'ops server list')",
+	Short: "列出所有已配置的服务器（等价于 ops server list）",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return serverListCmd.RunE(cmd, args)
 	},
@@ -501,7 +500,7 @@ var lsCmd = &cobra.Command{
 
 var testCmd = &cobra.Command{
 	Use:   "test <name>",
-	Short: "Test SSH connectivity to a server (shortcut for 'ops server test')",
+	Short: "测试服务器的 SSH 连通性（等价于 ops server test）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return serverTestCmd.RunE(cmd, args)
@@ -510,7 +509,7 @@ var testCmd = &cobra.Command{
 
 var infoCmd = &cobra.Command{
 	Use:   "info <name>",
-	Short: "Inspect system OS, hardware resources, and Docker status of a server (shortcut for 'ops server info')",
+	Short: "采集服务器的系统、硬件与 Docker 状态（等价于 ops server info）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return serverInfoCmd.RunE(cmd, args)

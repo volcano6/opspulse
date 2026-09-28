@@ -28,14 +28,14 @@ var (
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor [flags]",
-	Short: "Inspect cluster health (SSH latency, disk usage, Docker status)",
-	Long: `Runs a non-intrusive health inspection across configured servers.
-Checks SSH connectivity, root filesystem disk utilization, and Docker daemon status.
+	Short: "巡检集群健康（SSH 延迟、磁盘占用、Docker 状态）",
+	Long: `对清单中的服务器执行非侵入式健康巡检。
+检查 SSH 连通性、根分区磁盘占用与 Docker 守护进程状态。
 
-Examples:
-  ops doctor                       # Inspect all servers
-  ops doctor -f "provider=oracle"  # Inspect specific cluster
-  ops doctor -j 10                 # 10 at a time (default 5, 'unlimited' for none)`,
+示例：
+  ops doctor                       # 巡检全部服务器
+  ops doctor -f "provider=oracle"  # 巡检指定集群
+  ops doctor -j 10                 # 每次 10 台（默认 5，'unlimited' 不设上限）`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		// Resolve --parallel before listing servers so a typo fails immediately.
 		parallel, err := cliutil.ParseParallelism(doctorParallel, cmd.Flags().Changed("parallel"), os.Stderr)
@@ -181,10 +181,10 @@ func renderDoctorTable(w io.Writer, results []doctor.ServerHealth) error {
 }
 
 func init() {
-	doctorCmd.Flags().StringVarP(&doctorFilter, "filter", "f", "all", "Filter target servers (e.g. 'all', 'provider=oracle', tag)")
-	doctorCmd.Flags().StringVarP(&doctorParallel, "parallel", "j", "", "Maximum concurrent server probes (default 5, 'unlimited' for no limit)")
-	doctorCmd.Flags().DurationVarP(&doctorTimeout, "timeout", "T", 15*time.Second, "Per-server probe timeout")
-	doctorCmd.Flags().BoolVar(&doctorIncludeSkipped, "include-skipped", false, "Include servers configured with skip_batch in health checks")
+	doctorCmd.Flags().StringVarP(&doctorFilter, "filter", "f", "all", "过滤目标服务器（如 'all'、'provider=oracle' 或 tag）")
+	doctorCmd.Flags().StringVarP(&doctorParallel, "parallel", "j", "", "服务器并发探测上限（默认 5，'unlimited' 不设上限）")
+	doctorCmd.Flags().DurationVarP(&doctorTimeout, "timeout", "T", 15*time.Second, "单台服务器探测超时")
+	doctorCmd.Flags().BoolVar(&doctorIncludeSkipped, "include-skipped", false, "健康巡检时包含配置了 skip_batch 的服务器")
 
 	rootCmd.AddCommand(doctorCmd)
 }

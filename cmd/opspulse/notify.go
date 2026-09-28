@@ -12,20 +12,20 @@ import (
 
 var notifyCmd = &cobra.Command{
 	Use:   "notify",
-	Short: "Manage and test alert notification channels",
-	Long: `Inspect configured webhook notification channels and verify alert delivery.
+	Short: "管理与测试告警通知渠道",
+	Long: `查看已配置的 Webhook 通知渠道并验证告警投递。
 
-Configuration file: $XDG_CONFIG_HOME/opspulse/notifications.yaml
+配置文件：$XDG_CONFIG_HOME/opspulse/notifications.yaml
 
-Examples:
-  ops notify list                 # Show every configured channel
-  ops notify test                 # Send a test event to all channels
-  ops notify test ops-alerts      # Send a test event to one channel`,
+示例：
+  ops notify list                 # 列出全部已配置渠道
+  ops notify test                 # 向全部渠道发送测试事件
+  ops notify test ops-alerts      # 仅向指定渠道发送测试事件`,
 }
 
 var notifyListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all configured notification channels",
+	Short: "列出全部已配置通知渠道",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := notify.NewDefaultStore()
 		channels, err := store.List()
@@ -53,9 +53,9 @@ var notifyListCmd = &cobra.Command{
 
 var notifyTestCmd = &cobra.Command{
 	Use:   "test [channel-name]",
-	Short: "Send a test notification to verify webhook delivery",
-	Long: `Send a test event payload to verify delivery to configured notification channels.
-If [channel-name] is provided, only that channel is tested. Otherwise, all channels are tested.`,
+	Short: "发送测试通知验证 Webhook 投递",
+	Long: `向已配置的通知渠道发送一条测试事件载荷，验证投递是否正常。
+提供 [channel-name] 时只测试该渠道，否则测试全部渠道。`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		store := notify.NewDefaultStore()

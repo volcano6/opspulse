@@ -20,9 +20,9 @@ import (
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
-	Short: "Restore data from restic backup snapshots",
-	Long: `Execute restore operations from restic backup snapshots with support for
-cross-server migration, path remapping, single-asset targeted restore, and dry-run preview.`,
+	Short: "从 restic 备份快照还原数据",
+	Long: `执行基于 restic 备份快照的还原操作，支持跨机迁移、路径重映射、
+单资产精准还原与 dry-run 预演。`,
 }
 
 var (
@@ -38,23 +38,23 @@ var (
 
 var restoreRunCmd = &cobra.Command{
 	Use:   "run <job-name>",
-	Short: "Execute a restore operation from a backup snapshot",
-	Long: `Restore files from a restic backup snapshot to the original or a different server.
+	Short: "从备份快照执行还原操作",
+	Long: `将 restic 备份快照中的文件还原到原始服务器或另一台服务器。
 
-Examples:
-  # Restore latest snapshot to original server and paths
+示例：
+  # 还原最新快照到原始服务器和原始路径
   ops restore run blog-backup
 
-  # Restore a specific snapshot
+  # 还原指定快照
   ops restore run blog-backup --snapshot abc12345
 
-  # Cross-server migration: restore to a new VPS
+  # 跨机迁移：还原到新 VPS
   ops restore run blog-backup --target-server new-vps --target-path /data/blog
 
-  # Targeted single-asset restore
+  # 单资产精准还原
   ops restore run blog-backup --asset blog-mysql
 
-  # Preview files without actually restoring
+  # 预演文件列表，不真正还原
   ops restore run blog-backup --dry-run`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -117,9 +117,9 @@ var restoreHistoryLimit int
 
 var restoreHistoryCmd = &cobra.Command{
 	Use:   "history [job-name]",
-	Short: "Show historical restore execution records",
-	Long: `Display the history of restore operations, optionally filtered by backup job name.
-Shows status, snapshot ID, source/target servers, duration, and timestamps.`,
+	Short: "查看还原执行历史记录",
+	Long: `显示还原操作的历史记录，可按备份作业名筛选。
+展示状态、快照 ID、源/目标服务器、耗时与时间戳。`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		var jobName string
@@ -175,16 +175,16 @@ Shows status, snapshot ID, source/target servers, duration, and timestamps.`,
 }
 
 func init() {
-	restoreRunCmd.Flags().StringVar(&restoreRunSnapshot, "snapshot", "latest", "Snapshot ID to restore from ('latest' for most recent)")
-	restoreRunCmd.Flags().StringVar(&restoreRunTargetServer, "target-server", "", "Target server for cross-server migration (default: same as source)")
-	restoreRunCmd.Flags().StringVar(&restoreRunTargetPath, "target-path", "", "Override restore target path for path remapping (default: original paths)")
-	restoreRunCmd.Flags().StringVar(&restoreRunAssetID, "asset", "", "Restore a specific asset only (by asset ID)")
-	restoreRunCmd.Flags().BoolVar(&restoreRunDryRun, "dry-run", false, "Preview files without actually restoring")
-	restoreRunCmd.Flags().BoolVar(&restoreRunNoStart, "no-start", false, "Do not automatically start containers or import database after restore")
-	restoreRunCmd.Flags().StringVar(&restoreRunAs, "as", "", "Rename container/service project name on target server")
-	restoreRunCmd.Flags().BoolVarP(&restoreRunYes, "yes", "y", false, "Confirm restore execution without interactive confirmation prompt")
+	restoreRunCmd.Flags().StringVar(&restoreRunSnapshot, "snapshot", "latest", "用于还原的快照 ID（'latest' 表示最新快照）")
+	restoreRunCmd.Flags().StringVar(&restoreRunTargetServer, "target-server", "", "跨机迁移的目标服务器（默认与源相同）")
+	restoreRunCmd.Flags().StringVar(&restoreRunTargetPath, "target-path", "", "覆盖还原目标路径以实现路径重映射（默认使用快照中的原始路径）")
+	restoreRunCmd.Flags().StringVar(&restoreRunAssetID, "asset", "", "仅还原指定资产（按资产 ID）")
+	restoreRunCmd.Flags().BoolVar(&restoreRunDryRun, "dry-run", false, "预演模式：仅列出文件，不执行实际还原")
+	restoreRunCmd.Flags().BoolVar(&restoreRunNoStart, "no-start", false, "还原后不自动启动：仅解压文件，不拉起容器也不灌库")
+	restoreRunCmd.Flags().StringVar(&restoreRunAs, "as", "", "在目标服务器上重命名容器/服务项目名")
+	restoreRunCmd.Flags().BoolVarP(&restoreRunYes, "yes", "y", false, "跳过执行前的交互式确认")
 
-	restoreHistoryCmd.Flags().IntVarP(&restoreHistoryLimit, "limit", "n", 20, "Maximum number of history records to show")
+	restoreHistoryCmd.Flags().IntVarP(&restoreHistoryLimit, "limit", "n", 20, "最多显示的历史记录条数")
 
 	restoreRunCmd.ValidArgsFunction = completeBackupJobNames
 	restoreHistoryCmd.ValidArgsFunction = completeBackupJobNames

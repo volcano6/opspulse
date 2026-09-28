@@ -13,16 +13,16 @@ import (
 
 var assetCmd = &cobra.Command{
 	Use:   "asset",
-	Short: "Manage structured business assets",
-	Long: `Define, inspect, and manage stateful infrastructure assets (Docker Compose projects,
-Volumes, Databases, Directories, Files) with stable IDs for backup and restore operations.
+	Short: "管理业务资产",
+	Long: `定义、查看并管理有状态的业务资产（Docker Compose 项目、Volume、数据库、目录、文件），
+每个资产一个稳定 ID，备份与跨机还原时按 ID 引用。
 
-Assets are stored in $XDG_CONFIG_HOME/opspulse/assets.yaml.`,
+资产记录保存在 $XDG_CONFIG_HOME/opspulse/assets.yaml。`,
 }
 
 var assetListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all configured assets",
+	Short: "列出全部已配置资产",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := asset.NewDefaultStore()
 		assets, err := store.List()
@@ -67,12 +67,12 @@ var (
 
 var assetAddCmd = &cobra.Command{
 	Use:   "add <id>",
-	Short: "Add or update a business asset",
-	Long: `Register a new stateful asset with a stable ID for backup and restore operations.
+	Short: "注册或更新业务资产",
+	Long: `注册一个有状态的业务资产，并分配一个稳定 ID，供备份与还原按 ID 引用。
 
-Supported types: docker_compose, volume, database, directory, file
+支持的类型：docker_compose、volume、database、directory、file
 
-Examples:
+示例：
   ops asset add blog-compose --type docker_compose --source /opt/blog --desc "Ghost blog"
   ops asset add blog-mysql --type database --source /var/lib/mysql --engine mysql --container blog-db`,
 	Args: cobra.ExactArgs(1),
@@ -123,7 +123,7 @@ Examples:
 
 var assetShowCmd = &cobra.Command{
 	Use:   "show <id>",
-	Short: "Show detailed information for a specific asset",
+	Short: "查看指定资产的详细信息",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		id := args[0]
@@ -157,14 +157,13 @@ var assetShowCmd = &cobra.Command{
 var assetRemoveCmd = &cobra.Command{
 	Use:     "remove <id>",
 	Aliases: []string{"rm", "delete"},
-	Short:   "Remove an asset from configuration",
-	Long: `Remove an asset entry from assets.yaml.
+	Short:   "从配置中删除资产",
+	Long: `从 assets.yaml 中删除一条资产记录。
 
-Backup jobs that still list the asset are reported as a warning; such a job
-fails at its next run, which is not a reason to keep a broken asset entry.
-The removal is never blocked and never prompts.
+若仍有备份作业在 assets: 里引用该资产，会打印一条警告；那个作业会在下次执行时失败，
+但这不是保留一条失效资产记录的理由。删除从不阻塞，也从不追问。
 
-Examples:
+示例：
   ops asset remove old-mysql`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
@@ -205,21 +204,21 @@ func completeAssetIDs(_ *cobra.Command, args []string, _ string) ([]string, cobr
 
 func completeAssetTypes(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 	return []string{
-		"docker_compose\tDocker Compose project directory",
-		"volume\tDocker named volume or storage mount",
-		"database\tDatabase logical backup (MySQL, PostgreSQL)",
-		"directory\tGeneric filesystem directory",
-		"file\tIndividual file or file group",
+		"docker_compose\tDocker Compose 项目目录",
+		"volume\tDocker 命名数据卷或挂载数据目录",
+		"database\t数据库逻辑导出 Dump（MySQL、PostgreSQL）",
+		"directory\t通用配置或静态文件目录",
+		"file\t单个关键文件或证书文件组",
 	}, cobra.ShellCompDirectiveNoFileComp
 }
 
 func init() {
-	assetAddCmd.Flags().StringVar(&assetAddType, "type", "", "Asset type (docker_compose, volume, database, directory, file)")
-	assetAddCmd.Flags().StringVar(&assetAddSource, "source", "", "Source path on the server (required)")
-	assetAddCmd.Flags().StringVar(&assetAddEngine, "engine", "", "Database engine (mysql, postgres) — only for 'database' type")
-	assetAddCmd.Flags().StringVar(&assetAddContainer, "container", "", "Docker container name — only for 'database' type")
-	assetAddCmd.Flags().StringVar(&assetAddExcludes, "excludes", "", "Comma-separated glob exclude patterns")
-	assetAddCmd.Flags().StringVarP(&assetAddDesc, "desc", "d", "", "Asset description")
+	assetAddCmd.Flags().StringVar(&assetAddType, "type", "", "资产类型（docker_compose、volume、database、directory、file）")
+	assetAddCmd.Flags().StringVar(&assetAddSource, "source", "", "服务器上的来源路径（必填）")
+	assetAddCmd.Flags().StringVar(&assetAddEngine, "engine", "", "数据库引擎（mysql、postgres）——仅对 database 类型有效")
+	assetAddCmd.Flags().StringVar(&assetAddContainer, "container", "", "Docker 容器名——仅对 database 类型有效")
+	assetAddCmd.Flags().StringVar(&assetAddExcludes, "excludes", "", "逗号分隔的 glob 排除规则")
+	assetAddCmd.Flags().StringVarP(&assetAddDesc, "desc", "d", "", "资产描述")
 
 	_ = assetAddCmd.RegisterFlagCompletionFunc("type", completeAssetTypes)
 

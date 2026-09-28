@@ -21,14 +21,14 @@ import (
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "Manage and execute backup jobs",
-	Long: `Define, inspect, execute, and monitor restic backup jobs across servers.
-Records structured metrics, snapshot IDs, and historical logs in SQLite.`,
+	Short: "管理与执行备份作业",
+	Long: `定义、查看、执行并监控跨服务器的 restic 备份作业。
+每次备份的结构化指标、快照 ID 与历史日志持久化记录到 SQLite。`,
 }
 
 var backupListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all configured backup jobs",
+	Short: "列出全部已配置备份作业",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := backup.NewDefaultStore()
 		jobs, err := store.List()
@@ -90,14 +90,14 @@ var (
 
 var backupRunCmd = &cobra.Command{
 	Use:   "run <job1,job2... | all | server:container>",
-	Short: "Execute one or more backup jobs or back up a container directly",
-	Long: `Execute one or more configured backup jobs, or back up a single container directly.
+	Short: "执行备份作业或直接备份容器",
+	Long: `执行一个或多个已配置的备份作业，或直接备份单个容器。
 
-Examples:
-  ops backup run blog-backup                # Run one job
-  ops backup run blog-backup,db-backup -j 2 # Run several jobs, two at a time
-  ops backup run all -j unlimited           # Drop the default concurrency limit
-  ops backup run vps-1:blog-db --as blog    # Back up container blog-db on vps-1 as job "blog"`,
+示例：
+  ops backup run blog-backup                # 执行单个作业
+  ops backup run blog-backup,db-backup -j 2 # 并发执行多个作业，每次两个
+  ops backup run all -j unlimited           # 取消默认并发上限
+  ops backup run vps-1:blog-db --as blog    # 备份 vps-1 上的容器 blog-db，作业名为 "blog"`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Resolve --parallel up front so a typo fails before any connection,
@@ -241,7 +241,7 @@ Examples:
 
 var backupStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show the latest status of all configured backup jobs",
+	Short: "查看全部备份作业的最新状态",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		store := backup.NewDefaultStore()
 		jobs, err := store.List()
@@ -303,7 +303,7 @@ var historyLimit int
 
 var backupHistoryCmd = &cobra.Command{
 	Use:   "history <job-name>",
-	Short: "Show historical execution runs for a specific backup job",
+	Short: "查看指定备份作业的历史执行记录",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		jobName := args[0]
@@ -354,7 +354,7 @@ var backupHistoryCmd = &cobra.Command{
 
 var backupSnapshotsCmd = &cobra.Command{
 	Use:   "snapshots <job-name>",
-	Short: "Query and list remote snapshots for a backup job",
+	Short: "查询并列出备份作业的远端快照",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		jobName := args[0]
@@ -456,7 +456,7 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 
 	var comps []string
 	if len(args) == 0 && len(selected) == 0 {
-		comps = append(comps, "all\tExecute all configured backup jobs")
+		comps = append(comps, "all\t执行全部已配置的备份作业")
 	}
 	for _, j := range jobs {
 		if !selected[j.Name] {
@@ -467,11 +467,11 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 }
 
 func init() {
-	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "Simulate execution without running restic (not supported for <server>:<container> targets)")
-	backupRunCmd.Flags().StringVarP(&backupRunParallel, "parallel", "j", "", "Maximum concurrent jobs (default 5, 'unlimited' for no limit)")
-	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "Rename container in generated Compose and backup job (when using <server>:<container>)")
+	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "预演执行，不真正运行 restic（不支持 <server>:<container> 目标）")
+	backupRunCmd.Flags().StringVarP(&backupRunParallel, "parallel", "j", "", "最大并发作业数（默认 5，'unlimited' 表示不设上限）")
+	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "重命名生成的 Compose 与备份作业中的容器（使用 <server>:<container> 时）")
 
-	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "Maximum number of history records to show")
+	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "最多显示的历史记录条数")
 
 	backupRunCmd.ValidArgsFunction = completeBackupRunArgs
 	backupHistoryCmd.ValidArgsFunction = completeBackupJobNames

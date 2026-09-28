@@ -20,15 +20,14 @@ var (
 
 var bootstrapCmd = &cobra.Command{
 	Use:   "bootstrap <server1,server2...>",
-	Short: "Bootstrap servers with specified script templates",
-	Long: `Initialize and configure one or more servers sequentially by executing
-a series of script templates over SSH. Logs are streamed to the console
-and saved locally under $XDG_DATA_HOME/opspulse/logs/.
+	Short: "用指定脚本模板初始化服务器",
+	Long: `通过 SSH 依次执行一系列脚本模板，初始化并配置一台或多台服务器。
+日志实时输出到终端，并保存到 $XDG_DATA_HOME/opspulse/logs/。
 
-Examples:
-  ops bootstrap web-01 -t base,docker     # Apply two templates to one server
-  ops bootstrap web-01,db-01 -t docker    # Apply a template to several servers
-  ops bootstrap local -t base --dry-run   # Preview the run on this machine`,
+示例：
+  ops bootstrap web-01 -t base,docker     # 对一台服务器应用两个模板
+  ops bootstrap web-01,db-01 -t docker    # 把同一个模板应用到多台服务器
+  ops bootstrap local -t base --dry-run   # 在本机预演这次执行`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		if len(bootstrapTemplates) == 0 {
@@ -106,7 +105,7 @@ func completeBootstrapServerArgs(_ *cobra.Command, args []string, toComplete str
 
 		var comps []string
 		if !selected["local"] {
-			comps = append(comps, fmt.Sprintf("%slocal\tLocal execution", prefix))
+			comps = append(comps, fmt.Sprintf("%slocal\t本机执行", prefix))
 		}
 		for _, s := range servers {
 			if !selected[s.Name] {
@@ -122,7 +121,7 @@ func completeBootstrapServerArgs(_ *cobra.Command, args []string, toComplete str
 
 	var comps []string
 	if !selected["local"] {
-		comps = append(comps, "local\tLocal execution")
+		comps = append(comps, "local\t本机执行")
 	}
 	for _, s := range servers {
 		if !selected[s.Name] {
@@ -182,9 +181,9 @@ func completeBootstrapTemplateFlag(_ *cobra.Command, _ []string, toComplete stri
 }
 
 func init() {
-	bootstrapCmd.Flags().StringSliceVarP(&bootstrapTemplates, "templates", "t", nil, "Comma-separated list of templates to execute (e.g. -t base,security,docker or -t base -t docker)")
-	bootstrapCmd.Flags().BoolVar(&bootstrapDryRun, "dry-run", false, "Simulate execution without establishing SSH connections")
-	bootstrapCmd.Flags().BoolVar(&bootstrapContinue, "continue-on-error", false, "Continue executing remaining templates/servers if an error occurs")
+	bootstrapCmd.Flags().StringSliceVarP(&bootstrapTemplates, "templates", "t", nil, "要执行的模板列表，逗号分隔（例如 -t base,security,docker 或 -t base -t docker）")
+	bootstrapCmd.Flags().BoolVar(&bootstrapDryRun, "dry-run", false, "预演执行，不建立 SSH 连接")
+	bootstrapCmd.Flags().BoolVar(&bootstrapContinue, "continue-on-error", false, "出错后继续执行剩余的模板/服务器")
 
 	bootstrapCmd.ValidArgsFunction = completeBootstrapServerArgs
 	_ = bootstrapCmd.RegisterFlagCompletionFunc("templates", completeBootstrapTemplateFlag)

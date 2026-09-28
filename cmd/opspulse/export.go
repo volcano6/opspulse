@@ -13,8 +13,8 @@ import (
 
 var exportCmd = &cobra.Command{
 	Use:   "export",
-	Short: "Export configurations and tool integrations",
-	Long:  "Export Ops configurations, inventory, and tool integrations such as OpenSSH config for VS Code and Cursor.",
+	Short: "导出配置与工具集成",
+	Long:  "导出 Ops 配置、清单，以及面向 VS Code 与 Cursor 的 OpenSSH 配置等工具集成。",
 }
 
 var (
@@ -25,22 +25,22 @@ var (
 
 var exportSSHConfigCmd = &cobra.Command{
 	Use:   "ssh-config",
-	Short: "Export managed servers as OpenSSH config (for VS Code, Cursor, and native ssh)",
-	Long: `Render managed servers into OpenSSH config format for seamless integration with
-VS Code Remote-SSH, Cursor, GoLand, and the native 'ssh' terminal command.
+	Short: "把受管服务器导出为 OpenSSH 配置（供 VS Code、Cursor 与原生 ssh 使用）",
+	Long: `把受管服务器渲染为 OpenSSH 配置格式，与 VS Code Remote-SSH、Cursor、GoLand
+以及原生 'ssh' 终端命令无缝集成。
 
-By default, the rendered configuration is printed to stdout.
-Use --write to automatically and idempotently update ~/.ssh/config.
---file only applies together with --write.
+默认把渲染结果打印到标准输出。
+用 --write 自动且幂等地更新 ~/.ssh/config。
+--file 只在配合 --write 时生效。
 
-Examples:
-  # Print SSH config to stdout
+示例：
+  # 把 SSH 配置打印到标准输出
   ops export ssh-config
 
-  # Write directly to ~/.ssh/config (idempotent, preserves custom hosts)
+  # 直接写入 ~/.ssh/config（幂等，保留自定义 Host）
   ops export ssh-config --write
 
-  # Write filtered servers to custom path
+  # 把筛选后的服务器写入自定义路径
   ops export ssh-config --write --file ~/.ssh/config.opspulse --filter env=prod`,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		if exportWritePath != "" && !exportWrite {
@@ -132,9 +132,9 @@ func hasManagedSSHBlock(path string) (bool, error) {
 }
 
 func init() {
-	exportSSHConfigCmd.Flags().BoolVarP(&exportWrite, "write", "w", false, "Write directly to SSH config file (idempotent)")
-	exportSSHConfigCmd.Flags().StringVar(&exportWritePath, "file", "", "Target SSH config file path (defaults to ~/.ssh/config; requires --write)")
-	exportSSHConfigCmd.Flags().StringVarP(&exportFilter, "filter", "f", "", "Filter servers by label (key=val), tag, or name")
+	exportSSHConfigCmd.Flags().BoolVarP(&exportWrite, "write", "w", false, "直接写入 SSH 配置文件（幂等）")
+	exportSSHConfigCmd.Flags().StringVar(&exportWritePath, "file", "", "目标 SSH 配置文件路径（默认 ~/.ssh/config；需配合 --write）")
+	exportSSHConfigCmd.Flags().StringVarP(&exportFilter, "filter", "f", "", "按 label（key=val）、tag 或名称筛选服务器")
 
 	exportCmd.AddCommand(exportSSHConfigCmd)
 	rootCmd.AddCommand(exportCmd)

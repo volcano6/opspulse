@@ -37,20 +37,18 @@ const (
 
 var onePasswordDoctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check this machine's 1Password integration end to end, changing nothing",
-	Long: `Walk the whole 1Password path once, in read-only mode, and say where it breaks.
+	Short: "只读自检本机 1Password 集成",
+	Long: `以只读方式把整条 1Password 链路走一遍，并指出断在哪里。
 
-The command checks, in order: whether the 'op' executable is present and which
-build it is (WSL must use the Windows build), whether an account is visible,
-whether the vault can be listed and which vault would be used, whether this
-machine's backup item exists and what it holds, and finally whether servers.yaml
-still points at credentials that have not been restored locally.
+该命令按顺序检查：'op' 可执行文件是否存在、是哪个构建（WSL 下必须是 Windows 版），
+账号是否可见，保险库能否列出以及会选哪一个，本机的备份条目是否存在、
+里面装了什么，最后是 servers.yaml 是否还指向尚未还原到本地的凭据。
 
-Nothing is written: no vault, no account and no servers.yaml entry is changed.
-Every step is reported as ok / warn / fail, and at least one fail makes the
-command exit non-zero, so it can be used as a pre-flight check.
+不写入任何东西：不改保险库、不改账号、也不改 servers.yaml 里的任何条目。
+每一步都报告为 ok / warn / fail，只要有一个 fail 就以非零状态退出，
+因此可以直接当预检用。
 
-Use --offline to run only the checks that need no 1Password round trip.`,
+用 --offline 只跑不需要 1Password 往返的检查。`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runOnePasswordDoctor(cmd.Context(), cmd.OutOrStdout())
@@ -58,8 +56,8 @@ Use --offline to run only the checks that need no 1Password round trip.`,
 }
 
 func init() {
-	onePasswordDoctorCmd.Flags().StringVar(&onePasswordDoctorVault, "vault", "", "Vault to inspect (default: remembered setting, then $OP_VAULT, then the only accessible vault)")
-	onePasswordDoctorCmd.Flags().BoolVar(&onePasswordDoctorOffline, "offline", false, "Only run the checks that need no 1Password round trip")
+	onePasswordDoctorCmd.Flags().StringVar(&onePasswordDoctorVault, "vault", "", "要检查的保险库（默认：记住的设置，其次 $OP_VAULT，最后是唯一可访问的保险库）")
+	onePasswordDoctorCmd.Flags().BoolVar(&onePasswordDoctorOffline, "offline", false, "只跑不需要 1Password 往返的检查")
 }
 
 // runOnePasswordDoctor performs the checks and renders them. It returns a

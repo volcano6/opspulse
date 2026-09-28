@@ -3,6 +3,10 @@
 本项目的所有重要变更都记录在此。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+> **维护方式**：0.4.0 及更早的条目为手写记录，保留原样。0.5.0 起由 `make changelog`
+> （`scripts/gen-changelog.sh`）从 conventional commit 推导，发版时写入本文件——提交标题就是变更
+> 记录的唯一来源，不再要求每次改动手写条目。Release 页用同一脚本生成 body，两处内容同源。
+
 ## [0.4.0]
 
 ### 新增
@@ -10,7 +14,7 @@
 - 中性化门禁 `scripts/check-neutrality.sh`：按**形状**扫描全部已跟踪文件，拦截非文档段 IP、真实邮箱域、
   真实家目录、私钥正文与非默认 `op://` 库名。CI 新增独立 `neutrality` job，`make ci` 同步接入；
   规则边界与写法约定见 `CONTRIBUTING.md` 的「中性化约定」。
-- README 新增「📦 安装」章节：预编译包下载、校验与解压即用（此前只有源码编译一条路径）。
+- README 新增「安装 (Install)」章节：预编译包下载、校验与解压即用（此前只有源码编译一条路径）。
 - 本文件 `CHANGELOG.md`。
 - `ops 1p doctor`：只读自检整条 1Password 链路——`op` 可执行文件的路径与构建选择（WSL 下必须是 Windows
   版）、可见账号、保险库与选择依据、本机备份条目的字节数/服务器数/私钥数、以及 `servers.yaml` 里残留的
@@ -22,7 +26,9 @@
 
 ### 变更
 
-- Release notes 改为手写：`release.yaml` 不再使用 `generate_release_notes`，变更记录以本文件为准。
+- Release notes 改为由 `scripts/gen-changelog.sh` 从 conventional commit 生成：`release.yaml` 不再使用
+  `generate_release_notes`（它只列 PR，直推 main 的提交会整段漏掉），改由该脚本产出 body，与 `CHANGELOG.md`
+  同源。
 - `.gitignore` 补齐常见 AI 工具目录、构建产物、运行日志、本地密钥与补丁残留文件。
 - **破坏性：批量并发标志由 `-p` 改为 `-j`**（`ops exec`、`ops doctor`、`ops backup run` 等）。`-p` 现在只表示
   `--port`，不再与端口混淆；长名 `--parallel` 不变。
@@ -75,6 +81,21 @@
   `ops exec` 的 stdout/stderr 分工；并发默认 5 与 `--parallel unlimited`；`ops 1p backup` 的 op 调用次数。
 - `scripts/check-neutrality.sh`：去掉对 bash 4 `mapfile` 的依赖（macOS 自带 bash 3.2 上原先会静默跳过全部
   文件），文件列表为空时改为 `exit 2`，邮箱域规则改为大小写不敏感。
+- **文档结构重排**：README 从 313 行收缩到约 100 行，只留定位、特性摘要、3 分钟上手、安装与文档地图，
+  逐域命令速查表删除（完整命令与 flag 归 `docs/reference/cli.md`）；新增 `docs/README.md` 文档地图、
+  `docs/explanation/architecture.md`（执行模型、安全边界与信任模型、非目标、术语）与
+  `docs/tutorial/onepassword_offline_verify.md`（离线自证 1P 链路），`SECURITY.md` 收缩为上报渠道 +
+  支持版本 + 信任模型摘要。`docs/reference/cli.md` 改为生成物（`make docs-gen` 从 cobra 命令树重写，
+  禁止手改）。新增文档门禁 `make docs-check`，CI 同步新增 `docs-check` job（并行 job 由 9 个增至 10 个，
+  `make ci` 的原子目标增至 13 个）：生成物与命令树逐字节一致、相对链接与页内锚点可解析、文档里的命令与
+  flag 都能在命令树里解析、命令树里每条命令都在手写文档里露过面。随后按「一个事实一个家」进一步收敛：
+  `docs/reference` 由 10 篇并为 5 篇（`asset` 并入 `server_ops`，`restore` / `scheduler` 并入 `backup`，
+  `notifications` / `templates` 并入 `configuration`），教程由 3 篇并为 2 篇（`container_migration` /
+  `wsl_env_backup` 并为 `migration`），`CONTRIBUTING.md` 重写为本地开发、提交规范、中性化约定与文档四节；
+  `CHANGELOG.md` 从 0.5.0 起由 `make changelog`（`scripts/gen-changelog.sh`）从 conventional commit 生成，
+  Release body 与它同源，不再手写。最后把 CLI 帮助文本整体中文化：`cmd/opspulse` 下 53 条命令摘要、74 处
+  flag 说明与 34 段 `Long` 说明全部改为中文，`ops --help` 的用法/帮助模板、`-h/--help`、`-v/--version` 与
+  `ops help` 命令一并中文化，`docs/reference/cli.md` 随之成为全中文页（此前是仓库里唯一全英文的文档）。
 
 ### 移除
 

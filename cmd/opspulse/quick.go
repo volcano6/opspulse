@@ -43,13 +43,13 @@ type remoteContainerItem struct {
 
 var psCmd = &cobra.Command{
 	Use:   "ps <server>",
-	Short: "List Docker containers on a remote server",
-	Long: `Quickly lists Docker containers on the specified remote server via SSH.
-Provides output similar to 'docker ps' with container ID, image, command, status, ports, and names.
+	Short: "列出远端服务器上的 Docker 容器",
+	Long: `通过 SSH 快速列出指定远端服务器上的 Docker 容器。
+输出等价于远端 docker ps（容器 ID、镜像、命令、状态、端口、名称）。
 
-Examples:
-  ops ps vps-1            # List running containers
-  ops ps vps-1 -a         # List all containers (including stopped)`,
+示例：
+  ops ps vps-1            # 运行中的容器
+  ops ps vps-1 -a         # 连已停止的一起列`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		serverName := args[0]
@@ -166,14 +166,14 @@ func renderDockerPsTable(w io.Writer, containers []remoteContainerItem) error {
 
 var logsCmd = &cobra.Command{
 	Use:   "logs <server> <container>",
-	Short: "Fetch or follow logs of a remote Docker container",
-	Long: `Fetch or stream logs of a Docker container running on a remote server via SSH.
+	Short: "查看或跟随远端 Docker 容器日志",
+	Long: `通过 SSH 查看或实时跟随远端服务器上 Docker 容器的日志。
 
-Examples:
-  ops logs vps-1 nginx                    # View recent 100 lines
-  ops logs vps-1 nginx --tail 50          # View recent 50 lines
-  ops logs vps-1 nginx --follow           # Follow logs in real-time (Ctrl+C to exit)
-  ops logs vps-1 nginx --timestamps       # Prefix each line with its timestamp`,
+示例：
+  ops logs vps-1 nginx                    # 最近 100 行日志
+  ops logs vps-1 nginx --tail 50          # 最近 50 行日志
+  ops logs vps-1 nginx --follow           # 实时跟随（Ctrl+C 退出）
+  ops logs vps-1 nginx --timestamps       # 每行前面加上时间戳`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(_ *cobra.Command, args []string) error {
 		serverName := args[0]
@@ -270,12 +270,12 @@ func completeLogsArgs(_ *cobra.Command, args []string, _ string) ([]string, cobr
 }
 
 func init() {
-	psCmd.Flags().BoolVarP(&psAll, "all", "a", false, "Show all containers (default shows just running)")
+	psCmd.Flags().BoolVarP(&psAll, "all", "a", false, "显示全部容器（默认只显示运行中的）")
 	psCmd.ValidArgsFunction = completeServerNames
 
-	logsCmd.Flags().BoolVar(&logsFollow, "follow", false, "Follow log output")
-	logsCmd.Flags().StringVarP(&logsTail, "tail", "n", "100", "Number of lines to show from the end of the logs")
-	logsCmd.Flags().BoolVar(&logsTimestamps, "timestamps", false, "Show timestamps")
+	logsCmd.Flags().BoolVar(&logsFollow, "follow", false, "实时跟随日志输出")
+	logsCmd.Flags().StringVarP(&logsTail, "tail", "n", "100", "从日志末尾显示的行数")
+	logsCmd.Flags().BoolVar(&logsTimestamps, "timestamps", false, "显示时间戳")
 	logsCmd.ValidArgsFunction = completeLogsArgs
 
 	rootCmd.AddCommand(psCmd)

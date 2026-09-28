@@ -21,21 +21,19 @@ var serverSetupKeyRemovePassword bool
 
 var serverSetupKeyCmd = &cobra.Command{
 	Use:   "setup-key <name>",
-	Short: "Generate and install an SSH key using the configured password",
-	Long: `Generate an SSH key pair, install the public key on the remote host using the
-stored password, and bind the server to the local private key.
+	Short: "用已配置的密码生成并安装 SSH 密钥",
+	Long: `生成 SSH 密钥对，用已保存的密码把公钥安装到远端主机，并把该服务器绑定到本地私钥。
 
-The remote password is not changed: this only adds key-based login alongside it,
-so the existing password keeps working as a fallback.
+远端密码不会被修改：这里只是在其之上增加密钥登录，
+因此原有密码仍可作为后备方式继续使用。
 
-With --remove-password, OpsPulse first proves the new key authenticates on its
-own (with the password deliberately withheld), and only then deletes the
-plaintext password from servers.yaml. A verification that fell back to password
-authentication therefore cannot be mistaken for a working key.
+加上 --remove-password 时，OpsPulse 会先证明新密钥能独立完成认证（刻意不提供密码），
+之后才删除 servers.yaml 中的明文密码。这样，实际回退到密码认证的验证
+就不可能被误判为密钥可用。
 
-Examples:
-  ops server setup-key web-01                     # Generate and install a dedicated key
-  ops server setup-key web-01 --remove-password   # Also drop the plaintext password once the key works`,
+示例：
+  ops server setup-key web-01                     # 生成并安装专用密钥
+  ops server setup-key web-01 --remove-password   # 密钥可用后同时清除明文密码`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		store := server.NewDefaultStore()
@@ -220,7 +218,7 @@ chmod 600 "$HOME/.ssh/authorized_keys"
 }
 
 func init() {
-	serverSetupKeyCmd.Flags().BoolVar(&serverSetupKeyRemovePassword, "remove-password", false, "After verifying the key works on its own, delete the plaintext password from servers.yaml")
+	serverSetupKeyCmd.Flags().BoolVar(&serverSetupKeyRemovePassword, "remove-password", false, "验证密钥可独立认证后，从 servers.yaml 中删除明文密码")
 	serverSetupKeyCmd.ValidArgsFunction = completeServerNames
 	serverCmd.AddCommand(serverSetupKeyCmd)
 }

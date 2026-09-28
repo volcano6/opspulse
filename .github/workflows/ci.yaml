@@ -53,6 +53,21 @@ jobs:
       - name: Lint
         run: make lint
 
+  # 文档门禁：cli.md 生成物与命令树逐字节一致、相对链接与页内锚点可解析、文档里出现的
+  # 命令与 flag 都能在命令树里解析、命令树里每条命令都在手写文档里露过面
+  # （断言见 cmd/opspulse/{cli_reference,docs_check}_test.go，版本无关）。
+  docs-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Docs check
+        run: make docs-check
+
   # linux/darwin/windows 三个 GOOS 的 vet：Windows/macOS 专属文件在 linux 上会被
   # build tag 排除，只有换 GOOS 才会被类型检查到。
   vet-cross:

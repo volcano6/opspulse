@@ -24,10 +24,10 @@ var (
 
 var serverSetCmd = &cobra.Command{
 	Use:   "set <name>",
-	Short: "Update selected fields of an existing server",
-	Long: `Update selected fields of an existing server entry.
+	Short: "增量更新已有服务器的指定字段",
+	Long: `增量更新已有服务器条目的指定字段，未指定的字段保持不变。
 
-Examples:
+示例：
   ops server set blog-vps --host 203.0.113.10
   ops server set blog-vps --port 2222 --key ~/.ssh/blog_ed25519
   ops server set blog-vps --skip-batch`,
@@ -120,14 +120,14 @@ func setServerFields(store *server.Store, name string, host *string, port *int, 
 
 var serverEditCmd = &cobra.Command{
 	Use:   "edit <name>",
-	Short: "Edit the server inventory and validate it before saving",
-	Long: `Edit the server inventory and validate it before saving.
+	Short: "编辑服务器清单并在保存前校验",
+	Long: `编辑服务器清单并在保存前校验。
 
-The entry for the named server is opened in $VISUAL or $EDITOR (vi when neither
-is set). The inventory is only replaced once the edited document parses and
-still contains that server, so a malformed edit cannot corrupt servers.yaml.
+目标服务器的清单内容会在 $VISUAL 或 $EDITOR 中打开（两者都未设置时用 vi）。
+只有在编辑后的文档能正常解析、且仍然包含该服务器时才会替换清单，
+因此格式错误的编辑不会破坏 servers.yaml。
 
-Examples:
+示例：
   ops server edit blog-vps
   EDITOR=nano ops server edit blog-vps`,
 	Args: cobra.ExactArgs(1),
@@ -234,12 +234,12 @@ func serverYAMLLine(data []byte, serverName string) int {
 }
 
 func init() {
-	serverSetCmd.Flags().StringVar(&setHost, "host", "", "New server IP or hostname")
-	serverSetCmd.Flags().IntVarP(&setPort, "port", "p", 0, "New SSH port")
-	serverSetCmd.Flags().StringVarP(&setKey, "key", "k", "", "New private key path (empty clears it)")
-	serverSetCmd.Flags().BoolVar(&setNoCopyKey, "no-copy-key", false, "Do not prompt to copy private key to ~/.ssh/ when located outside")
-	serverSetCmd.Flags().BoolVar(&setSkipBatch, "skip-batch", false, "Exclude server from implicit batch operations (e.g. ops exec -f all, ops doctor)")
-	serverSetCmd.Flags().BoolVar(&setNoSkipBatch, "no-skip-batch", false, "Remove skip-batch restriction from server")
+	serverSetCmd.Flags().StringVar(&setHost, "host", "", "新的服务器 IP 或主机名")
+	serverSetCmd.Flags().IntVarP(&setPort, "port", "p", 0, "新的 SSH 端口")
+	serverSetCmd.Flags().StringVarP(&setKey, "key", "k", "", "新的私钥路径（留空表示清除）")
+	serverSetCmd.Flags().BoolVar(&setNoCopyKey, "no-copy-key", false, "私钥位于 ~/.ssh/ 之外时不提示复制到该目录")
+	serverSetCmd.Flags().BoolVar(&setSkipBatch, "skip-batch", false, "将该服务器排除在隐式批量操作之外（如 ops exec -f all、ops doctor）")
+	serverSetCmd.Flags().BoolVar(&setNoSkipBatch, "no-skip-batch", false, "解除该服务器的 skip-batch 限制")
 	_ = serverSetCmd.RegisterFlagCompletionFunc("key", completePrivateKeyPath)
 	serverSetCmd.ValidArgsFunction = completeServerNames
 	serverEditCmd.ValidArgsFunction = completeServerNames

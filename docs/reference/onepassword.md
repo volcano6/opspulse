@@ -1,10 +1,12 @@
-# 1Password 备份与跨机同步指南
+# 1Password 备份与跨机同步指南 (1Password Backup and Sync)
 
-在 OpsPulse 里，**1Password 是备份与跨机器同步的目标，不是运行时依赖**。
+1Password 是**备份与跨机器同步的目标，不是运行时依赖**：凭据平时就放在本地磁盘，`ops ssh` /
+`ops exec` / `ops cp` 直接读取，不与 1Password 发生任何交互——这就是这些命令从不弹授权框的原因。
 
-凭据平时就放在本地磁盘：`servers.yaml` 里存私钥路径或明文密码，`ops ssh` / `ops exec` /
-`ops cp` 直接读取，**不与 1Password 发生任何交互**。这正是这些命令不会弹授权框的原因——
-普通连接全程不碰 1Password，哪怕它没解锁、没安装、甚至已经卸载。
+凭据的存储形态、信任边界与生命周期（本机明文 ↔ 保险库）归
+[架构与信任模型](../explanation/architecture.md)所有；本文只讲 `ops 1p` 命令怎么用。
+想在没有 1Password 账号的机器上验证整条链路，见
+[1Password 离线验证教程](../tutorial/onepassword_offline_verify.md)。
 
 1Password 只在两条命令里被触碰：
 
@@ -13,7 +15,7 @@ ops 1p backup     # 把本机凭据与整份 servers.yaml 上传到 1Password
 ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 ```
 
-> ⚠️ 如果你在 `servers.yaml` 里看到 `op://` 引用，说明那是旧版本留下的残留。
+> 如果你在 `servers.yaml` 里看到 `op://` 引用，说明那是旧版本留下的残留。
 > 现在的运行时**不会再解析它**，`ops ssh` 会直接报错并让你跑 `ops 1p restore` 迁移到本地凭据。
 
 ## 前提
@@ -24,7 +26,7 @@ ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 1. 在 Windows PowerShell 里安装：`winget install AgileBits.1Password.CLI`
 2. 打开 1Password 桌面端 → Settings → Developer → 勾选 **Integrate with 1Password CLI**
 
-> ⚠️ **WSL 里不要用 Linux 版 `op`。** 桌面端集成的通信通道是 Windows 侧的，
+> **WSL 里不要用 Linux 版 `op`。** 桌面端集成的通信通道是 Windows 侧的，
 > Linux 版 `op` 无论怎么配置都连不上 Windows 桌面端，勾了上面那个选项也没用——
 > 它只会报 `No accounts configured for use with 1Password CLI`。
 > OpsPulse 在 WSL 下会自动优先选 `op.exe`，连 PATH 上找不到的情况也会去
@@ -285,7 +287,7 @@ Restore finished: N restored, M skipped, K blocked, B failed.
    （`backup` 是覆盖式写入，这一跑就把它从**这台机器**的条目里删掉了）；
 2. 剩下的机器重复第 1 步；任何一台漏掉，它的条目里就还留着这台服务器。
 
-> ⚠️ 只在一台机器上删没用：只要还有任何一台机器的条目（或 `servers.yaml`）留着它，
+> 只在一台机器上删没用：只要还有任何一台机器的条目（或 `servers.yaml`）留着它，
 > 下一次在**那台机器**上 `restore` 就会把它加回来。
 
 ## `ops 1p status`：凭据现在放在哪儿

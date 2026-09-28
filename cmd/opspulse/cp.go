@@ -42,15 +42,15 @@ func resolveJumpServer(store *server.Store, srv *server.Server) (*server.Server,
 
 var cpCmd = &cobra.Command{
 	Use:   "cp [flags] <source> <destination>",
-	Short: "Copy files/directories between local and remote servers via SFTP",
-	Long: `Copy files or directories between the local machine and a managed remote server.
-The remote location must be prefixed with '<server>:'.
+	Short: "经 SFTP 在本地与远端服务器之间拷贝文件或目录",
+	Long: `在本地与受管远端服务器之间拷贝文件或目录。
+远端位置必须以 '<server>:' 前缀标识。
 
-Examples:
-  ops cp ./dist vps-1:/var/www/               # Upload to remote server
-  ops cp vps-1:/var/log/nginx/access.log .    # Download from remote server
-  ops cp -r ./src vps-1:/tmp/src              # Upload directory recursively
-  ops cp -r vps-1:/var/log ./logs             # Download directory recursively`,
+示例：
+  ops cp ./dist vps-1:/var/www/               # 上传到远端服务器
+  ops cp vps-1:/var/log/nginx/access.log .    # 从远端服务器下载
+  ops cp -r ./src vps-1:/tmp/src              # 递归上传目录
+  ops cp -r vps-1:/var/log ./logs             # 递归下载目录`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(_ *cobra.Command, args []string) error {
 		src := args[0]
@@ -225,8 +225,8 @@ func completeCpArgs(_ *cobra.Command, args []string, toComplete string) ([]strin
 }
 
 func init() {
-	cpCmd.Flags().BoolVarP(&cpRecursive, "recursive", "r", false, "Copy directory recursively")
-	cpCmd.Flags().DurationVarP(&cpTimeout, "timeout", "T", 60*time.Second, "SFTP connection timeout")
+	cpCmd.Flags().BoolVarP(&cpRecursive, "recursive", "r", false, "递归拷贝目录")
+	cpCmd.Flags().DurationVarP(&cpTimeout, "timeout", "T", 60*time.Second, "SFTP 连接超时")
 	cpCmd.ValidArgsFunction = completeCpArgs
 
 	rootCmd.AddCommand(cpCmd)
