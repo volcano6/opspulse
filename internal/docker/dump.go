@@ -24,6 +24,10 @@ const (
 	EnginePostgres = "postgres"
 )
 
+// bashPrologue is the shared shebang and strict-mode preamble for generated
+// database dump/import scripts.
+const bashPrologue = "#!/usr/bin/env bash\nset -euo pipefail\n\n"
+
 // NormalizeDatabaseEngine returns the canonical database engine identifier ("mysql" or "postgres").
 func NormalizeDatabaseEngine(engine string) (string, error) {
 	norm := strings.TrimSpace(strings.ToLower(engine))
@@ -46,30 +50,41 @@ func DumpFileName(name string) string {
 	return clean + ".sql.gz"
 }
 
+// validateScriptInputs normalizes the shared inputs of BuildDumpScript and
+// BuildImportScript. It returns the canonical engine, the trimmed container
+// name and path, or an error carrying the same values as the inline checks it
+// replaces.
+func validateScriptInputs(engine, containerName, p string) (canonicalEngine, cName, cleanPath string, err error) {
+	canonicalEngine, err = NormalizeDatabaseEngine(engine)
+	if err != nil {
+		return "", "", "", err
+	}
+	cName = strings.TrimSpace(containerName)
+	if cName == "" {
+		return "", "", "", ErrEmptyContainerName
+	}
+	if strings.ContainsAny(cName, "\r\n") {
+		return "", "", "", fmt.Errorf("invalid container name: cannot contain newlines")
+	}
+	cleanPath = strings.TrimSpace(p)
+	if cleanPath == "" {
+		return "", "", "", ErrEmptyDumpPath
+	}
+	return canonicalEngine, cName, cleanPath, nil
+}
+
 // BuildDumpScript generates a bash script to perform an online logical hot dump from a running database container.
 // The output is compressed with gzip on the fly to minimize storage and transmission overhead.
 func BuildDumpScript(engine, containerName, destPath string) (string, error) {
-	canonicalEngine, err := NormalizeDatabaseEngine(engine)
+	canonicalEngine, cName, dst, err := validateScriptInputs(engine, containerName, destPath)
 	if err != nil {
 		return "", err
-	}
-	cName := strings.TrimSpace(containerName)
-	if cName == "" {
-		return "", ErrEmptyContainerName
-	}
-	if strings.ContainsAny(cName, "\r\n") {
-		return "", fmt.Errorf("invalid container name: cannot contain newlines")
-	}
-	dst := strings.TrimSpace(destPath)
-	if dst == "" {
-		return "", ErrEmptyDumpPath
 	}
 
 	dir := path.Dir(strings.ReplaceAll(dst, "\\", "/"))
 
 	var sb strings.Builder
-	sb.WriteString("#!/usr/bin/env bash\n")
-	sb.WriteString("set -euo pipefail\n\n")
+	sb.WriteString(bashPrologue)
 
 	// Ensure destination directory exists
 	sb.WriteString("mkdir -p " + shellquote.Quote(dir) + "\n\n")
@@ -101,25 +116,13 @@ chmod 0600 %s
 // BuildImportScript generates a bash script to wait for the target database container to be ready
 // and import a compressed SQL dump. If the dump file does not exist, it exits with error 1.
 func BuildImportScript(engine, containerName, srcPath string) (string, error) {
-	canonicalEngine, err := NormalizeDatabaseEngine(engine)
+	canonicalEngine, cName, src, err := validateScriptInputs(engine, containerName, srcPath)
 	if err != nil {
 		return "", err
 	}
-	cName := strings.TrimSpace(containerName)
-	if cName == "" {
-		return "", ErrEmptyContainerName
-	}
-	if strings.ContainsAny(cName, "\r\n") {
-		return "", fmt.Errorf("invalid container name: cannot contain newlines")
-	}
-	src := strings.TrimSpace(srcPath)
-	if src == "" {
-		return "", ErrEmptyDumpPath
-	}
 
 	var sb strings.Builder
-	sb.WriteString("#!/usr/bin/env bash\n")
-	sb.WriteString("set -euo pipefail\n\n")
+	sb.WriteString(bashPrologue)
 
 	// Check if dump file exists; in database restore mode, missing dump is a fatal error
 	_, _ = fmt.Fprintf(&sb, `if [ ! -f %s ]; then

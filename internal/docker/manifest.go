@@ -96,6 +96,20 @@ func UnmarshalManifest(data []byte) (*ContainerManifest, error) {
 	return &m, nil
 }
 
+// helperImagePrologue resolves the helper image to use for volume scripts. It
+// honours OPSPULSE_HELPER_IMAGE and falls back through a list of known-good
+// images, so the generated script works on hosts with no network access.
+const helperImagePrologue = `HELPER_IMG="${OPSPULSE_HELPER_IMAGE:-alpine:3.20}"
+if ! docker image inspect "$HELPER_IMG" >/dev/null 2>&1; then
+  if docker image inspect busybox:1.36 >/dev/null 2>&1; then
+    HELPER_IMG="busybox:1.36"
+  elif docker image inspect alpine >/dev/null 2>&1; then
+    HELPER_IMG="alpine"
+  elif docker image inspect busybox >/dev/null 2>&1; then
+    HELPER_IMG="busybox"
+  fi
+fi`
+
 // BuildVolumeExportScript generates a bash script to archive a Docker named volume into a tar file on the host.
 //
 // The archive file name is passed through shellquote as part of the whole
@@ -105,18 +119,10 @@ func BuildVolumeExportScript(volumeName, hostArchivePath string) string {
 	dir := path.Dir(hostArchivePath)
 	file := path.Base(hostArchivePath)
 	return fmt.Sprintf(`mkdir -p %s
-HELPER_IMG="${OPSPULSE_HELPER_IMAGE:-alpine:3.20}"
-if ! docker image inspect "$HELPER_IMG" >/dev/null 2>&1; then
-  if docker image inspect busybox:1.36 >/dev/null 2>&1; then
-    HELPER_IMG="busybox:1.36"
-  elif docker image inspect alpine >/dev/null 2>&1; then
-    HELPER_IMG="alpine"
-  elif docker image inspect busybox >/dev/null 2>&1; then
-    HELPER_IMG="busybox"
-  fi
-fi
+%s
 docker run --rm -v %s:/src:ro -v %s:/dst "$HELPER_IMG" sh -c %s`,
 		shellquote.Quote(dir),
+		helperImagePrologue,
 		shellquote.Quote(volumeName),
 		shellquote.Quote(dir),
 		shellquote.Quote(fmt.Sprintf("cd /src && tar cpf /dst/%s .", file)),
@@ -130,18 +136,10 @@ docker run --rm -v %s:/src:ro -v %s:/dst "$HELPER_IMG" sh -c %s`,
 func BuildVolumeImportScript(volumeName, hostArchivePath string) string {
 	dir := path.Dir(hostArchivePath)
 	file := path.Base(hostArchivePath)
-	return fmt.Sprintf(`HELPER_IMG="${OPSPULSE_HELPER_IMAGE:-alpine:3.20}"
-if ! docker image inspect "$HELPER_IMG" >/dev/null 2>&1; then
-  if docker image inspect busybox:1.36 >/dev/null 2>&1; then
-    HELPER_IMG="busybox:1.36"
-  elif docker image inspect alpine >/dev/null 2>&1; then
-    HELPER_IMG="alpine"
-  elif docker image inspect busybox >/dev/null 2>&1; then
-    HELPER_IMG="busybox"
-  fi
-fi
+	return fmt.Sprintf(`%s
 docker volume create %s >/dev/null
 docker run --rm -v %s:/dst -v %s:/src:ro "$HELPER_IMG" sh -c %s`,
+		helperImagePrologue,
 		shellquote.Quote(volumeName),
 		shellquote.Quote(volumeName),
 		shellquote.Quote(dir),
