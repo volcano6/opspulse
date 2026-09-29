@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -150,7 +151,7 @@ func ensure1PCLI() (secret.CLI, error) {
 	}
 
 	if !stdinIsInteractive() {
-		return cli, fmt.Errorf("1Password CLI is required (install it, then re-run this command in an interactive terminal)")
+		return cli, missing1PCLINonInteractiveError()
 	}
 	fmt.Print("\nTry to install it automatically now? [Y/n]: ")
 	scanner := bufio.NewScanner(os.Stdin)
@@ -198,6 +199,14 @@ func onePasswordResolver() *secret.Resolver {
 		resolver = resolver.WithAccount(explicit)
 	}
 	return resolver
+}
+
+// missing1PCLINonInteractiveError is the error `ops 1p` returns when the CLI is
+// absent and stdin is not a terminal. The message is deliberately NOT wrapped
+// with secret.ErrCLINotFound: `ops 1p` has already printed InstallHint() itself,
+// and handleRootError would print it a second time for a wrapped sentinel.
+func missing1PCLINonInteractiveError() error {
+	return errors.New("1Password CLI is required (install it, then re-run this command in an interactive terminal)")
 }
 
 func stdinIsInteractive() bool {

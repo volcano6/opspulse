@@ -4,12 +4,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/logger"
+	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/version"
 )
 
@@ -145,8 +147,20 @@ func main() {
 		return
 	}
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(commandExitCode(err))
+		os.Exit(handleRootError(err, os.Stderr))
 	}
+}
+
+// handleRootError decides the process exit code for a root-command failure and,
+// when the failure is a missing 1Password CLI, appends the install hint to
+// stderr before returning. The hint is appended here so every path that
+// references op:// gets it, not only the `ops 1p` subcommands that already print
+// it themselves.
+func handleRootError(err error, stderr io.Writer) int {
+	if errors.Is(err, secret.ErrCLINotFound) {
+		fmt.Fprintf(stderr, "💡 %s\n", secret.InstallHint())
+	}
+	return commandExitCode(err)
 }
 
 func commandExitCode(err error) int {
