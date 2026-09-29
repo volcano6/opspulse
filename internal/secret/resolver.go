@@ -52,19 +52,7 @@ func (r *Resolver) IsAvailable() bool {
 // Resolve checks if the value is an op:// URI and resolves it.
 // If it is not an op:// URI, it returns the value as-is.
 func (r *Resolver) Resolve(ctx context.Context, value string) (string, error) {
-	ref := strings.TrimSpace(value)
-	if !Is1PRef(ref) {
-		return value, nil
-	}
-	if !r.cli.Available() {
-		return "", fmt.Errorf("secret %q starts with op:// but the 1Password CLI is unavailable: %w", ref, ErrCLINotFound)
-	}
-
-	out, err := r.cli.Run(ctx, "read", ref, "--no-newline")
-	if err != nil {
-		return "", fmt.Errorf("failed to read 1Password secret %q: %w", ref, err)
-	}
-	return string(out), nil
+	return r.resolve(ctx, value, false)
 }
 
 // ResolvePassword resolves an op:// reference to the password field it points
@@ -74,19 +62,30 @@ func (r *Resolver) Resolve(ctx context.Context, value string) (string, error) {
 // up when op.exe runs under WSL) would be an authentication failure that looks
 // like a wrong password.
 func (r *Resolver) ResolvePassword(ctx context.Context, ref string) (string, error) {
-	trimmed := strings.TrimSpace(ref)
-	if !Is1PRef(trimmed) {
-		return ref, nil
+	return r.resolve(ctx, ref, true)
+}
+
+// resolve is the shared implementation of Resolve and ResolvePassword. It
+// resolves raw as an op:// reference; when raw is not an op:// reference it is
+// returned verbatim (not trimmed). When stripCRLF is true the resolved value's
+// trailing CR/LF bytes are stripped, otherwise the value is returned as read.
+func (r *Resolver) resolve(ctx context.Context, raw string, stripCRLF bool) (string, error) {
+	ref := strings.TrimSpace(raw)
+	if !Is1PRef(ref) {
+		return raw, nil
 	}
 	if !r.cli.Available() {
-		return "", fmt.Errorf("secret %q starts with op:// but the 1Password CLI is unavailable: %w", trimmed, ErrCLINotFound)
+		return "", fmt.Errorf("secret %q starts with op:// but the 1Password CLI is unavailable: %w", ref, ErrCLINotFound)
 	}
 
-	out, err := r.cli.Run(ctx, "read", trimmed, "--no-newline")
+	out, err := r.cli.Run(ctx, "read", ref, "--no-newline")
 	if err != nil {
-		return "", fmt.Errorf("failed to read 1Password secret %q: %w", trimmed, err)
+		return "", fmt.Errorf("failed to read 1Password secret %q: %w", ref, err)
 	}
-	return strings.TrimRight(string(out), "\r\n"), nil
+	if stripCRLF {
+		return strings.TrimRight(string(out), "\r\n"), nil
+	}
+	return string(out), nil
 }
 
 // ResolveSSHKey resolves an op:// reference into an OpenSSH formatted private key.

@@ -2,6 +2,7 @@ package secret
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,5 +60,92 @@ func TestResolver_Resolve_Op_NotInstalled(t *testing.T) {
 		t.Errorf("expected error when resolving op:// without proper auth/installation")
 	} else if !strings.Contains(err.Error(), "1Password") && !strings.Contains(err.Error(), "failed to read") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestResolve_PassthroughPreservesOriginal(t *testing.T) {
+	r := &Resolver{cli: CLI{}}
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "plain", value: "plain-value"},
+		{name: "surrounding spaces", value: "  plain-value  "},
+		{name: "tabs", value: "\ttabbed\t"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.Resolve(ctx, tt.value)
+			if err != nil {
+				t.Fatalf("Resolve(%q) error = %v, want nil", tt.value, err)
+			}
+			if got != tt.value {
+				t.Fatalf("Resolve(%q) = %q, want the original untrimmed value", tt.value, got)
+			}
+		})
+	}
+}
+
+func TestResolvePassword_PassthroughPreservesOriginal(t *testing.T) {
+	r := &Resolver{cli: CLI{}}
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		ref  string
+	}{
+		{name: "plain", ref: "plain-value"},
+		{name: "surrounding spaces", ref: "  plain-value  "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.ResolvePassword(ctx, tt.ref)
+			if err != nil {
+				t.Fatalf("ResolvePassword(%q) error = %v, want nil", tt.ref, err)
+			}
+			if got != tt.ref {
+				t.Fatalf("ResolvePassword(%q) = %q, want the original untrimmed value", tt.ref, got)
+			}
+		})
+	}
+}
+
+func TestResolve_OpCLINotFound(t *testing.T) {
+	r := &Resolver{cli: CLI{}}
+	ctx := context.Background()
+
+	_, err := r.Resolve(ctx, "op://vault/item/field")
+	if !errors.Is(err, ErrCLINotFound) {
+		t.Fatalf("Resolve() error = %v, want ErrCLINotFound", err)
+	}
+	if !strings.Contains(err.Error(), "unavailable") {
+		t.Fatalf("Resolve() error = %q, want it to mention the CLI being unavailable", err)
+	}
+}
+
+func TestResolve_OpReturnsCRLF(t *testing.T) {
+	// The stub prints the Windows op.exe signature: the secret followed by a
+	// \r\n pair. Resolve must preserve it verbatim; ResolvePassword must strip it.
+	script, _ := writeStubCLI(t, `printf 'secret\r\n'`)
+
+	r := &Resolver{cli: CLI{Path: script}}
+	ctx := context.Background()
+
+	plain, err := r.Resolve(ctx, "op://vault/item/field")
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if plain != "secret\r\n" {
+		t.Fatalf("Resolve() = %q, want %q (no CRLF strip)", plain, "secret\r\n")
+	}
+
+	password, err := r.ResolvePassword(ctx, "op://vault/item/field")
+	if err != nil {
+		t.Fatalf("ResolvePassword() error = %v", err)
+	}
+	if password != "secret" {
+		t.Fatalf("ResolvePassword() = %q, want %q (CRLF stripped)", password, "secret")
 	}
 }
