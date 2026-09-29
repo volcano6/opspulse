@@ -7,7 +7,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,7 +41,7 @@ var backupListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "NAME\tSERVER\tBACKEND\tPATHS\tSCHEDULE\tRETENTION\tTAGS")
 		_, _ = fmt.Fprintln(tw, "----\t------\t-------\t-----\t--------\t---------\t----")
 
@@ -267,7 +266,7 @@ var backupStatusCmd = &cobra.Command{
 			runMap[r.JobName] = r
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "JOB\tSERVER\tSTATUS\tSNAPSHOT\tDATA ADDED\tTOTAL SIZE\tDURATION\tLAST RUN")
 		_, _ = fmt.Fprintln(tw, "---\t------\t------\t--------\t----------\t----------\t--------\t--------")
 
@@ -326,7 +325,7 @@ var backupHistoryCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "ID\tSTATUS\tSNAPSHOT\tFILES (NEW/CHG)\tADDED\tTOTAL\tDURATION\tSTARTED AT")
 		_, _ = fmt.Fprintln(tw, "--\t------\t--------\t---------------\t-----\t-----\t--------\t----------")
 
@@ -385,7 +384,7 @@ var backupSnapshotsCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "ID\tDATE / TIME\tHOSTNAME\tPATHS\tTAGS")
 		_, _ = fmt.Fprintln(tw, "--\t-----------\t--------\t-----\t----")
 

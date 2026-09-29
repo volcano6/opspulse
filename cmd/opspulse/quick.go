@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/shellquote"
@@ -133,7 +133,7 @@ func parseDockerPsOutput(raw string) ([]remoteContainerItem, error) {
 }
 
 func renderDockerPsTable(w io.Writer, containers []remoteContainerItem) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	tw := cliutil.NewTabWriter(w)
 	_, _ = fmt.Fprintln(tw, "CONTAINER ID\tIMAGE\tCOMMAND\tCREATED\tSTATUS\tPORTS\tNAMES")
 	_, _ = fmt.Fprintln(tw, "------------\t-----\t-------\t-------\t------\t-----\t-----")
 

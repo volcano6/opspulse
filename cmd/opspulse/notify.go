@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/notify"
 )
 
@@ -38,7 +38,7 @@ var notifyListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "NAME\tTYPE\tTRIGGER\tURL")
 		_, _ = fmt.Fprintln(tw, "----\t----\t-------\t---")
 

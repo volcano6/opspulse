@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/template"
 )
 
@@ -35,7 +35,7 @@ var templateListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "NAME\tVER\tTYPE\tOS\tDESCRIPTION")
 		_, _ = fmt.Fprintln(tw, "----\t---\t----\t--\t-----------")
 

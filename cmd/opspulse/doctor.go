@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -152,7 +151,7 @@ var doctorCmd = &cobra.Command{
 }
 
 func renderDoctorTable(w io.Writer, results []doctor.ServerHealth) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	tw := cliutil.NewTabWriter(w)
 	_, _ = fmt.Fprintln(tw, "SERVER\tADDRESS\tPING\tDISK (ROOT)\tDOCKER\tSTATUS")
 	_, _ = fmt.Fprintln(tw, "------\t-------\t----\t-----------\t------\t------")
 

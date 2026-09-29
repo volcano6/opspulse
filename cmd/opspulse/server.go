@@ -9,12 +9,12 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/backup"
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
@@ -60,7 +60,7 @@ var serverListCmd = &cobra.Command{
 }
 
 func renderServerTable(w io.Writer, servers []server.Server) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+	tw := cliutil.NewTabWriter(w)
 	_, _ = fmt.Fprintln(tw, "NAME\tTARGET\tVIA JUMP\tAUTH\tTAGS\tDESCRIPTION")
 
 	for _, s := range servers {

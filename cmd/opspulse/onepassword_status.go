@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"strings"
-	"text/tabwriter"
 
+	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/secret"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/sftp"
@@ -47,7 +47,7 @@ func runOnePasswordStatus(ctx context.Context) error {
 		}
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	tw := cliutil.NewTabWriter(os.Stdout)
 	if discovery == nil {
 		_, _ = fmt.Fprintln(tw, "NAME\tKEY\tPASSWORD")
 	} else {

@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/asset"
 	"github.com/volcano6/opspulse/internal/backup"
+	"github.com/volcano6/opspulse/internal/cliutil"
 )
 
 var assetCmd = &cobra.Command{
@@ -35,7 +35,7 @@ var assetListCmd = &cobra.Command{
 			return nil
 		}
 
-		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		tw := cliutil.NewTabWriter(os.Stdout)
 		_, _ = fmt.Fprintln(tw, "ID\tTYPE\tSOURCE\tENGINE\tDESCRIPTION")
 		_, _ = fmt.Fprintln(tw, "--\t----\t------\t------\t-----------")
 
