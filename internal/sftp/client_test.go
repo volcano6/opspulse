@@ -265,6 +265,55 @@ func TestDownloadDir_CopiesTreeAndSkipsSymlinks(t *testing.T) {
 	}
 }
 
+func TestDirTransfer_CopiesTenFiles(t *testing.T) {
+	client, _ := newTestClient(t)
+	sourceDir := t.TempDir()
+	for i := range 10 {
+		name := fmt.Sprintf("file-%02d.txt", i)
+		content := []byte(fmt.Sprintf("payload-%02d", i))
+		if err := os.WriteFile(filepath.Join(sourceDir, name), content, 0o600); err != nil {
+			t.Fatalf("write source file: %v", err)
+		}
+	}
+
+	uploaded, uploadedBytes, err := client.UploadDir(sourceDir, "uploaded")
+	if err != nil {
+		t.Fatalf("UploadDir() error: %v", err)
+	}
+	if uploaded != 10 {
+		t.Errorf("UploadDir() copied %d files, want 10", uploaded)
+	}
+	if uploadedBytes == 0 {
+		t.Fatal("UploadDir() copied zero bytes")
+	}
+
+	destinationDir := filepath.Join(t.TempDir(), "downloaded")
+	downloaded, downloadedBytes, err := client.DownloadDir("uploaded", destinationDir)
+	if err != nil {
+		t.Fatalf("DownloadDir() error: %v", err)
+	}
+	if downloaded != 10 {
+		t.Errorf("DownloadDir() copied %d files, want 10", downloaded)
+	}
+	if downloadedBytes != uploadedBytes {
+		t.Errorf("DownloadDir() copied %d bytes, want %d", downloadedBytes, uploadedBytes)
+	}
+	for i := range 10 {
+		name := fmt.Sprintf("file-%02d.txt", i)
+		want, err := os.ReadFile(filepath.Join(sourceDir, name))
+		if err != nil {
+			t.Fatalf("read source file: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(destinationDir, name))
+		if err != nil {
+			t.Fatalf("read downloaded file: %v", err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("downloaded %q = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // fakeRemoteFS models the server the rename fallback exists for: one that does
 // not implement the posix-rename extension and whose plain rename refuses to
 // overwrite an existing destination.

@@ -3,9 +3,16 @@ package sftp
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	progressMu  sync.Mutex
+	progressOut io.Writer = os.Stdout
 )
 
 // progressReader wraps an io.Reader and prints a progress bar to stdout
@@ -46,16 +53,17 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	// Update terminal at most every 200ms or on completion
 	if err == io.EOF || now.Sub(pr.lastUpdate) >= 200*time.Millisecond {
 		pr.lastUpdate = now
-		pr.printProgress()
-
+		progressMu.Lock()
+		pr.printProgressLocked()
 		if err == io.EOF {
-			fmt.Println() // Print newline when finished
+			_, _ = fmt.Fprintln(progressOut)
 		}
+		progressMu.Unlock()
 	}
 	return n, err
 }
 
-func (pr *progressReader) printProgress() {
+func (pr *progressReader) printProgressLocked() {
 	percent := 0.0
 	if pr.total > 0 {
 		percent = float64(pr.current) / float64(pr.total) * 100
@@ -78,6 +86,6 @@ func (pr *progressReader) printProgress() {
 	}
 
 	// \033[K clears the rest of the line
-	fmt.Printf("\r%s %s → %s [%s] %3.0f%%  %.1f MB/s\033[K",
+	_, _ = fmt.Fprintf(progressOut, "\r%s %s → %s [%s] %3.0f%%  %.1f MB/s\033[K",
 		pr.direction, pr.filename, pr.target, barStr, percent, speed)
 }

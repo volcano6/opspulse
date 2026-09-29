@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -257,6 +258,15 @@ func localPermFromRemote(mode os.FileMode) os.FileMode {
 	return mode.Perm() &^ 0o022
 }
 
+// dirWorkers matches internal/cliutil.DefaultParallel (5), while leaving
+// capacity for the SSH control channel and other concurrent sessions.
+const dirWorkers = 5
+
+type uploadTask struct {
+	localPath  string
+	remotePath string
+}
+
 // UploadDir recursively uploads a local directory to a remote directory.
 func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
 	localDir = filepath.Clean(localDir)
@@ -267,10 +277,10 @@ func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
 	if !info.IsDir() {
 		return 0, 0, fmt.Errorf("local path %q is not a directory", localDir)
 	}
-
-	var filesCount int
-	var totalBytes int64
-
+	var (
+		directories = []string{remoteDir}
+		files       []uploadTask
+	)
 	err = filepath.Walk(localDir, func(currPath string, currInfo os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -284,26 +294,46 @@ func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
 			return nil
 		}
 
-		// Convert local relPath to remote unix style path
 		remoteTarget := path.Join(remoteDir, filepath.ToSlash(relPath))
-
 		if currInfo.IsDir() {
-			return c.sftpClient.MkdirAll(remoteTarget)
+			directories = append(directories, remoteTarget)
+			return nil
 		}
+		files = append(files, uploadTask{localPath: currPath, remotePath: remoteTarget})
+		return nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
 
-		n, err := c.UploadFile(currPath, remoteTarget)
+	for _, directory := range directories {
+		if err := c.sftpClient.MkdirAll(directory); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	var (
+		mu         sync.Mutex
+		filesCount int
+		totalBytes int64
+	)
+	err = runBounded(files, dirWorkers, func(task uploadTask) error {
+		n, err := c.UploadFile(task.localPath, task.remotePath)
 		if err != nil {
 			return err
 		}
+		mu.Lock()
 		filesCount++
 		totalBytes += n
+		mu.Unlock()
 		return nil
 	})
+	return filesCount, totalBytes, err
+}
 
-	if err != nil {
-		return filesCount, totalBytes, err
-	}
-	return filesCount, totalBytes, nil
+type downloadTask struct {
+	remotePath string
+	localPath  string
 }
 
 // DownloadDir recursively downloads a remote directory to a local directory.
@@ -316,14 +346,14 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 	if !rStat.IsDir() {
 		return 0, 0, fmt.Errorf("remote path %q is not a directory", remoteDir)
 	}
-
-	var filesCount int
-	var totalBytes int64
-
+	var (
+		directories = []string{localDir}
+		files       []downloadTask
+	)
 	walker := c.sftpClient.Walk(remoteDir)
 	for walker.Step() {
 		if walker.Err() != nil {
-			return filesCount, totalBytes, walker.Err()
+			return 0, 0, walker.Err()
 		}
 
 		currRemote := walker.Path()
@@ -334,7 +364,7 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 
 		localTarget := filepath.Join(localDir, filepath.FromSlash(relPath))
 		if !withinLocalBase(localDir, localTarget) {
-			return filesCount, totalBytes, fmt.Errorf("path traversal detected: remote path %q resolves outside local destination %q", currRemote, localDir)
+			return 0, 0, fmt.Errorf("path traversal detected: remote path %q resolves outside local destination %q", currRemote, localDir)
 		}
 
 		stat := walker.Stat()
@@ -344,21 +374,35 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 		}
 
 		if stat.IsDir() {
-			if err := os.MkdirAll(localTarget, 0o750); err != nil {
-				return filesCount, totalBytes, err
-			}
+			directories = append(directories, localTarget)
 			continue
 		}
-
-		n, err := c.DownloadFile(currRemote, localTarget)
-		if err != nil {
-			return filesCount, totalBytes, err
-		}
-		filesCount++
-		totalBytes += n
+		files = append(files, downloadTask{remotePath: currRemote, localPath: localTarget})
 	}
 
-	return filesCount, totalBytes, nil
+	for _, directory := range directories {
+		if err := os.MkdirAll(directory, 0o750); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	var (
+		mu         sync.Mutex
+		filesCount int
+		totalBytes int64
+	)
+	err = runBounded(files, dirWorkers, func(task downloadTask) error {
+		n, err := c.DownloadFile(task.remotePath, task.localPath)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		filesCount++
+		totalBytes += n
+		mu.Unlock()
+		return nil
+	})
+	return filesCount, totalBytes, err
 }
 
 // withinLocalBase reports whether target resolves to base itself or to a path

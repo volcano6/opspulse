@@ -2,6 +2,7 @@ package sftp
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -19,6 +20,56 @@ func TestDetectAvailableClients(t *testing.T) {
 	for _, c := range clients {
 		t.Logf(" - [%s] %s (%s, GUI=%v)", c.Type, c.Name, c.Path, c.IsGUI)
 	}
+}
+
+func TestLaunchAsyncReapsWithoutBlocking(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLaunchAsyncHelperProcess$")
+	cmd.Env = append(os.Environ(), "GO_WANT_LAUNCH_ASYNC_HELPER=1")
+
+	started := time.Now()
+	if err := LaunchAsync(cmd); err != nil {
+		t.Fatalf("LaunchAsync() error: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 750*time.Millisecond {
+		t.Fatalf("LaunchAsync() blocked for %v", elapsed)
+	}
+	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Fatal("LaunchAsync() did not detach the child standard streams")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for cmd.ProcessState == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("LaunchAsync() did not reap the child process within 2 seconds")
+	}
+	if !cmd.ProcessState.Exited() {
+		t.Fatalf("child process state = %v, want exited", cmd.ProcessState)
+	}
+}
+
+func TestLaunchAsyncStartError(t *testing.T) {
+	cmd := exec.Command(filepath.Join(t.TempDir(), "missing-launch-async-command"))
+
+	err := LaunchAsync(cmd)
+	if err == nil {
+		t.Fatal("LaunchAsync() error = nil, want start error")
+	}
+	if cmd.Process != nil || cmd.ProcessState != nil {
+		t.Fatal("LaunchAsync() started or waited for a process after Start failed")
+	}
+	if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+		t.Fatal("LaunchAsync() did not preserve detached standard streams after Start failed")
+	}
+}
+
+func TestLaunchAsyncHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_LAUNCH_ASYNC_HELPER") != "1" {
+		return
+	}
+	time.Sleep(time.Second)
+	os.Exit(0)
 }
 
 func TestFormatSFTPURL(t *testing.T) {
