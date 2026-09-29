@@ -15,6 +15,7 @@ import (
 	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/cliutil"
 	"github.com/volcano6/opspulse/internal/executor"
+	"github.com/volcano6/opspulse/internal/format"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
 )
@@ -286,8 +287,8 @@ var backupStatusCmd = &cobra.Command{
 				snapID = snapID[:8]
 			}
 
-			addedStr := backup.FormatBytes(r.DataAddedBytes)
-			totalStr := backup.FormatBytes(r.TotalBytes)
+			addedStr := format.Bytes(r.DataAddedBytes)
+			totalStr := format.Bytes(r.TotalBytes)
 			durationStr := fmt.Sprintf("%.2fs", r.DurationSeconds)
 			lastRunStr := r.StartedAt.Format("2006-01-02 15:04:05")
 
@@ -339,8 +340,8 @@ var backupHistoryCmd = &cobra.Command{
 			}
 
 			filesStr := fmt.Sprintf("%d / %d", r.FilesNew, r.FilesChanged)
-			addedStr := backup.FormatBytes(r.DataAddedBytes)
-			totalStr := backup.FormatBytes(r.TotalBytes)
+			addedStr := format.Bytes(r.DataAddedBytes)
+			totalStr := format.Bytes(r.TotalBytes)
 			durationStr := fmt.Sprintf("%.2fs", r.DurationSeconds)
 			startedStr := r.StartedAt.Format("2006-01-02 15:04:05")
 

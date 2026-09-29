@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/volcano6/opspulse/internal/format"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/storage"
 )
@@ -30,9 +31,9 @@ func TestFormatBytes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := FormatBytes(tt.bytes)
+		got := format.Bytes(tt.bytes)
 		if got != tt.want {
-			t.Errorf("FormatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
+			t.Errorf("format.Bytes(%d) = %q, want %q", tt.bytes, got, tt.want)
 		}
 	}
 }

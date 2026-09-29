@@ -159,24 +159,3 @@ func TestFormatBox_MetricColumnsRemainCompactAndBounded(t *testing.T) {
 		}
 	}
 }
-
-func TestFormatBytes(t *testing.T) {
-	tests := []struct {
-		bytes int64
-		want  string
-	}{
-		{0, "0 B"},
-		{500, "500 B"},
-		{1024, "1.00 KB"},
-		{1048576, "1.00 MB"},
-		{1073741824, "1.00 GB"},
-		{12884901888, "12.00 GB"},
-	}
-
-	for _, tt := range tests {
-		got := formatBytes(tt.bytes)
-		if got != tt.want {
-			t.Errorf("formatBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
-		}
-	}
-}

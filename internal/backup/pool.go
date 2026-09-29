@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/volcano6/opspulse/internal/format"
 	"github.com/volcano6/opspulse/internal/storage"
 )
 
@@ -180,8 +181,8 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 			snapID = snapID[:8]
 		}
 
-		addedStr := FormatBytes(r.DataAddedBytes)
-		totalStr := FormatBytes(r.TotalBytes)
+		addedStr := format.Bytes(r.DataAddedBytes)
+		totalStr := format.Bytes(r.TotalBytes)
 		durationStr := fmt.Sprintf("%.2fs", r.DurationSeconds)
 		logPath := r.LogPath
 		if logPath == "" {
@@ -220,22 +221,4 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 		}
 	}
 	_, _ = fmt.Fprintln(w, "==================================================================")
-}
-
-// FormatBytes converts a byte count into a human-readable string (e.g. 10.5 MB).
-func FormatBytes(b int64) string {
-	if b <= 0 {
-		return "0 B"
-	}
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit && exp < len(units)-1; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %s", float64(b)/float64(div), units[exp])
 }

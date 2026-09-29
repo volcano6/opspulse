@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/format"
 	"github.com/volcano6/opspulse/internal/server"
 	"github.com/volcano6/opspulse/internal/sftp"
 )
@@ -113,7 +114,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 		}
 		elapsed := time.Since(startTime)
 		fmt.Printf("✅ Uploaded %d files (%s) to %s:%s in %.2fs\n",
-			filesCount, formatTransferBytes(totalBytes), serverName, remotePath, elapsed.Seconds())
+			filesCount, format.Bytes(totalBytes), serverName, remotePath, elapsed.Seconds())
 	} else {
 		fmt.Printf("--> Uploading file %q ──> %s:%q ...\n", localPath, serverName, remotePath)
 		bytesCopied, uploadErr := client.UploadFile(localPath, remotePath)
@@ -122,7 +123,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 		}
 		elapsed := time.Since(startTime)
 		fmt.Printf("✅ Uploaded %s to %s:%s in %.2fs\n",
-			formatTransferBytes(bytesCopied), serverName, remotePath, elapsed.Seconds())
+			format.Bytes(bytesCopied), serverName, remotePath, elapsed.Seconds())
 	}
 
 	return nil
@@ -154,7 +155,7 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 		}
 		elapsed := time.Since(startTime)
 		fmt.Printf("✅ Downloaded %d files (%s) from %s:%s to %s in %.2fs\n",
-			filesCount, formatTransferBytes(totalBytes), serverName, remotePath, localPath, elapsed.Seconds())
+			filesCount, format.Bytes(totalBytes), serverName, remotePath, localPath, elapsed.Seconds())
 	} else {
 		fmt.Printf("--> Downloading file %s:%q ──> %q ...\n", serverName, remotePath, localPath)
 		bytesCopied, downloadErr := client.DownloadFile(remotePath, localPath)
@@ -163,7 +164,7 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 		}
 		elapsed := time.Since(startTime)
 		fmt.Printf("✅ Downloaded %s from %s:%s to %s in %.2fs\n",
-			formatTransferBytes(bytesCopied), serverName, remotePath, localPath, elapsed.Seconds())
+			format.Bytes(bytesCopied), serverName, remotePath, localPath, elapsed.Seconds())
 	}
 
 	return nil
@@ -181,23 +182,6 @@ func parseRemotePath(target string) (serverName, remotePath string, isRemote boo
 		return "", target, false
 	}
 	return target[:idx], target[idx+1:], true
-}
-
-func formatTransferBytes(b int64) string {
-	if b <= 0 {
-		return "0 B"
-	}
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	units := []string{"KB", "MB", "GB", "TB", "PB", "EB"}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit && exp < len(units)-1; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.2f %s", float64(b)/float64(div), units[exp])
 }
 
 func completeCpArgs(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

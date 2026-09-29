@@ -10,6 +10,8 @@ import (
 	"text/tabwriter"
 	"time"
 	"unicode/utf8"
+
+	"github.com/volcano6/opspulse/internal/format"
 )
 
 // Info holds hardware, OS, and runtime status metrics for a server.
@@ -204,10 +206,10 @@ func (s *Info) FormatBox(w io.Writer) {
 	}
 
 	cpuStr := fmt.Sprintf("%d Cores (%s)", s.CPUCores, s.CPUModel)
-	memStr := fmt.Sprintf("%s (%s used)", formatBytes(s.MemoryTotalBytes), formatBytes(s.MemoryUsedBytes))
+	memStr := fmt.Sprintf("%s (%s used)", format.Bytes(s.MemoryTotalBytes), format.Bytes(s.MemoryUsedBytes))
 	diskStr := fmt.Sprintf("%s (%s used / %s free)",
-		formatBytes(s.DiskTotalBytes), formatBytes(s.DiskUsedBytes), formatBytes(s.DiskFreeBytes))
-	swapStr := fmt.Sprintf("%s (%s used)", formatBytes(s.SwapTotalBytes), formatBytes(s.SwapUsedBytes))
+		format.Bytes(s.DiskTotalBytes), format.Bytes(s.DiskUsedBytes), format.Bytes(s.DiskFreeBytes))
+	swapStr := fmt.Sprintf("%s (%s used)", format.Bytes(s.SwapTotalBytes), format.Bytes(s.SwapUsedBytes))
 
 	var sysMetrics bytes.Buffer
 	twSys := tabwriter.NewWriter(&sysMetrics, 0, 0, 2, ' ', 0)
@@ -265,21 +267,4 @@ func (s *Info) FormatBox(w io.Writer) {
 func formatBoxRow(w io.Writer, row string, contentWidth int) {
 	padding := contentWidth - utf8.RuneCountInString(row)
 	_, _ = fmt.Fprintf(w, "║  %s%s  ║\n", row, strings.Repeat(" ", padding))
-}
-
-func formatBytes(b int64) string {
-	if b <= 0 {
-		return "0 B"
-	}
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	units := []string{"KB", "MB", "GB", "TB", "PB"}
-	return fmt.Sprintf("%.2f %s", float64(b)/float64(div), units[exp])
 }
