@@ -243,8 +243,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 
 	if target.Server == nil {
 		res.Error = fmt.Errorf("%w: SSHExecutor requires a server target", ErrInvalidTarget)
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		return res, res.Error
 	}
 	srv := *target.Server
@@ -259,8 +258,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	client, cleanup, err := e.DialTargetWithWriter(ctx, target, safeWarnWriter)
 	if err != nil {
 		res.Error = err
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		return res, err
 	}
 	defer cleanup()
@@ -269,8 +267,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	if err != nil {
 		sessErr := fmt.Errorf("failed to open session: %w", err)
 		res.Error = sessErr
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		return res, sessErr
 	}
 	defer func() { _ = session.Close() }()
@@ -283,8 +280,7 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	}
 
 	// Normalize script line endings to standard LF before executing remotely
-	scriptContent = strings.ReplaceAll(scriptContent, "\r\n", "\n")
-	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
+	scriptContent = normalizeScriptLineEndings(scriptContent)
 
 	execCmd, stdin := remoteShellCommand(scriptContent)
 	session.Stdin = stdin
@@ -299,13 +295,11 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGTERM)
 		_ = session.Close()
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		res.Error = ctx.Err()
 		return res, ctx.Err()
 	case runErr := <-execErrChan:
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 
 		if runErr != nil {
 			var exitErr *ssh.ExitError

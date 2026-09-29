@@ -14,3 +14,9 @@ type Result struct {
 	Error      error         `json:"error,omitempty"`
 	LogPath    string        `json:"log_path,omitempty"`
 }
+
+// finish records the end time and total duration since start.
+func (r *Result) finish(start time.Time) {
+	r.EndTime = time.Now()
+	r.Duration = r.EndTime.Sub(start)
+}

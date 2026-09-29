@@ -121,6 +121,14 @@ func TestSSHExecutor_InvalidTarget(t *testing.T) {
 	}
 }
 
+func TestNormalizeScriptLineEndings(t *testing.T) {
+	got := normalizeScriptLineEndings("a\r\nb\rc\n")
+	want := "a\nb\nc\n"
+	if got != want {
+		t.Errorf("normalizeScriptLineEndings = %q, want %q", got, want)
+	}
+}
+
 func TestRemoteShellCommandStreamsScript(t *testing.T) {
 	const script = "exit 42\n"
 

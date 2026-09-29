@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,4 +35,12 @@ func (s *SyncWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.w.Write(p)
+}
+
+// normalizeScriptLineEndings converts CRLF and bare CR line endings to LF.
+// The CRLF replacement must run before the CR replacement: replacing CR first
+// would turn "a\r\n" into "a\n\n".
+func normalizeScriptLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\r", "\n")
 }

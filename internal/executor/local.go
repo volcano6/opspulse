@@ -55,8 +55,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 	}
 
 	// Normalize script line endings to standard LF
-	scriptContent = strings.ReplaceAll(scriptContent, "\r\n", "\n")
-	scriptContent = strings.ReplaceAll(scriptContent, "\r", "\n")
+	scriptContent = normalizeScriptLineEndings(scriptContent)
 
 	// Use bash if available, fallback to sh
 	shell := "bash"
@@ -74,16 +73,14 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		res.Error = err
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		return res, err
 	}
 
 	if err := cmd.Start(); err != nil {
 		_ = stdinPipe.Close()
 		res.Error = err
-		res.EndTime = time.Now()
-		res.Duration = res.EndTime.Sub(startTime)
+		res.finish(startTime)
 		return res, err
 	}
 
@@ -93,8 +90,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 	}()
 
 	runErr := cmd.Wait()
-	res.EndTime = time.Now()
-	res.Duration = res.EndTime.Sub(startTime)
+	res.finish(startTime)
 
 	if runErr != nil {
 		var exitErr *exec.ExitError
