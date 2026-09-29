@@ -126,31 +126,7 @@ func (l *Loader) Get(name string) (*Template, error) {
 }
 
 func (l *Loader) loadBuiltins() ([]Template, error) {
-	entries, err := fs.ReadDir(builtin.FS, ".")
-	if err != nil {
-		return nil, err
-	}
-
-	var list []Template
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sh") {
-			continue
-		}
-		name := strings.TrimSuffix(entry.Name(), ".sh")
-		content, err := builtin.FS.ReadFile(entry.Name())
-		if err != nil {
-			continue
-		}
-		tmpl, err := ParseTemplate(string(content), name)
-		if err != nil {
-			continue
-		}
-		tmpl.IsBuiltin = true
-		tmpl.SourcePath = "builtin:" + entry.Name()
-		list = append(list, *tmpl)
-	}
-
-	return list, nil
+	return l.loadFromFS(builtin.FS, true, func(n string) string { return "builtin:" + n })
 }
 
 func (l *Loader) loadCustoms() ([]Template, error) {
@@ -162,7 +138,15 @@ func (l *Loader) loadCustoms() ([]Template, error) {
 		return nil, nil
 	}
 
-	entries, err := os.ReadDir(l.customDir)
+	return l.loadFromFS(os.DirFS(l.customDir), false, func(n string) string {
+		return filepath.Join(l.customDir, n)
+	})
+}
+
+// loadFromFS loads `.sh` templates from an `fs.FS`, skipping directories,
+// unreadable files, and parse failures.
+func (l *Loader) loadFromFS(fsys fs.FS, isBuiltin bool, sourcePath func(name string) string) ([]Template, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
 	}
@@ -173,8 +157,7 @@ func (l *Loader) loadCustoms() ([]Template, error) {
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".sh")
-		fullPath := filepath.Join(l.customDir, entry.Name())
-		content, err := os.ReadFile(fullPath)
+		content, err := fs.ReadFile(fsys, entry.Name())
 		if err != nil {
 			continue
 		}
@@ -182,8 +165,8 @@ func (l *Loader) loadCustoms() ([]Template, error) {
 		if err != nil {
 			continue
 		}
-		tmpl.IsBuiltin = false
-		tmpl.SourcePath = fullPath
+		tmpl.IsBuiltin = isBuiltin
+		tmpl.SourcePath = sourcePath(entry.Name())
 		list = append(list, *tmpl)
 	}
 

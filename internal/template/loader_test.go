@@ -255,3 +255,60 @@ echo "running alias"
 		t.Errorf("expected name 'custom-alias', got %q", tmplByFile.Metadata.Name)
 	}
 }
+
+func TestLoader_LoadFromFS_Equivalence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	valid := `#!/bin/bash
+# ---
+# name: valid-custom
+# version: 1
+# ---
+echo "valid"
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "valid.sh"), []byte(valid), 0o600); err != nil {
+		t.Fatalf("failed to write valid.sh: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "readme.txt"), []byte("not a shell script"), 0o600); err != nil {
+		t.Fatalf("failed to write readme.txt: %v", err)
+	}
+
+	loader := NewLoader(tmpDir)
+	list, err := loader.List()
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	// Exactly one custom template is loaded (the non-.sh file is skipped).
+	var got *Template
+	customCount := 0
+	for i := range list {
+		if list[i].IsBuiltin {
+			continue
+		}
+		customCount++
+		got = &list[i]
+	}
+	if customCount != 1 {
+		t.Fatalf("expected exactly 1 custom template, got %d", customCount)
+	}
+	if got.Metadata.Name != "valid-custom" {
+		t.Errorf("custom template name = %q, want %q", got.Metadata.Name, "valid-custom")
+	}
+	wantPath := filepath.Join(tmpDir, "valid.sh")
+	if got.SourcePath != wantPath {
+		t.Errorf("SourcePath = %q, want %q", got.SourcePath, wantPath)
+	}
+
+	// Builtin templates must still be fully present and marked built-in.
+	builtinCount := 0
+	for i := range list {
+		if list[i].IsBuiltin {
+			builtinCount++
+		}
+	}
+	if builtinCount != 19 {
+		t.Errorf("expected 19 builtin templates, got %d", builtinCount)
+	}
+}
