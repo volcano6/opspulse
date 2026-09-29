@@ -1,20 +1,37 @@
 package backup
 
 import (
-	"bytes"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/filelock"
-	"gopkg.in/yaml.v3"
+	"github.com/volcano6/opspulse/internal/yamlstore"
 )
 
 type backupConfig struct {
 	Backups []Job `yaml:"backups"`
+}
+
+var backupSchema = yamlstore.Schema[backupConfig]{
+	Kind: "backup",
+	NewEmpty: func() *backupConfig {
+		return &backupConfig{Backups: []Job{}}
+	},
+	Validate: func(cfg *backupConfig) error {
+		seen := make(map[string]struct{}, len(cfg.Backups))
+		for i := range cfg.Backups {
+			if err := cfg.Backups[i].Validate(); err != nil {
+				return fmt.Errorf("invalid backup entry %d: %w", i+1, err)
+			}
+			if _, exists := seen[cfg.Backups[i].Name]; exists {
+				return fmt.Errorf("duplicate backup name %q", cfg.Backups[i].Name)
+			}
+			seen[cfg.Backups[i].Name] = struct{}{}
+		}
+		return nil
+	},
 }
 
 // Store handles thread-safe persistence and retrieval of backup job configurations in backups.yaml.
@@ -142,79 +159,9 @@ func (s *Store) Delete(name string) error {
 }
 
 func (s *Store) readConfig() (*backupConfig, error) {
-	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		return &backupConfig{Backups: []Job{}}, nil
-	}
-
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read backup config from %q: %w", s.filePath, err)
-	}
-
-	if len(data) == 0 {
-		return &backupConfig{Backups: []Job{}}, nil
-	}
-
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var cfg backupConfig
-	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML backup config: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("failed to parse YAML backup config: multiple documents are not supported")
-		}
-		return nil, fmt.Errorf("failed to parse YAML backup config: %w", err)
-	}
-	seen := make(map[string]struct{}, len(cfg.Backups))
-	for i := range cfg.Backups {
-		if err := cfg.Backups[i].Validate(); err != nil {
-			return nil, fmt.Errorf("invalid backup entry %d: %w", i+1, err)
-		}
-		if _, exists := seen[cfg.Backups[i].Name]; exists {
-			return nil, fmt.Errorf("duplicate backup name %q", cfg.Backups[i].Name)
-		}
-		seen[cfg.Backups[i].Name] = struct{}{}
-	}
-	return &cfg, nil
+	return yamlstore.Read(s.filePath, backupSchema)
 }
 
 func (s *Store) writeConfig(cfg *backupConfig) error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create config directory %q: %w", dir, err)
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal backup config to YAML: %w", err)
-	}
-
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary backup config file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return fmt.Errorf("failed to write temporary backup config file %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Chmod(0o600); err != nil {
-		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary backup config file %q: %w", tmpPath, err)
-	}
-
-	if err := os.Rename(tmpPath, s.filePath); err != nil {
-		return fmt.Errorf("failed to replace backup config file %q: %w", s.filePath, err)
-	}
-
-	return nil
+	return yamlstore.Write(s.filePath, backupSchema, cfg)
 }

@@ -2,19 +2,16 @@
 package notify
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/filelock"
-	"gopkg.in/yaml.v3"
+	"github.com/volcano6/opspulse/internal/yamlstore"
 )
 
 // Trigger condition constants.
@@ -85,6 +82,26 @@ func (c *Channel) Validate() error {
 // Config represents the top-level notifications.yaml configuration.
 type Config struct {
 	Channels []Channel `yaml:"channels" json:"channels"`
+}
+
+var notifySchema = yamlstore.Schema[Config]{
+	Kind: "notifications",
+	NewEmpty: func() *Config {
+		return &Config{Channels: []Channel{}}
+	},
+	Validate: func(cfg *Config) error {
+		seen := make(map[string]struct{}, len(cfg.Channels))
+		for i := range cfg.Channels {
+			if err := cfg.Channels[i].Validate(); err != nil {
+				return fmt.Errorf("invalid channel entry %d: %w", i+1, err)
+			}
+			if _, exists := seen[cfg.Channels[i].Name]; exists {
+				return fmt.Errorf("duplicate channel name %q", cfg.Channels[i].Name)
+			}
+			seen[cfg.Channels[i].Name] = struct{}{}
+		}
+		return nil
+	},
 }
 
 // Store handles thread-safe persistence and retrieval of notification channels in notifications.yaml.
@@ -212,81 +229,9 @@ func (s *Store) Delete(name string) error {
 }
 
 func (s *Store) readConfig() (*Config, error) {
-	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		return &Config{Channels: []Channel{}}, nil
-	}
-
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read notifications config from %q: %w", s.filePath, err)
-	}
-
-	if len(data) == 0 {
-		return &Config{Channels: []Channel{}}, nil
-	}
-
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML notifications config: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("failed to parse YAML notifications config: multiple documents are not supported")
-		}
-		return nil, fmt.Errorf("failed to parse YAML notifications config: %w", err)
-	}
-
-	seen := make(map[string]struct{}, len(cfg.Channels))
-	for i := range cfg.Channels {
-		if err := cfg.Channels[i].Validate(); err != nil {
-			return nil, fmt.Errorf("invalid channel entry %d: %w", i+1, err)
-		}
-		if _, exists := seen[cfg.Channels[i].Name]; exists {
-			return nil, fmt.Errorf("duplicate channel name %q", cfg.Channels[i].Name)
-		}
-		seen[cfg.Channels[i].Name] = struct{}{}
-	}
-
-	return &cfg, nil
+	return yamlstore.Read(s.filePath, notifySchema)
 }
 
 func (s *Store) writeConfig(cfg *Config) error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create config directory %q: %w", dir, err)
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal notifications config to YAML: %w", err)
-	}
-
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary notifications config file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return fmt.Errorf("failed to write temporary notifications config file %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Chmod(0o600); err != nil {
-		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary notifications config file %q: %w", tmpPath, err)
-	}
-
-	if err := os.Rename(tmpPath, s.filePath); err != nil {
-		return fmt.Errorf("failed to replace notifications config file %q: %w", s.filePath, err)
-	}
-
-	return nil
+	return yamlstore.Write(s.filePath, notifySchema, cfg)
 }

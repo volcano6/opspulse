@@ -1,20 +1,37 @@
 package asset
 
 import (
-	"bytes"
 	"fmt"
-	"io"
-	"os"
 	"path/filepath"
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/filelock"
-	"gopkg.in/yaml.v3"
+	"github.com/volcano6/opspulse/internal/yamlstore"
 )
 
 type assetConfig struct {
 	Assets []Asset `yaml:"assets"`
+}
+
+var assetSchema = yamlstore.Schema[assetConfig]{
+	Kind: "asset",
+	NewEmpty: func() *assetConfig {
+		return &assetConfig{Assets: []Asset{}}
+	},
+	Validate: func(cfg *assetConfig) error {
+		seen := make(map[string]struct{}, len(cfg.Assets))
+		for i := range cfg.Assets {
+			if err := cfg.Assets[i].Validate(); err != nil {
+				return fmt.Errorf("invalid asset entry %d: %w", i+1, err)
+			}
+			if _, exists := seen[cfg.Assets[i].ID]; exists {
+				return fmt.Errorf("duplicate asset id %q", cfg.Assets[i].ID)
+			}
+			seen[cfg.Assets[i].ID] = struct{}{}
+		}
+		return nil
+	},
 }
 
 // Store handles thread-safe persistence and retrieval of asset definitions in assets.yaml.
@@ -169,79 +186,9 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) readConfig() (*assetConfig, error) {
-	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		return &assetConfig{Assets: []Asset{}}, nil
-	}
-
-	data, err := os.ReadFile(s.filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read asset config from %q: %w", s.filePath, err)
-	}
-
-	if len(data) == 0 {
-		return &assetConfig{Assets: []Asset{}}, nil
-	}
-
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var cfg assetConfig
-	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse YAML asset config: %w", err)
-	}
-	var extra any
-	if err := decoder.Decode(&extra); err != io.EOF {
-		if err == nil {
-			return nil, fmt.Errorf("failed to parse YAML asset config: multiple documents are not supported")
-		}
-		return nil, fmt.Errorf("failed to parse YAML asset config: %w", err)
-	}
-	seen := make(map[string]struct{}, len(cfg.Assets))
-	for i := range cfg.Assets {
-		if err := cfg.Assets[i].Validate(); err != nil {
-			return nil, fmt.Errorf("invalid asset entry %d: %w", i+1, err)
-		}
-		if _, exists := seen[cfg.Assets[i].ID]; exists {
-			return nil, fmt.Errorf("duplicate asset id %q", cfg.Assets[i].ID)
-		}
-		seen[cfg.Assets[i].ID] = struct{}{}
-	}
-	return &cfg, nil
+	return yamlstore.Read(s.filePath, assetSchema)
 }
 
 func (s *Store) writeConfig(cfg *assetConfig) error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create config directory %q: %w", dir, err)
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal asset config to YAML: %w", err)
-	}
-
-	tmpFile, err := os.CreateTemp(dir, filepath.Base(s.filePath)+".tmp.*")
-	if err != nil {
-		return fmt.Errorf("failed to create temporary asset config file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}()
-
-	if _, err := tmpFile.Write(data); err != nil {
-		return fmt.Errorf("failed to write temporary asset config file %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Chmod(0o600); err != nil {
-		return fmt.Errorf("failed to set permissions on %q: %w", tmpPath, err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temporary asset config file %q: %w", tmpPath, err)
-	}
-
-	if err := os.Rename(tmpPath, s.filePath); err != nil {
-		return fmt.Errorf("failed to replace asset config file %q: %w", s.filePath, err)
-	}
-
-	return nil
+	return yamlstore.Write(s.filePath, assetSchema, cfg)
 }
