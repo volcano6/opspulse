@@ -30,6 +30,21 @@ func TestWrapHandshakeError(t *testing.T) {
 			wantAuth: true,
 		},
 		{
+			name:     "auth attempts exhausted (x/crypto server, lowercase)",
+			err:      errors.New(`ssh: handshake failed: ssh: disconnect, reason 2: "too many authentication failures"`),
+			wantAuth: true,
+		},
+		{
+			name:     "auth attempts exhausted (OpenSSH sshd, capitalized)",
+			err:      errors.New(`ssh: handshake failed: ssh: disconnect, reason 2: "Too many authentication failures"`),
+			wantAuth: true,
+		},
+		{
+			name:     "auth attempts exhausted (server max-attempts bound, 128)",
+			err:      errors.New(`ssh: handshake failed: ssh: disconnect, reason 2: "too many authentication attempts"`),
+			wantAuth: true,
+		},
+		{
 			name: "knownhosts key mismatch",
 			err: errors.New("ssh: handshake failed: verify SSH host key for example.com:22: " +
 				"knownhosts key mismatch (existing key recorded at /home/u/.ssh/known_hosts:3). " +

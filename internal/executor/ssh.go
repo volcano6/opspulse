@@ -79,9 +79,16 @@ func isAuthHandshakeError(err error) bool {
 	if errors.As(err, &authErr) {
 		return true
 	}
-	msg := err.Error()
+	// Credential rejections surface only as text: the client never sees the
+	// server's *ServerAuthError, and the *disconnectMsg it does receive is
+	// unexported, so no sentinel is available for errors.As. Matching is
+	// case-insensitive because OpenSSH sshd emits "Too many authentication
+	// failures" (auth.c) while x/crypto's server emits the lowercase form.
+	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "unable to authenticate") ||
-		strings.Contains(msg, "no supported methods")
+		strings.Contains(msg, "no supported methods") ||
+		strings.Contains(msg, "too many authentication failures") ||
+		strings.Contains(msg, "too many authentication attempts")
 }
 
 // DialTargetWithWriter establishes an SSH client connection to the target server,
