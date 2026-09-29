@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/filelock"
@@ -15,8 +16,11 @@ import (
 
 // Store handles persistence of server configurations to a YAML file.
 type Store struct {
-	filePath string
-	mu       sync.RWMutex
+	filePath     string
+	mu           sync.RWMutex
+	cache        *ConfigFile
+	cacheModTime time.Time
+	cacheSize    int64
 }
 
 // NewStore creates a new Store instance with a custom file path.
@@ -39,8 +43,8 @@ func (s *Store) FilePath() string {
 
 // List returns all configured servers.
 func (s *Store) List() ([]Server, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	cf, err := s.read()
 	if err != nil {
@@ -51,8 +55,8 @@ func (s *Store) List() ([]Server, error) {
 
 // Get retrieves a server by its unique name.
 func (s *Store) Get(name string) (*Server, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	cf, err := s.read()
 	if err != nil {
@@ -141,8 +145,8 @@ func (s *Store) Delete(name string) error {
 
 // GetDependents returns all servers that use the given server as their JumpHost.
 func (s *Store) GetDependents(name string) ([]Server, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	cf, err := s.read()
 	if err != nil {
@@ -184,7 +188,7 @@ func (s *Store) Replace(data []byte) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	s.invalidateCache()
 	unlock, err := filelock.Lock(s.filePath)
 	if err != nil {
 		return fmt.Errorf("failed to acquire file lock: %w", err)
@@ -222,6 +226,38 @@ func (s *Store) Replace(data []byte) error {
 	return nil
 }
 
+func cloneServer(srv Server) Server {
+	clone := srv
+	if srv.Tags != nil {
+		clone.Tags = append([]string(nil), srv.Tags...)
+	}
+	if srv.Labels != nil {
+		clone.Labels = make(map[string]string, len(srv.Labels))
+		for key, value := range srv.Labels {
+			clone.Labels[key] = value
+		}
+	}
+	return clone
+}
+
+func cloneConfigFile(cf *ConfigFile) *ConfigFile {
+	clone := &ConfigFile{Servers: make([]Server, len(cf.Servers))}
+	for i, srv := range cf.Servers {
+		clone.Servers[i] = cloneServer(srv)
+	}
+	return clone
+}
+
+func (s *Store) invalidateCache() {
+	s.cache = nil
+	s.cacheModTime = time.Time{}
+	s.cacheSize = 0
+}
+
+// validateServers checks a list of server definitions, normalising each entry's
+// defaults in place. It is shared with the 1Password backup parser so that a
+// document OpsPulse is willing to write and a document it is willing to read are
+// held to the same rules.
 func parseAndValidateConfig(data []byte) (*ConfigFile, error) {
 	var cf ConfigFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -289,23 +325,44 @@ func validateJumpHosts(servers []Server) error {
 }
 
 func (s *Store) read() (*ConfigFile, error) {
-	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
+	info, err := os.Stat(s.filePath)
+	if os.IsNotExist(err) {
+		s.invalidateCache()
 		return &ConfigFile{Servers: []Server{}}, nil
+	}
+	if err != nil {
+		s.invalidateCache()
+		return nil, fmt.Errorf("failed to stat servers file: %w", err)
+	}
+
+	if s.cache != nil && s.cacheSize == info.Size() && s.cacheModTime.Equal(info.ModTime()) {
+		return cloneConfigFile(s.cache), nil
 	}
 
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {
+		s.invalidateCache()
 		return nil, fmt.Errorf("failed to read servers file: %w", err)
 	}
 
+	var cf *ConfigFile
 	if len(data) == 0 {
-		return &ConfigFile{Servers: []Server{}}, nil
+		cf = &ConfigFile{Servers: []Server{}}
+	} else {
+		cf, err = parseAndValidateConfig(data)
+		if err != nil {
+			s.invalidateCache()
+			return nil, err
+		}
 	}
-
-	return parseAndValidateConfig(data)
+	s.cache = cloneConfigFile(cf)
+	s.cacheModTime = info.ModTime()
+	s.cacheSize = info.Size()
+	return cloneConfigFile(s.cache), nil
 }
 
 func (s *Store) write(cf *ConfigFile) error {
+	s.invalidateCache()
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sync"
 
@@ -34,16 +35,39 @@ var backupSchema = yamlstore.Schema[backupConfig]{
 	},
 }
 
-// Store handles thread-safe persistence and retrieval of backup job configurations in backups.yaml.
+func cloneBackupConfig(cfg *backupConfig) *backupConfig {
+	clone := &backupConfig{Backups: make([]Job, len(cfg.Backups))}
+	for i, job := range cfg.Backups {
+		clone.Backups[i] = job
+		clone.Backups[i].Paths = append([]string(nil), job.Paths...)
+		clone.Backups[i].Assets = append([]string(nil), job.Assets...)
+		clone.Backups[i].Excludes = append([]string(nil), job.Excludes...)
+		clone.Backups[i].Tags = append([]string(nil), job.Tags...)
+		if job.Env != nil {
+			clone.Backups[i].Env = maps.Clone(job.Env)
+		}
+		if job.Remap != nil {
+			clone.Backups[i].Remap = maps.Clone(job.Remap)
+		}
+		if job.Retention != nil {
+			retention := *job.Retention
+			retention.KeepTags = append([]string(nil), job.Retention.KeepTags...)
+			clone.Backups[i].Retention = &retention
+		}
+	}
+	return clone
+}
+
 type Store struct {
 	filePath string
 	mu       sync.RWMutex
+	cache    *yamlstore.Cache[backupConfig]
 }
 
-// NewStore creates a new Store pointing to the given YAML file path.
 func NewStore(filePath string) *Store {
 	return &Store{
 		filePath: filePath,
+		cache:    yamlstore.NewCache(cloneBackupConfig),
 	}
 }
 
@@ -159,9 +183,9 @@ func (s *Store) Delete(name string) error {
 }
 
 func (s *Store) readConfig() (*backupConfig, error) {
-	return yamlstore.Read(s.filePath, backupSchema)
+	return s.cache.Read(s.filePath, backupSchema)
 }
 
 func (s *Store) writeConfig(cfg *backupConfig) error {
-	return yamlstore.Write(s.filePath, backupSchema, cfg)
+	return s.cache.Write(s.filePath, backupSchema, cfg)
 }

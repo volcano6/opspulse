@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestServer_Validate(t *testing.T) {
@@ -392,6 +393,70 @@ func TestStoreReadRejectsInvalidConfiguration(t *testing.T) {
 	}
 	if _, err := NewStore(path).List(); err == nil {
 		t.Fatal("List() accepted duplicate server names")
+	}
+}
+
+func TestStoreReadCacheTracksFileIdentityAndCopiesResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	initial := []byte("servers:\n  - name: web-01\n    host: 192.0.2.1\n    tags: [web]\n    labels:\n      env: prod\n")
+	if err := os.WriteFile(path, initial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(path)
+	got, err := store.Get("web-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.Tags[0] = "mutated"
+	got.Labels["env"] = "mutated"
+	got, err = store.Get("web-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tags[0] != "web" || got.Labels["env"] != "prod" {
+		t.Fatalf("cached result was not deeply copied: %+v", got)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := []byte("servers:\n  - name: web-01\n    host: 192.0.2.2\n    tags: [web]\n    labels:\n      env: prod\n")
+	if len(updated) != len(initial) {
+		t.Fatalf("test data sizes differ: %d != %d", len(updated), len(initial))
+	}
+	if err := os.WriteFile(path, updated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime().Add(time.Second), info.ModTime().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get("web-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "192.0.2.2" {
+		t.Fatalf("external edit was not observed: got host %q", got.Host)
+	}
+
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cached := []byte("servers:\n  - name: web-01\n    host: 192.0.2.3\n    tags: [web]\n    labels:\n      env: prod\n")
+	if err := os.WriteFile(path, cached, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.Get("web-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Host != "192.0.2.2" {
+		t.Fatalf("same mtime and size did not use cache: got host %q", got.Host)
 	}
 }
 

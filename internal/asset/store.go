@@ -34,16 +34,26 @@ var assetSchema = yamlstore.Schema[assetConfig]{
 	},
 }
 
+func cloneAssetConfig(cfg *assetConfig) *assetConfig {
+	clone := &assetConfig{Assets: make([]Asset, len(cfg.Assets))}
+	for i, asset := range cfg.Assets {
+		clone.Assets[i] = asset
+		clone.Assets[i].Excludes = append([]string(nil), asset.Excludes...)
+	}
+	return clone
+}
+
 // Store handles thread-safe persistence and retrieval of asset definitions in assets.yaml.
 type Store struct {
 	filePath string
 	mu       sync.RWMutex
+	cache    *yamlstore.Cache[assetConfig]
 }
 
-// NewStore creates a new Store pointing to the given YAML file path.
 func NewStore(filePath string) *Store {
 	return &Store{
 		filePath: filePath,
+		cache:    yamlstore.NewCache(cloneAssetConfig),
 	}
 }
 
@@ -186,9 +196,9 @@ func (s *Store) Delete(id string) error {
 }
 
 func (s *Store) readConfig() (*assetConfig, error) {
-	return yamlstore.Read(s.filePath, assetSchema)
+	return s.cache.Read(s.filePath, assetSchema)
 }
 
 func (s *Store) writeConfig(cfg *assetConfig) error {
-	return yamlstore.Write(s.filePath, assetSchema, cfg)
+	return s.cache.Write(s.filePath, assetSchema, cfg)
 }

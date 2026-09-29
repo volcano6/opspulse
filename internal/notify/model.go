@@ -104,16 +104,20 @@ var notifySchema = yamlstore.Schema[Config]{
 	},
 }
 
-// Store handles thread-safe persistence and retrieval of notification channels in notifications.yaml.
+func cloneNotifyConfig(cfg *Config) *Config {
+	return &Config{Channels: append([]Channel(nil), cfg.Channels...)}
+}
+
 type Store struct {
 	filePath string
 	mu       sync.RWMutex
+	cache    *yamlstore.Cache[Config]
 }
 
-// NewStore creates a new Store pointing to the given YAML file path.
 func NewStore(filePath string) *Store {
 	return &Store{
 		filePath: filePath,
+		cache:    yamlstore.NewCache(cloneNotifyConfig),
 	}
 }
 
@@ -229,9 +233,10 @@ func (s *Store) Delete(name string) error {
 }
 
 func (s *Store) readConfig() (*Config, error) {
-	return yamlstore.Read(s.filePath, notifySchema)
+	return s.cache.Read(s.filePath, notifySchema)
+
 }
 
 func (s *Store) writeConfig(cfg *Config) error {
-	return yamlstore.Write(s.filePath, notifySchema, cfg)
+	return s.cache.Write(s.filePath, notifySchema, cfg)
 }

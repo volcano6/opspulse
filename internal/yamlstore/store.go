@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +32,10 @@ type Schema[T any] struct {
 // decoded with strict field checking, rejected when it contains more than one
 // document, and validated via the schema hook.
 func Read[T any](filePath string, s Schema[T]) (*T, error) {
+	return read[T](filePath, s)
+}
+
+func read[T any](filePath string, s Schema[T]) (*T, error) {
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		return s.NewEmpty(), nil
 	}
@@ -62,6 +68,78 @@ func Read[T any](filePath string, s Schema[T]) (*T, error) {
 	}
 
 	return &cfg, nil
+}
+
+// Cache avoids repeated reads and parses while keeping caller-owned results
+// isolated from the cached configuration. The clone function must deep-copy T.
+type Cache[T any] struct {
+	mu      sync.Mutex
+	value   *T
+	valid   bool
+	exists  bool
+	modTime time.Time
+	size    int64
+	clone   func(*T) *T
+}
+
+// NewCache creates a cache using clone to isolate cached values from callers.
+func NewCache[T any](clone func(*T) *T) *Cache[T] {
+	return &Cache[T]{clone: clone}
+}
+
+// Read returns a cached configuration when the file's existence, mtime, and
+// size are unchanged; otherwise it reads, validates, and caches the file.
+func (c *Cache[T]) Read(filePath string, s Schema[T]) (*T, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	info, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		c.invalidate()
+		return s.NewEmpty(), nil
+	}
+	if err != nil {
+		c.invalidate()
+		return nil, fmt.Errorf("failed to stat %s config from %q: %w", s.Kind, filePath, err)
+	}
+	if c.valid && c.exists && c.size == info.Size() && c.modTime.Equal(info.ModTime()) {
+		return c.clone(c.value), nil
+	}
+
+	cfg, err := read(filePath, s)
+	if err != nil {
+		c.invalidate()
+		return nil, err
+	}
+	c.value = c.clone(cfg)
+	c.valid = true
+	c.exists = true
+	c.modTime = info.ModTime()
+	c.size = info.Size()
+	return c.clone(c.value), nil
+}
+
+// Write invalidates the cache before attempting an atomic write.
+func (c *Cache[T]) Write(filePath string, s Schema[T], cfg *T) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidate()
+	return Write(filePath, s, cfg)
+}
+
+// Invalidate discards the cached file contents.
+func (c *Cache[T]) Invalidate() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidate()
+}
+
+func (c *Cache[T]) invalidate() {
+	c.value = nil
+	c.valid = false
+	c.exists = false
+	c.modTime = time.Time{}
+	c.size = 0
 }
 
 // Write atomically persists cfg to filePath: the containing directory is
