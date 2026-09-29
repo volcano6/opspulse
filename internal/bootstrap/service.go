@@ -52,20 +52,7 @@ func NewDefaultService() *Service {
 
 // ResolveTarget determines whether the target is local or a remote server from inventory.
 func (s *Service) ResolveTarget(serverName string) (executor.Target, error) {
-	if serverName == "local" || serverName == "" {
-		return executor.NewLocalTarget(), nil
-	}
-
-	if s.serverStore == nil {
-		return executor.Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
-	}
-
-	srv, err := s.serverStore.Get(serverName)
-	if err != nil {
-		return executor.Target{}, fmt.Errorf("server %q not found in inventory: %w", serverName, err)
-	}
-
-	return executor.NewServerTarget(*srv), nil
+	return executor.ResolveTarget(s.serverStore, serverName)
 }
 
 // Run executes the bootstrap workflow according to the provided options.

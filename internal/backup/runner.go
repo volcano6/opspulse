@@ -56,20 +56,7 @@ func (r *Runner) SetStores(backupStore *Store, assetStore *asset.Store) {
 
 // ResolveTarget determines whether the target is local or a remote server from inventory.
 func (r *Runner) ResolveTarget(serverName string) (executor.Target, error) {
-	if serverName == "local" || serverName == "" {
-		return executor.NewLocalTarget(), nil
-	}
-
-	if r.serverStore == nil {
-		return executor.Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
-	}
-
-	srv, err := r.serverStore.Get(serverName)
-	if err != nil {
-		return executor.Target{}, fmt.Errorf("server %q not found in inventory: %w", serverName, err)
-	}
-
-	return executor.NewServerTarget(*srv), nil
+	return executor.ResolveTarget(r.serverStore, serverName)
 }
 
 // Run executes a backup job on the resolved target, streams logs, and records structured metrics in SQLite.

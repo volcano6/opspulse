@@ -319,20 +319,7 @@ func (r *RestoreRunner) verifySnapshotBelongsToJob(ctx context.Context, job Job,
 }
 
 func (r *RestoreRunner) resolveTarget(serverName string) (executor.Target, error) {
-	if serverName == "local" || serverName == "" {
-		return executor.NewLocalTarget(), nil
-	}
-
-	if r.serverStore == nil {
-		return executor.Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
-	}
-
-	srv, err := r.serverStore.Get(serverName)
-	if err != nil {
-		return executor.Target{}, fmt.Errorf("server %q not found in inventory: %w", serverName, err)
-	}
-
-	return executor.NewServerTarget(*srv), nil
+	return executor.ResolveTarget(r.serverStore, serverName)
 }
 
 func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.RestoreRun) {

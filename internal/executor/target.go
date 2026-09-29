@@ -1,6 +1,10 @@
 package executor
 
-import "github.com/volcano6/opspulse/internal/server"
+import (
+	"fmt"
+
+	"github.com/volcano6/opspulse/internal/server"
+)
 
 // Target represents an execution destination (remote server or local machine).
 type Target struct {
@@ -42,4 +46,22 @@ func NewLocalTarget() Target {
 		IsLocal: true,
 		Server:  nil,
 	}
+}
+
+// ResolveTarget determines whether the target is local or a remote server from inventory.
+func ResolveTarget(store *server.Store, serverName string) (Target, error) {
+	if serverName == "local" || serverName == "" {
+		return NewLocalTarget(), nil
+	}
+
+	if store == nil {
+		return Target{}, fmt.Errorf("serverStore is nil, cannot resolve %q", serverName)
+	}
+
+	srv, err := store.Get(serverName)
+	if err != nil {
+		return Target{}, fmt.Errorf("server %q not found in inventory: %w", serverName, err)
+	}
+
+	return NewServerTarget(*srv), nil
 }
