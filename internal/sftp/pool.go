@@ -35,6 +35,15 @@ func runBounded[T any](items []T, workers int, fn func(T) error) error {
 				if !ok {
 					return
 				}
+				// A send can race with a worker reporting an error because both
+				// stop and jobs may be ready in the producer's select. Check
+				// cancellation again before invoking fn so no post-failure item
+				// starts after the in-flight work has been accounted for.
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				if err := fn(item); err != nil {
 					once.Do(func() {
 						errMu.Lock()

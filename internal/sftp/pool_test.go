@@ -58,3 +58,29 @@ func TestRunBoundedStopsDispatchingAndReturnsFirstError(t *testing.T) {
 		t.Fatalf("runBounded() error = %v, want %v", err, wantErr)
 	}
 }
+
+func TestRunBoundedDoesNotStartWorkAfterFailure(t *testing.T) {
+	wantErr := errors.New("first task failed")
+	items := make([]int, 20)
+	for i := range items {
+		items[i] = i
+	}
+	var started atomic.Int32
+	release := make(chan struct{})
+	time.AfterFunc(20*time.Millisecond, func() { close(release) })
+
+	err := runBounded(items, 5, func(item int) error {
+		if item == 0 {
+			return wantErr
+		}
+		started.Add(1)
+		<-release
+		return nil
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runBounded() error = %v, want %v", err, wantErr)
+	}
+	if got := started.Load(); got > 4 {
+		t.Fatalf("started tasks after failure = %d, want at most 4 in-flight workers", got)
+	}
+}
