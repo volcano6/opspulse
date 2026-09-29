@@ -55,6 +55,35 @@ func (e *SSHExecutor) DialTarget(ctx context.Context, target Target) (*ssh.Clien
 	return e.DialTargetWithWriter(ctx, target, safeWarnWriter)
 }
 
+// wrapHandshakeError classifies an ssh.NewClientConn handshake failure.
+//
+// Authentication rejections (bad key, wrong password, no accepted method) are
+// user-credential problems and become *AuthError. Everything else — host key
+// verification failures, unsupported algorithm negotiation, banners, mid-
+// handshake resets — is a connection/trust problem, not a credential problem,
+// and becomes *NetworkError so the user is not sent to fix their keys.
+func wrapHandshakeError(user, host string, err error) error {
+	if isAuthHandshakeError(err) {
+		return &AuthError{User: user, Host: host, Reason: err}
+	}
+	return &NetworkError{Host: host, Reason: err}
+}
+
+// isAuthHandshakeError reports whether a handshake error is an authentication
+// rejection rather than a protocol or trust failure.
+func isAuthHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *ssh.ServerAuthError
+	if errors.As(err, &authErr) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "unable to authenticate") ||
+		strings.Contains(msg, "no supported methods")
+}
+
 // DialTargetWithWriter establishes an SSH client connection to the target server,
 // routing any host key warnings to the provided warnWriter.
 func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, warnWriter io.Writer) (*ssh.Client, func(), error) {
@@ -94,7 +123,7 @@ func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, w
 		jumpSSHConn, chans, reqs, err := ssh.NewClientConn(jumpConn, jumpSrv.Address(), jumpConfig)
 		if err != nil {
 			_ = jumpConn.Close()
-			return nil, nil, &AuthError{User: jumpSrv.User, Host: jumpSrv.Host, Reason: fmt.Errorf("authenticate with jump host: %w", err)}
+			return nil, nil, wrapHandshakeError(jumpSrv.User, jumpSrv.Host, fmt.Errorf("handshake with jump host: %w", err))
 		}
 		jumpClient := ssh.NewClient(jumpSSHConn, chans, reqs)
 
@@ -108,7 +137,7 @@ func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, w
 		if err != nil {
 			_ = tunnelConn.Close()
 			_ = jumpClient.Close()
-			return nil, nil, &AuthError{User: srv.User, Host: srv.Host, Reason: err}
+			return nil, nil, wrapHandshakeError(srv.User, srv.Host, err)
 		}
 		targetClient := ssh.NewClient(targetSSHConn, tChans, tReqs)
 
@@ -130,7 +159,7 @@ func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, w
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, targetConfig)
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, &AuthError{User: srv.User, Host: srv.Host, Reason: err}
+		return nil, nil, wrapHandshakeError(srv.User, srv.Host, err)
 	}
 	client := ssh.NewClient(sshConn, chans, reqs)
 	cleanup := func() {
