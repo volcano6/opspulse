@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// backupRunColumns is the shared SELECT column list for the backup_runs table.
+// Keep it byte-identical to the pre-refactor literal so generated SQL is
+// unchanged.
+const backupRunColumns = "id, job_name, server_name, snapshot_id, status,\n" +
+	"\t\tfiles_new, files_changed, files_unmodified,\n" +
+	"\t\tdata_added_bytes, total_bytes, duration_seconds,\n" +
+	"\t\terror_message, log_path, started_at, finished_at"
+
 // BackupRun represents a recorded execution run of a backup job.
 type BackupRun struct {
 	ID              int64      `json:"id"`
@@ -136,10 +144,7 @@ func (r *BackupRepo) ListRuns(ctx context.Context, jobName string, limit int) ([
 
 	query := `
 	SELECT
-		id, job_name, server_name, snapshot_id, status,
-		files_new, files_changed, files_unmodified,
-		data_added_bytes, total_bytes, duration_seconds,
-		error_message, log_path, started_at, finished_at
+		` + backupRunColumns + `
 	FROM backup_runs
 	WHERE (? = '' OR job_name = ?)
 	ORDER BY started_at DESC
@@ -171,10 +176,7 @@ func (r *BackupRepo) ListRuns(ctx context.Context, jobName string, limit int) ([
 func (r *BackupRepo) GetLatestRun(ctx context.Context, jobName string) (*BackupRun, error) {
 	query := `
 	SELECT
-		id, job_name, server_name, snapshot_id, status,
-		files_new, files_changed, files_unmodified,
-		data_added_bytes, total_bytes, duration_seconds,
-		error_message, log_path, started_at, finished_at
+		` + backupRunColumns + `
 	FROM backup_runs
 	WHERE job_name = ?
 	ORDER BY started_at DESC
@@ -196,10 +198,7 @@ func (r *BackupRepo) GetLatestRun(ctx context.Context, jobName string) (*BackupR
 func (r *BackupRepo) GetAllLatestRuns(ctx context.Context) ([]BackupRun, error) {
 	query := `
 	SELECT
-		id, job_name, server_name, snapshot_id, status,
-		files_new, files_changed, files_unmodified,
-		data_added_bytes, total_bytes, duration_seconds,
-		error_message, log_path, started_at, finished_at
+		` + backupRunColumns + `
 	FROM backup_runs
 	WHERE id IN (
 		SELECT MAX(id) FROM backup_runs GROUP BY job_name
@@ -226,10 +225,6 @@ func (r *BackupRepo) GetAllLatestRuns(ctx context.Context) ([]BackupRun, error) 
 	}
 
 	return results, nil
-}
-
-type scannable interface {
-	Scan(dest ...any) error
 }
 
 func scanBackupRun(s scannable) (*BackupRun, error) {

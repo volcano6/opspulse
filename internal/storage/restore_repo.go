@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+// restoreRunColumns is the shared SELECT column list for the restore_runs table.
+// Keep it byte-identical to the pre-refactor literal so generated SQL is
+// unchanged.
+const restoreRunColumns = "id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,\n" +
+	"\t\t       status, files_restored, total_bytes_restored, duration_seconds, error_message,\n" +
+	"\t\t       log_path, started_at, finished_at"
+
 // RestoreRun represents a single restore operation execution record.
 type RestoreRun struct {
 	ID                 int64      `json:"id"`
@@ -125,9 +132,7 @@ func (r *RestoreRepo) ListRuns(ctx context.Context, jobName string, limit int) (
 
 	if jobName != "" {
 		query = `
-		SELECT id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,
-		       status, files_restored, total_bytes_restored, duration_seconds, error_message,
-		       log_path, started_at, finished_at
+		SELECT ` + restoreRunColumns + `
 		FROM restore_runs
 		WHERE job_name = ?
 		ORDER BY started_at DESC
@@ -135,9 +140,7 @@ func (r *RestoreRepo) ListRuns(ctx context.Context, jobName string, limit int) (
 		args = []any{jobName, limit}
 	} else {
 		query = `
-		SELECT id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,
-		       status, files_restored, total_bytes_restored, duration_seconds, error_message,
-		       log_path, started_at, finished_at
+		SELECT ` + restoreRunColumns + `
 		FROM restore_runs
 		ORDER BY started_at DESC
 		LIMIT ?`
@@ -152,51 +155,11 @@ func (r *RestoreRepo) ListRuns(ctx context.Context, jobName string, limit int) (
 
 	var runs []RestoreRun
 	for rows.Next() {
-		var run RestoreRun
-		var assetID, targetPath, errMsg, logPath, startedStr, finishedStr sql.NullString
-
-		err := rows.Scan(
-			&run.ID,
-			&run.JobName,
-			&assetID,
-			&run.SnapshotID,
-			&run.SourceServer,
-			&run.TargetServer,
-			&targetPath,
-			&run.Status,
-			&run.FilesRestored,
-			&run.TotalBytesRestored,
-			&run.DurationSeconds,
-			&errMsg,
-			&logPath,
-			&startedStr,
-			&finishedStr,
-		)
+		run, err := scanRestoreRun(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan restore_run row: %w", err)
 		}
-
-		if assetID.Valid {
-			run.AssetID = assetID.String
-		}
-		if targetPath.Valid {
-			run.TargetPath = targetPath.String
-		}
-		if errMsg.Valid {
-			run.ErrorMessage = errMsg.String
-		}
-		if logPath.Valid {
-			run.LogPath = logPath.String
-		}
-		if startedStr.Valid {
-			run.StartedAt, _ = time.Parse(time.RFC3339, startedStr.String)
-		}
-		if finishedStr.Valid {
-			t, _ := time.Parse(time.RFC3339, finishedStr.String)
-			run.FinishedAt = &t
-		}
-
-		runs = append(runs, run)
+		runs = append(runs, *run)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -216,4 +179,52 @@ func (r *RestoreRepo) GetLatestRun(ctx context.Context, jobName string) (*Restor
 		return nil, nil
 	}
 	return &runs[0], nil
+}
+
+func scanRestoreRun(s scannable) (*RestoreRun, error) {
+	var run RestoreRun
+	var assetID, targetPath, errMsg, logPath, startedStr, finishedStr sql.NullString
+
+	err := s.Scan(
+		&run.ID,
+		&run.JobName,
+		&assetID,
+		&run.SnapshotID,
+		&run.SourceServer,
+		&run.TargetServer,
+		&targetPath,
+		&run.Status,
+		&run.FilesRestored,
+		&run.TotalBytesRestored,
+		&run.DurationSeconds,
+		&errMsg,
+		&logPath,
+		&startedStr,
+		&finishedStr,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if assetID.Valid {
+		run.AssetID = assetID.String
+	}
+	if targetPath.Valid {
+		run.TargetPath = targetPath.String
+	}
+	if errMsg.Valid {
+		run.ErrorMessage = errMsg.String
+	}
+	if logPath.Valid {
+		run.LogPath = logPath.String
+	}
+	if startedStr.Valid {
+		run.StartedAt, _ = time.Parse(time.RFC3339, startedStr.String)
+	}
+	if finishedStr.Valid {
+		t, _ := time.Parse(time.RFC3339, finishedStr.String)
+		run.FinishedAt = &t
+	}
+
+	return &run, nil
 }
