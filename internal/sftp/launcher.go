@@ -666,12 +666,23 @@ func formatSFTPURL(user, password, host string, port int, path string, includePa
 
 // LaunchAsync executes a GUI client command in a detached, non-blocking process.
 func LaunchAsync(cmd *exec.Cmd) error {
+	return launchAsync(cmd, nil)
+}
+
+// launchAsync is the implementation behind LaunchAsync. onWait is used by
+// tests to observe completion before inspecting exec.Cmd.ProcessState.
+func launchAsync(cmd *exec.Cmd, onWait func()) error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		_ = cmd.Wait()
+		if onWait != nil {
+			onWait()
+		}
+	}()
 	return nil
 }

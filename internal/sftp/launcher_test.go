@@ -27,7 +27,8 @@ func TestLaunchAsyncReapsWithoutBlocking(t *testing.T) {
 	cmd.Env = append(os.Environ(), "GO_WANT_LAUNCH_ASYNC_HELPER=1")
 
 	started := time.Now()
-	if err := LaunchAsync(cmd); err != nil {
+	done := make(chan struct{})
+	if err := launchAsync(cmd, func() { close(done) }); err != nil {
 		t.Fatalf("LaunchAsync() error: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 750*time.Millisecond {
@@ -37,12 +38,13 @@ func TestLaunchAsyncReapsWithoutBlocking(t *testing.T) {
 		t.Fatal("LaunchAsync() did not detach the child standard streams")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for cmd.ProcessState == nil && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("LaunchAsync() did not reap the child process within 5 seconds")
 	}
 	if cmd.ProcessState == nil {
-		t.Fatal("LaunchAsync() did not reap the child process within 2 seconds")
+		t.Fatal("LaunchAsync() did not record the child process state")
 	}
 	if !cmd.ProcessState.Exited() {
 		t.Fatalf("child process state = %v, want exited", cmd.ProcessState)
@@ -64,7 +66,7 @@ func TestLaunchAsyncStartError(t *testing.T) {
 	}
 }
 
-func TestLaunchAsyncHelperProcess(t *testing.T) {
+func TestLaunchAsyncHelperProcess(_ *testing.T) {
 	if os.Getenv("GO_WANT_LAUNCH_ASYNC_HELPER") != "1" {
 		return
 	}

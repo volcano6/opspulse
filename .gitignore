@@ -49,6 +49,7 @@ CLAUDE.md
 GEMINI.md
 .github/copilot-instructions.md
 scratch/
+.scratch/
 docs/*_handoff.md
 docs/*_debt.md
 docs/reference/technical_debt.md
