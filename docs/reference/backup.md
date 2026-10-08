@@ -165,6 +165,35 @@ ops backup history web-data --limit 10
 ops backup snapshots web-data
 ```
 
+### 审计记录与 `--allow-untracked`
+
+每次真实备份都会先向本地 SQLite 写入一条 `running` 记录，结束时再更新为最终状态。默认是
+**fail-closed**：只要这条记录无法创建（SQLite 被锁、目录只读、磁盘写满等），`ops backup run`
+就会在**执行任何真实备份之前**直接拒绝并以非 0 退出码结束——无法留下审计痕迹的备份不予执行。
+
+应急场景下可用 `--allow-untracked`（`ops backup run` 与 `ops daemon` 均支持）显式跳过该保护：
+
+```bash
+ops backup run web-data --allow-untracked
+```
+
+该模式下的运行会被人机两端一致地标记为「未审计」：
+
+| 位置 | 标记方式 |
+|:---|:---|
+| 终端 | 运行前后打印 `UNTRACKED` 警告；批量汇总的 `STATUS` 列为 `SUCCESS (UNTRACKED)` / `FAILED (UNTRACKED)` |
+| `ops backup status` / `ops backup history` | `STATUS` 列为 `SUCCESS (UNTRACKED)`；前提是最终状态能成功写回——审计库持续不可写时该次运行不会入库，终端与通知是唯一的线索 |
+| 通知 | Webhook 请求体带 `"untracked": true`，`text` / `content` 标注 `UNTRACKED`；只订阅 `failure`（未写 `on` 时的默认值）的渠道同样会收到未审计的成功 |
+| 退出码 | `3`（未审计成功） |
+
+同一条 fail-closed 规则也覆盖结束阶段：运行记录已经创建、但结束时**无法写回最终状态**（同样是
+锁、只读目录或磁盘错误）时，该次运行会被标记为未审计并返回退出码 `3`，不会以「正常成功」收尾
+——否则记录会永远停在 `running`，而调用方以为一切正常。
+
+退出码约定：`0` 正常成功、`3` 未审计成功（含备份成功但最终状态无法写回的情况）；其余非 0 表示
+失败（通常为 `1`，远端命令失败时可能是其自身的退出码）。因此「未审计的成功」不会被脚本误判为
+正常成功。
+
 ---
 
 ## 3. 还原 (Restore)
@@ -233,6 +262,26 @@ ops restore history web-data
 # 限制显示条数
 ops restore history web-data --limit 5
 ```
+
+#### 失败阶段与历史标记
+
+每次还原都会**先写入 SQLite 记录、再做校验**，所以快照、目标服务器、asset、secret 等前置校验失败同样会出现在 `ops restore history` 中。记录里的 `failure_stage` 标明失败发生在哪个阶段：
+
+| 失败阶段 | 含义 | 历史中的状态列 |
+|:---|:---|:---|
+| `validation` | 前置校验失败：任务配置、容器别名、secret 解析、快照不存在或不属于该任务、目标服务器不在清单、asset 不存在。**没有触碰任何文件** | `FAILED (VALIDATION)` |
+| `execution` | restic 还原命令本身失败（含 `--dry-run` 预览失败） | `FAILED (EXECUTION)` |
+| `post_restore` | 文件已还原，但还原后的容器自动启动 / 灌库失败 | `PARTIAL (POST_RESTORE)` |
+| （空） | 未失败：`running` / `success` / `dry-run` | `SUCCESS` / `DRY-RUN` |
+
+失败时终端同时打印失败阶段与下一步建议：
+
+```text
+❌ Restore failed during validation: snapshot "abc123" does not belong to job "web-data"
+   Next: nothing was restored; fix the reported input (see `ops backup snapshots <job>`, `ops asset list`, `ops server list`) and re-run
+```
+
+记录里还会保留这次尝试的原始参数（任务名、源/目标服务器、`--snapshot`、`--asset`、`--target-path`），即使该参数本身就是失败原因；快照解析成功后，记录里的 `snapshot_id` 会被替换为解析出的真实 ID。
 
 ### `restore run` 完整参数
 
@@ -404,6 +453,24 @@ ops daemon
 ```bash
 ops daemon --once
 ```
+
+`--once` 与常驻 daemon 使用相同的 schedule 校验：留空的任务不执行，非法表达式会显示任务名、原始表达式和修复提示并跳过；如果所有已配置的 schedule 都非法，命令返回非零且不会执行任何备份。至少保留一个合法任务时，合法任务继续按序执行。
+
+#### 审计失败时的行为 (`--allow-untracked`)
+
+daemon 与 `ops backup run` 一样默认 fail-closed：运行记录无法写入 SQLite 时，该次备份**不会执行**，daemon 会把该次作业记为失败并写入日志（`[scheduler] ... finished with error`）。常驻模式下进程本身不会因此退出，只有 `ops daemon --once` 会以非 0 退出码结束。
+
+```bash
+ops daemon --allow-untracked
+```
+
+应急模式下备份照常执行，但结果会同时：
+- 在通知中带上 `"untracked": true`，并标注 `UNTRACKED`；
+- `ops daemon --once` 下以退出码 `3` 结束（区别于正常退出与普通失败）。
+
+也就是说，未审计的成功在守护进程路径上也不会被当成正常成功。常驻 daemon 不返回退出码，因此
+长期运行时只能靠通知或 `[scheduler] ... finished with error` 日志发现——需要脚本判定退出码时
+请用 `ops daemon --once`。
 
 ### 生产环境部署 (Systemd)
 

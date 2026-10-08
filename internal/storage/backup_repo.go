@@ -9,12 +9,12 @@ import (
 )
 
 // backupRunColumns is the shared SELECT column list for the backup_runs table.
-// Keep it byte-identical to the pre-refactor literal so generated SQL is
-// unchanged.
+// The list must stay in sync with the INSERT/scan sites below and with
+// TestColumnConstantsByteEquivalence, which pins it byte-for-byte.
 const backupRunColumns = "id, job_name, server_name, snapshot_id, status,\n" +
 	"\t\tfiles_new, files_changed, files_unmodified,\n" +
 	"\t\tdata_added_bytes, total_bytes, duration_seconds,\n" +
-	"\t\terror_message, log_path, started_at, finished_at"
+	"\t\terror_message, log_path, started_at, finished_at, untracked"
 
 // BackupRun represents a recorded execution run of a backup job.
 type BackupRun struct {
@@ -33,6 +33,11 @@ type BackupRun struct {
 	LogPath         string     `json:"log_path,omitempty"`
 	StartedAt       time.Time  `json:"started_at"`
 	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	// Untracked marks a run whose initial audit record could not be created
+	// (SQLite lock, read-only directory, disk error). The backup itself ran in
+	// the explicit --allow-untracked emergency mode, so callers must not treat
+	// a "success" status as a normal, audited success.
+	Untracked bool `json:"untracked,omitempty"`
 }
 
 // BackupRepo manages CRUD operations for backup runs in SQLite.
@@ -56,8 +61,8 @@ func (r *BackupRepo) CreateRun(ctx context.Context, run *BackupRun) (int64, erro
 		job_name, server_name, snapshot_id, status,
 		files_new, files_changed, files_unmodified,
 		data_added_bytes, total_bytes, duration_seconds,
-		error_message, log_path, started_at, finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		error_message, log_path, started_at, finished_at, untracked
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	var finishedAtVal *string
 	if run.FinishedAt != nil {
@@ -80,6 +85,7 @@ func (r *BackupRepo) CreateRun(ctx context.Context, run *BackupRun) (int64, erro
 		run.LogPath,
 		run.StartedAt.UTC().Format(time.RFC3339),
 		finishedAtVal,
+		boolToInt(run.Untracked),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert backup_run: %w", err)
@@ -107,7 +113,8 @@ func (r *BackupRepo) UpdateRun(ctx context.Context, run *BackupRun) error {
 		duration_seconds = ?,
 		error_message = ?,
 		log_path = ?,
-		finished_at = ?
+		finished_at = ?,
+		untracked = ?
 	WHERE id = ?`
 
 	var finishedAtVal *string
@@ -128,6 +135,7 @@ func (r *BackupRepo) UpdateRun(ctx context.Context, run *BackupRun) error {
 		run.ErrorMessage,
 		run.LogPath,
 		finishedAtVal,
+		boolToInt(run.Untracked),
 		run.ID,
 	)
 	if err != nil {
@@ -232,6 +240,7 @@ func scanBackupRun(s scannable) (*BackupRun, error) {
 	var snapshotID, errorMsg, logPath sql.NullString
 	var startedAtStr string
 	var finishedAtStr sql.NullString
+	var untracked int
 
 	err := s.Scan(
 		&run.ID,
@@ -249,6 +258,7 @@ func scanBackupRun(s scannable) (*BackupRun, error) {
 		&logPath,
 		&startedAtStr,
 		&finishedAtStr,
+		&untracked,
 	)
 	if err != nil {
 		return nil, err
@@ -263,6 +273,7 @@ func scanBackupRun(s scannable) (*BackupRun, error) {
 	if logPath.Valid {
 		run.LogPath = logPath.String
 	}
+	run.Untracked = untracked != 0
 
 	// Parse timestamps
 	if t, err := time.Parse(time.RFC3339, startedAtStr); err == nil {

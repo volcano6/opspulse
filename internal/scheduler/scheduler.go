@@ -141,6 +141,39 @@ func ValidateSchedule(spec string) error {
 	return nil
 }
 
+// validateScheduledJobs filters unscheduled jobs and validates every non-empty
+// schedule before either daemon mode can execute it.
+//
+// Invalid schedules are returned as warnings so callers can continue with valid
+// jobs. If every scheduled job is invalid, the returned error prevents any job
+// from running.
+func validateScheduledJobs(allJobs []backup.Job) ([]backup.Job, []error, error) {
+	var scheduled []backup.Job
+	var warnings []error
+	scheduledCount := 0
+
+	for _, j := range allJobs {
+		scheduleSpec := strings.TrimSpace(j.Schedule)
+		if scheduleSpec == "" {
+			continue
+		}
+		scheduledCount++
+
+		if err := ValidateSchedule(scheduleSpec); err != nil {
+			warnings = append(warnings, fmt.Errorf("job %q skipped: %w; fix the schedule in backups.yaml", j.Name, err))
+			continue
+		}
+
+		scheduled = append(scheduled, j)
+	}
+
+	if scheduledCount > 0 && len(scheduled) == 0 {
+		return nil, warnings, fmt.Errorf("all %d scheduled job(s) have invalid schedules: %w", scheduledCount, errors.Join(warnings...))
+	}
+
+	return scheduled, warnings, nil
+}
+
 // RegisterJobs reads all jobs from the backup store and registers those with a
 // non-empty, valid Schedule.
 //
@@ -158,6 +191,8 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, []error, error) {
 		return nil, nil, fmt.Errorf("failed to list backup jobs: %w", err)
 	}
 
+	scheduledJobs, warnings, validationErr := validateScheduledJobs(allJobs)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,28 +202,20 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, []error, error) {
 	}
 	s.jobs = make(map[cron.EntryID]backup.Job)
 
+	if validationErr != nil {
+		return nil, warnings, validationErr
+	}
+
 	var registered []ScheduledJob
-	var warnings []error
-	scheduledCount := 0
-
-	for _, j := range allJobs {
+	for _, j := range scheduledJobs {
 		scheduleSpec := strings.TrimSpace(j.Schedule)
-		if scheduleSpec == "" {
-			continue
-		}
-		scheduledCount++
-
-		if err := ValidateSchedule(scheduleSpec); err != nil {
-			warnings = append(warnings, fmt.Errorf("job %q skipped: %w", j.Name, err))
-			continue
-		}
 
 		jobCopy := j
 		entryID, err := s.cron.AddFunc(scheduleSpec, func() {
 			_ = s.executeJob(s.daemonCtx, jobCopy)
 		})
 		if err != nil {
-			warnings = append(warnings, fmt.Errorf("job %q skipped: %w", j.Name, err))
+			warnings = append(warnings, fmt.Errorf("job %q skipped: %w; fix the schedule in backups.yaml", j.Name, err))
 			continue
 		}
 
@@ -209,8 +236,8 @@ func (s *Scheduler) RegisterJobs() ([]ScheduledJob, []error, error) {
 		})
 	}
 
-	if scheduledCount > 0 && len(registered) == 0 {
-		return nil, warnings, fmt.Errorf("all %d scheduled job(s) have invalid schedules: %w", scheduledCount, errors.Join(warnings...))
+	if len(scheduledJobs) > 0 && len(registered) == 0 {
+		return nil, warnings, fmt.Errorf("all %d scheduled job(s) failed to register: %w", len(scheduledJobs), errors.Join(warnings...))
 	}
 
 	return registered, warnings, nil
@@ -226,6 +253,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 	var snapshotID string
 	var durationSec float64
 	var errMsg string
+	var untracked bool
 
 	if s.runner != nil {
 		rec, err := s.runner.Run(ctx, job, s.out)
@@ -234,6 +262,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 			snapshotID = rec.SnapshotID
 			durationSec = rec.DurationSeconds
 			errMsg = rec.ErrorMessage
+			untracked = rec.Untracked
 		}
 		if err != nil {
 			runRecordErr = err
@@ -242,6 +271,11 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 			}
 		} else if rec != nil && (rec.Status == "failed" || rec.Status == "partial") {
 			runRecordErr = fmt.Errorf("job %q completed with status %q: %s", job.Name, rec.Status, errMsg)
+		} else if rec != nil && rec.Untracked {
+			// The backup succeeded but its audit record could not be created.
+			// Report it as an error so the daemon exits non-zero and the gap is
+			// impossible to miss, while the notification carries the flag too.
+			runRecordErr = fmt.Errorf("job %q completed but was not audited: %w", job.Name, backup.ErrUntracked)
 		}
 	} else {
 		runRecordErr = fmt.Errorf("runner is nil")
@@ -259,6 +293,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job backup.Job) error {
 		DurationSeconds: durationSec,
 		Error:           errMsg,
 		Timestamp:       time.Now(),
+		Untracked:       untracked,
 	})
 
 	if runRecordErr != nil {
@@ -473,11 +508,12 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("failed to list backup jobs: %w", err)
 	}
 
-	var scheduledJobs []backup.Job
-	for _, j := range allJobs {
-		if strings.TrimSpace(j.Schedule) != "" {
-			scheduledJobs = append(scheduledJobs, j)
-		}
+	scheduledJobs, warnings, validationErr := validateScheduledJobs(allJobs)
+	for _, warning := range warnings {
+		_, _ = fmt.Fprintf(s.out, "[scheduler] ⚠️ %v\n", warning)
+	}
+	if validationErr != nil {
+		return validationErr
 	}
 
 	total := len(scheduledJobs)

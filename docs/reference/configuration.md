@@ -153,7 +153,7 @@ channels:
 
 ### 触发条件 (`on`) 行为说明
 
-- `failure`（默认）：备份任务状态为 `failed` 或 `partial` 时触发通知。`partial` 指主体工作已完成、但后续步骤失败（例如还原后容器自动启动失败），对失败告警渠道而言同样算失败。**推荐日常使用，避免正常任务消息刷屏**。
+- `failure`（默认）：备份任务状态为 `failed` 或 `partial` 时触发通知。`partial` 指主体工作已完成、但后续步骤失败（例如还原后容器自动启动失败），对失败告警渠道而言同样算失败；未审计（`untracked`）的运行也按失败处理，即使它的 `status` 是 `success`。**推荐日常使用，避免正常任务消息刷屏**。
 - `success`：仅当备份任务成功完成时触发通知。
 - `always`：无论成功还是失败均触发通知。
 
@@ -223,6 +223,14 @@ OpsPulse 发送标准 HTTP POST 请求，Header 包含：
 
 > [!TIP]
 > 消息体中内置了 `text`（适配 Slack Webhook）和 `content`（适配 Discord Webhook）字段，各主流 IM 平台的 Incoming Webhook 无需额外中间层转发即可直接展示格式化卡片。
+
+> [!IMPORTANT]
+> 当备份作业因运行记录无法写入 SQLite 而以「未审计」（untracked）模式完成时，消息体会额外带上
+> `"untracked": true`；`status` 仍是 `success`，但 `text` / `content` 会明确标注 `UNTRACKED`。
+> 消费方必须把这类成功与正常成功区分开——CLI 侧对应退出码 `3`，见
+> [备份、还原与调度指南](backup.md#2-备份命令与实战-backup-commands)。
+> 路由上这类事件等同失败：只订阅 `failure`（未写 `on` 时的默认值）的渠道同样会收到，因此默认
+> 配置不会漏掉未审计的成功。
 
 ---
 

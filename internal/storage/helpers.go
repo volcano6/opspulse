@@ -8,3 +8,11 @@ func nullIfEmpty(s string) sql.NullString {
 	}
 	return sql.NullString{String: s, Valid: true}
 }
+
+// boolToInt stores a Go bool in SQLite's 0/1 INTEGER convention.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

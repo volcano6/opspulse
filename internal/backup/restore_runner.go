@@ -61,71 +61,8 @@ func NewRestoreRunner(
 
 // Run executes a restore operation for the given backup job according to the provided options.
 func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, consoleOut io.Writer) (*storage.RestoreRun, error) {
-	if err := job.Validate(); err != nil {
-		return nil, err
-	}
-
-	// The alias reaches generated shell scripts (COMPOSE_PROJECT_NAME, compose
-	// project directory names) and must never carry shell metacharacters.
-	if opts.AliasName != "" {
-		alias := strings.TrimSpace(opts.AliasName)
-		if err := validateContainerAlias(alias); err != nil {
-			return nil, err
-		}
-		opts.AliasName = alias
-	}
-
 	if consoleOut == nil {
 		consoleOut = io.Discard
-	}
-
-	// 0. Resolve op:// secrets in environment variables
-	resolvedEnv, err := secret.NewResolver().ResolveMap(ctx, job.Env)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve secrets: %w", err)
-	}
-	job.Env = resolvedEnv
-
-	// 1. Resolve snapshot ID: if "latest", query the repository for the most recent snapshot
-	snapshotID := opts.SnapshotID
-	if snapshotID == "" || snapshotID == "latest" {
-		resolvedID, err := r.resolveLatestSnapshot(ctx, job, consoleOut)
-		if err != nil {
-			return nil, err
-		}
-		snapshotID = resolvedID
-	} else {
-		if err := r.verifySnapshotBelongsToJob(ctx, job, snapshotID); err != nil {
-			return nil, err
-		}
-	}
-
-	// 2. Determine target server (defaults to the job's source server)
-	targetServerName := opts.TargetServer
-	if targetServerName == "" {
-		targetServerName = job.Server
-	}
-
-	// 3. Resolve executor target
-	target, err := r.resolveTarget(targetServerName)
-	if err != nil {
-		return nil, err
-	}
-
-	// 4. Determine target path (defaults to "/")
-	targetPath := opts.TargetPath
-	if targetPath == "" {
-		targetPath = "/"
-	}
-
-	// 5. Resolve asset include patterns for single-asset restore
-	var includePatterns []string
-	if opts.AssetID != "" && r.assetStore != nil {
-		a, err := r.assetStore.Get(opts.AssetID)
-		if err != nil {
-			return nil, fmt.Errorf("asset %q not found: %w", opts.AssetID, err)
-		}
-		includePatterns = append(includePatterns, a.Source)
 	}
 
 	startTime := time.Now()
@@ -134,28 +71,92 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		_, _ = fmt.Fprintf(consoleOut, "Warning: failed to initialize log file path: %v (running without log file)\n", logErr)
 	}
 
-	// 6. Record initial 'running' state in SQLite
+	// Target server (defaults to the job's source server) and target path
+	// (defaults to "/") are resolved before recording: the row has to describe
+	// the attempt even when resolving the target server itself fails.
+	targetServerName := opts.TargetServer
+	if targetServerName == "" {
+		targetServerName = job.Server
+	}
+	targetPath := opts.TargetPath
+	if targetPath == "" {
+		targetPath = "/"
+	}
+	requestedSnapshot := opts.SnapshotID
+	if requestedSnapshot == "" {
+		requestedSnapshot = "latest"
+	}
+
+	// Record the attempt before validating anything: a snapshot, target, asset
+	// or secret failure must still show up in `ops restore history`.
 	runRecord := &storage.RestoreRun{
 		JobName:      job.Name,
-		SnapshotID:   snapshotID,
+		AssetID:      opts.AssetID,
+		SnapshotID:   requestedSnapshot,
 		SourceServer: job.Server,
 		TargetServer: targetServerName,
 		TargetPath:   targetPath,
 		Status:       "running",
-		LogPath:      logFilePath,
 		StartedAt:    startTime,
 	}
-	if opts.AssetID != "" {
-		runRecord.AssetID = opts.AssetID
-	}
-
 	if r.restoreRepo != nil {
 		if _, err := r.restoreRepo.CreateRun(ctx, runRecord); err != nil {
 			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to record initial restore run in database: %v\n", err)
 		}
 	}
 
-	// 7. Set up logging
+	// 0. Validate the job and the container alias. Both reach generated shell
+	// scripts, so they are checked before anything else runs.
+	if err := job.Validate(); err != nil {
+		return r.failRun(ctx, runRecord, storage.RestoreStageValidation, err, consoleOut)
+	}
+	if opts.AliasName != "" {
+		alias := strings.TrimSpace(opts.AliasName)
+		if err := validateContainerAlias(alias); err != nil {
+			return r.failRun(ctx, runRecord, storage.RestoreStageValidation, err, consoleOut)
+		}
+		opts.AliasName = alias
+	}
+
+	// 1. Resolve op:// secrets in environment variables
+	resolvedEnv, err := secret.NewResolver().ResolveMap(ctx, job.Env)
+	if err != nil {
+		return r.failRun(ctx, runRecord, storage.RestoreStageValidation, fmt.Errorf("failed to resolve secrets: %w", err), consoleOut)
+	}
+	job.Env = resolvedEnv
+
+	// 2. Resolve snapshot ID: if "latest", query the repository for the most recent snapshot
+	snapshotID := opts.SnapshotID
+	if snapshotID == "" || snapshotID == "latest" {
+		resolvedID, err := r.resolveLatestSnapshot(ctx, job, consoleOut)
+		if err != nil {
+			return r.failRun(ctx, runRecord, storage.RestoreStageValidation, err, consoleOut)
+		}
+		snapshotID = resolvedID
+	} else {
+		if err := r.verifySnapshotBelongsToJob(ctx, job, snapshotID); err != nil {
+			return r.failRun(ctx, runRecord, storage.RestoreStageValidation, err, consoleOut)
+		}
+	}
+	runRecord.SnapshotID = snapshotID
+
+	// 3. Resolve executor target
+	target, err := r.resolveTarget(targetServerName)
+	if err != nil {
+		return r.failRun(ctx, runRecord, storage.RestoreStageValidation, err, consoleOut)
+	}
+
+	// 4. Resolve asset include patterns for single-asset restore
+	var includePatterns []string
+	if opts.AssetID != "" && r.assetStore != nil {
+		a, err := r.assetStore.Get(opts.AssetID)
+		if err != nil {
+			return r.failRun(ctx, runRecord, storage.RestoreStageValidation, fmt.Errorf("asset %q not found: %w", opts.AssetID, err), consoleOut)
+		}
+		includePatterns = append(includePatterns, a.Source)
+	}
+
+	// 5. Set up logging
 	var logFile *os.File
 	if logFilePath != "" {
 		var openErr error
@@ -164,6 +165,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to open log file %s: %v (running without log file)\n", logFilePath, openErr)
 		} else {
 			defer func() { _ = logFile.Close() }()
+			runRecord.LogPath = logFilePath
 			_, _ = fmt.Fprintf(logFile, "=== Restore Log for Job %q (Snapshot: %s, Target: %s) at %s ===\n\n",
 				job.Name, snapshotID, targetServerName, startTime.Format(time.RFC3339))
 		}
@@ -179,7 +181,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	}
 	multiWriter := io.MultiWriter(writers...)
 
-	// 8. Handle dry-run mode
+	// 6. Handle dry-run mode
 	if opts.DryRun {
 		_, _ = fmt.Fprintf(consoleOut, "--> [DRY-RUN] Previewing restore for job %q (snapshot: %s)...\n",
 			job.Name, snapshotID)
@@ -203,6 +205,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 
 		if execErr != nil {
 			runRecord.Status = "failed"
+			runRecord.FailureStage = storage.RestoreStageExecution
 			runRecord.ErrorMessage = execErr.Error()
 		} else {
 			runRecord.Status = "dry-run"
@@ -212,7 +215,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		return runRecord, execErr
 	}
 
-	// 9. Execute actual restore
+	// 7. Execute actual restore
 	_, _ = fmt.Fprintf(consoleOut, "--> Starting restore for job %q (snapshot: %s) on %s (target: %s)...\n",
 		job.Name, snapshotID, targetServerName, targetPath)
 
@@ -229,7 +232,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	execRes, execErr := execToUse.Execute(ctx, target, "restore-"+job.Name, script, multiWriter)
 	_ = prefixedConsole.Flush()
 
-	// 10. Finalize run record
+	// 8. Finalize run record
 	finishedAt := time.Now()
 	runRecord.FinishedAt = &finishedAt
 
@@ -247,19 +250,27 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		if !opts.NoStart && !opts.DryRun {
 			if startErr := r.autoStartContainers(ctx, target, job, opts, consoleOut); startErr != nil {
 				runRecord.Status = "partial"
+				runRecord.FailureStage = storage.RestoreStagePostRestore
 				runRecord.ErrorMessage = fmt.Sprintf("restore completed but container auto-start failed: %v", startErr)
-				_, _ = fmt.Fprintf(consoleOut, "⚠️ Restore completed with partial status: %s\n", runRecord.ErrorMessage)
+				_, _ = fmt.Fprintf(consoleOut, "⚠️ Restore completed with partial status (%s): %s\n", storage.RestoreStagePostRestore, runRecord.ErrorMessage)
+				if hint := restoreStageHint(storage.RestoreStagePostRestore); hint != "" {
+					_, _ = fmt.Fprintf(consoleOut, "   Next: %s\n", hint)
+				}
 				execErr = startErr
 			}
 		}
 	} else {
 		runRecord.Status = "failed"
+		runRecord.FailureStage = storage.RestoreStageExecution
 		if execErr != nil {
 			runRecord.ErrorMessage = execErr.Error()
 		} else if execRes != nil && execRes.Error != nil {
 			runRecord.ErrorMessage = execRes.Error.Error()
 		}
-		_, _ = fmt.Fprintf(consoleOut, "❌ Restore failed: %s\n", runRecord.ErrorMessage)
+		_, _ = fmt.Fprintf(consoleOut, "❌ Restore failed during %s: %s\n", storage.RestoreStageExecution, runRecord.ErrorMessage)
+		if hint := restoreStageHint(storage.RestoreStageExecution); hint != "" {
+			_, _ = fmt.Fprintf(consoleOut, "   Next: %s\n", hint)
+		}
 	}
 
 	r.updateRunRecord(ctx, runRecord)
@@ -270,6 +281,48 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	}
 
 	return runRecord, execErr
+}
+
+// failRun finalizes a restore attempt that failed before producing a restic
+// result. It records the phase the attempt died in (so `ops restore history`
+// can tell validation apart from execution and post-restore failures) and
+// returns the record together with a wrapped error that keeps the original
+// cause intact.
+func (r *RestoreRunner) failRun(
+	ctx context.Context,
+	runRecord *storage.RestoreRun,
+	stage string,
+	err error,
+	consoleOut io.Writer,
+) (*storage.RestoreRun, error) {
+	finishedAt := time.Now()
+	runRecord.Status = "failed"
+	runRecord.FailureStage = stage
+	runRecord.ErrorMessage = err.Error()
+	runRecord.FinishedAt = &finishedAt
+	runRecord.DurationSeconds = finishedAt.Sub(runRecord.StartedAt).Seconds()
+	r.updateRunRecord(ctx, runRecord)
+
+	_, _ = fmt.Fprintf(consoleOut, "❌ Restore failed during %s: %s\n", stage, err)
+	if hint := restoreStageHint(stage); hint != "" {
+		_, _ = fmt.Fprintf(consoleOut, "   Next: %s\n", hint)
+	}
+
+	return runRecord, fmt.Errorf("restore failed during %s: %w", stage, err)
+}
+
+// restoreStageHint returns the next step to suggest for a failed restore stage.
+func restoreStageHint(stage string) string {
+	switch stage {
+	case storage.RestoreStageValidation:
+		return "nothing was restored; fix the reported input (see `ops backup snapshots <job>`, `ops asset list`, `ops server list`) and re-run"
+	case storage.RestoreStageExecution:
+		return "inspect the log file for the failing restic command; `--dry-run` lists the files a restore would write"
+	case storage.RestoreStagePostRestore:
+		return "the files are restored; start the containers manually or re-run with --no-start to skip auto-start"
+	default:
+		return ""
+	}
 }
 
 func (r *RestoreRunner) resolveLatestSnapshot(ctx context.Context, job Job, consoleOut io.Writer) (string, error) {

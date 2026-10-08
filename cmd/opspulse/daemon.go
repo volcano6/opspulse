@@ -17,7 +17,10 @@ import (
 	"github.com/volcano6/opspulse/internal/storage"
 )
 
-var daemonRunOnce bool
+var (
+	daemonRunOnce        bool
+	daemonAllowUntracked bool
+)
 
 var daemonCmd = &cobra.Command{
 	Use:   "daemon",
@@ -29,6 +32,10 @@ cron 表达式执行备份作业。
 自动分发告警通知。
 
 收到 SIGINT 与 SIGTERM 信号时优雅退出，等待正在执行中的作业完成。
+
+默认 fail-closed：无法把运行记录写入 SQLite 时拒绝执行真实备份，该次作业以失败结束——
+--once 下进程退出码非 0，常驻模式则把拒绝与失败写入日志。
+仅在明确的应急场景下才使用 --allow-untracked 跳过该保护。
 
 示例：
   ops daemon          # 运行调度器直到被中断
@@ -48,6 +55,7 @@ cron 表达式执行备份作业。
 		assetStore := asset.NewDefaultStore()
 		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get).WithWarnWriter(os.Stdout)
 		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
+		runner.SetAllowUntracked(daemonAllowUntracked)
 		dispatcher := notify.NewDispatcher(notifyStore)
 
 		sched := scheduler.New(backupStore, runner, dispatcher, os.Stdout)
@@ -65,5 +73,7 @@ cron 表达式执行备份作业。
 
 func init() {
 	daemonCmd.Flags().BoolVar(&daemonRunOnce, "once", false, "按序执行全部定时备份作业一次后立即退出")
+	daemonCmd.Flags().BoolVar(&daemonAllowUntracked, "allow-untracked", false,
+		"应急模式：审计记录无法创建时仍执行备份（结果标记为未审计；--once 下退出码 3）")
 	rootCmd.AddCommand(daemonCmd)
 }

@@ -83,9 +83,10 @@ var backupListCmd = &cobra.Command{
 }
 
 var (
-	backupRunDryRun   bool
-	backupRunParallel string
-	backupRunAs       string
+	backupRunDryRun         bool
+	backupRunParallel       string
+	backupRunAs             string
+	backupRunAllowUntracked bool
 )
 
 var backupRunCmd = &cobra.Command{
@@ -129,6 +130,7 @@ var backupRunCmd = &cobra.Command{
 				assetStore := asset.NewDefaultStore()
 				exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get).WithWarnWriter(os.Stderr)
 				runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
+				runner.SetAllowUntracked(backupRunAllowUntracked)
 
 				ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 				defer cancel()
@@ -142,6 +144,18 @@ var backupRunCmd = &cobra.Command{
 				res, err := runner.RunContainerBackup(ctx, opts, os.Stdout)
 				if err != nil {
 					return err
+				}
+
+				if res.RunRecord != nil && res.RunRecord.Untracked {
+					fmt.Printf("\n⚠️  Container backup completed but is UNTRACKED (no audit record in SQLite).\n")
+					fmt.Printf("   Job Name:     %s\n", res.JobName)
+					fmt.Printf("   Server:       %s\n", res.ServerName)
+					if res.SnapshotID != "" {
+						fmt.Printf("   Snapshot ID:  %s\n", res.SnapshotID)
+					}
+					fmt.Printf("\nTo restore on another VPS and auto-start:\n")
+					fmt.Printf("   ops restore run %s --target-server <target-vps>\n\n", res.JobName)
+					return fmt.Errorf("container backup %q completed but was not audited: %w", res.JobName, backup.ErrUntracked)
 				}
 
 				fmt.Printf("\n✅ Container backup completed successfully!\n")
@@ -218,6 +232,7 @@ var backupRunCmd = &cobra.Command{
 		exec := executor.NewSSHExecutor().WithServerResolver(serverStore.Get).WithWarnWriter(os.Stderr) // SSH executor handles remote servers
 		// Wrap with multi-target capability: if target is local, runner uses LocalExecutor
 		runner := backup.NewRunnerWithStores(exec, serverStore, backupRepo, store, assetStore)
+		runner.SetAllowUntracked(backupRunAllowUntracked)
 
 		pool := backup.NewPool(runner, parallel)
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -233,6 +248,10 @@ var backupRunCmd = &cobra.Command{
 
 		if res != nil && res.FailureCount > 0 {
 			return fmt.Errorf("%d backup job(s) failed", res.FailureCount)
+		}
+
+		if res != nil && res.UntrackedCount > 0 {
+			return fmt.Errorf("%d backup job(s) completed but were not audited: %w", res.UntrackedCount, backup.ErrUntracked)
 		}
 
 		return nil
@@ -278,7 +297,7 @@ var backupStatusCmd = &cobra.Command{
 				continue
 			}
 
-			status := strings.ToUpper(r.Status)
+			status := backup.RunStatusLabel(r)
 			snapID := r.SnapshotID
 			if snapID == "" {
 				snapID = "-"
@@ -330,7 +349,7 @@ var backupHistoryCmd = &cobra.Command{
 		_, _ = fmt.Fprintln(tw, "--\t------\t--------\t---------------\t-----\t-----\t--------\t----------")
 
 		for _, r := range runs {
-			status := strings.ToUpper(r.Status)
+			status := backup.RunStatusLabel(r)
 			snapID := r.SnapshotID
 			if snapID == "" {
 				snapID = "-"
@@ -470,6 +489,8 @@ func init() {
 	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "预演执行，不真正运行 restic（不支持 <server>:<container> 目标）")
 	backupRunCmd.Flags().StringVarP(&backupRunParallel, "parallel", "j", "", "最大并发作业数（默认 5，'unlimited' 表示不设上限）")
 	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "重命名生成的 Compose 与备份作业中的容器（使用 <server>:<container> 时）")
+	backupRunCmd.Flags().BoolVar(&backupRunAllowUntracked, "allow-untracked", false,
+		"应急模式：审计记录无法创建时仍执行备份（结果标记为未审计，退出码 3）")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "最多显示的历史记录条数")
 

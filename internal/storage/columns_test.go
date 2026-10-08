@@ -7,21 +7,22 @@ import (
 	"time"
 )
 
-// TestColumnConstantsByteEquivalence guards the refactor against drift: the
-// generated SELECT column lists must remain byte-identical to the
-// pre-refactor literals (column order, newlines, indentation all preserved).
+// TestColumnConstantsByteEquivalence guards the generated SELECT column lists
+// against drift: the column order, newlines and indentation are pinned
+// byte-for-byte. Changing a list is a deliberate schema change (new migration +
+// matching INSERT/scan site), never an accident.
 func TestColumnConstantsByteEquivalence(t *testing.T) {
 	wantBackup := "id, job_name, server_name, snapshot_id, status,\n" +
 		"\t\tfiles_new, files_changed, files_unmodified,\n" +
 		"\t\tdata_added_bytes, total_bytes, duration_seconds,\n" +
-		"\t\terror_message, log_path, started_at, finished_at"
+		"\t\terror_message, log_path, started_at, finished_at, untracked"
 	if backupRunColumns != wantBackup {
 		t.Errorf("backupRunColumns drifted:\n got %q\nwant %q", backupRunColumns, wantBackup)
 	}
 
 	wantRestore := "id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,\n" +
 		"\t\t       status, files_restored, total_bytes_restored, duration_seconds, error_message,\n" +
-		"\t\t       log_path, started_at, finished_at"
+		"\t\t       log_path, started_at, finished_at, failure_stage"
 	if restoreRunColumns != wantRestore {
 		t.Errorf("restoreRunColumns drifted:\n got %q\nwant %q", restoreRunColumns, wantRestore)
 	}

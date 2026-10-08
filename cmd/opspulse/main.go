@@ -9,6 +9,7 @@ import (
 	"os/exec"
 
 	"github.com/spf13/cobra"
+	"github.com/volcano6/opspulse/internal/backup"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/logger"
 	"github.com/volcano6/opspulse/internal/secret"
@@ -164,6 +165,12 @@ func handleRootError(err error, stderr io.Writer) int {
 }
 
 func commandExitCode(err error) int {
+	// An untracked backup success is not a normal success: give it a dedicated
+	// code so scripts can branch on the audit gap instead of parsing output.
+	if errors.Is(err, backup.ErrUntracked) {
+		return backup.ExitUntracked
+	}
+
 	var executionErr *executor.ExecutionError
 	if errors.As(err, &executionErr) && executionErr.ExitCode > 0 {
 		return executionErr.ExitCode

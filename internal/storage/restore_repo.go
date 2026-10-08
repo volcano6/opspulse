@@ -12,7 +12,16 @@ import (
 // unchanged.
 const restoreRunColumns = "id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,\n" +
 	"\t\t       status, files_restored, total_bytes_restored, duration_seconds, error_message,\n" +
-	"\t\t       log_path, started_at, finished_at"
+	"\t\t       log_path, started_at, finished_at, failure_stage"
+
+// Restore failure stages recorded in restore_runs.failure_stage. They separate
+// the pre-flight checks, the restic execution itself, and the container/database
+// auto-start that runs after the files are already in place.
+const (
+	RestoreStageValidation  = "validation"
+	RestoreStageExecution   = "execution"
+	RestoreStagePostRestore = "post_restore"
+)
 
 // RestoreRun represents a single restore operation execution record.
 type RestoreRun struct {
@@ -23,7 +32,8 @@ type RestoreRun struct {
 	SourceServer       string     `json:"source_server"`
 	TargetServer       string     `json:"target_server"`
 	TargetPath         string     `json:"target_path,omitempty"`
-	Status             string     `json:"status"` // 'running', 'success', 'failed'
+	Status             string     `json:"status"` // 'running', 'success', 'partial', 'failed', 'dry-run'
+	FailureStage       string     `json:"failure_stage,omitempty"`
 	FilesRestored      int64      `json:"files_restored"`
 	TotalBytesRestored int64      `json:"total_bytes_restored"`
 	DurationSeconds    float64    `json:"duration_seconds"`
@@ -49,8 +59,8 @@ func (r *RestoreRepo) CreateRun(ctx context.Context, run *RestoreRun) (int64, er
 	INSERT INTO restore_runs (
 		job_name, asset_id, snapshot_id, source_server, target_server, target_path,
 		status, files_restored, total_bytes_restored, duration_seconds, error_message,
-		log_path, started_at, finished_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		log_path, started_at, finished_at, failure_stage
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	var finishedAtStr sql.NullString
 	if run.FinishedAt != nil {
@@ -72,6 +82,7 @@ func (r *RestoreRepo) CreateRun(ctx context.Context, run *RestoreRun) (int64, er
 		nullIfEmpty(run.LogPath),
 		run.StartedAt.UTC().Format(time.RFC3339),
 		finishedAtStr,
+		run.FailureStage,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert restore_run: %w", err)
@@ -88,15 +99,20 @@ func (r *RestoreRepo) CreateRun(ctx context.Context, run *RestoreRun) (int64, er
 
 // UpdateRun updates metrics and completion state for an existing restore run.
 func (r *RestoreRepo) UpdateRun(ctx context.Context, run *RestoreRun) error {
+	// snapshot_id is updated too: the row is created before the snapshot is
+	// resolved ("latest" becomes a real ID only later), so the final write has
+	// to carry the resolved value.
 	query := `
 	UPDATE restore_runs SET
+		snapshot_id = ?,
 		status = ?,
 		files_restored = ?,
 		total_bytes_restored = ?,
 		duration_seconds = ?,
 		error_message = ?,
 		log_path = ?,
-		finished_at = ?
+		finished_at = ?,
+		failure_stage = ?
 	WHERE id = ?`
 
 	var finishedAtStr sql.NullString
@@ -105,6 +121,7 @@ func (r *RestoreRepo) UpdateRun(ctx context.Context, run *RestoreRun) error {
 	}
 
 	_, err := r.db.Conn().ExecContext(ctx, query,
+		run.SnapshotID,
 		run.Status,
 		run.FilesRestored,
 		run.TotalBytesRestored,
@@ -112,6 +129,7 @@ func (r *RestoreRepo) UpdateRun(ctx context.Context, run *RestoreRun) error {
 		nullIfEmpty(run.ErrorMessage),
 		nullIfEmpty(run.LogPath),
 		finishedAtStr,
+		run.FailureStage,
 		run.ID,
 	)
 	if err != nil {
@@ -201,6 +219,7 @@ func scanRestoreRun(s scannable) (*RestoreRun, error) {
 		&logPath,
 		&startedStr,
 		&finishedStr,
+		&run.FailureStage,
 	)
 	if err != nil {
 		return nil, err

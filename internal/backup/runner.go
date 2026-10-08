@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,18 +16,37 @@ import (
 	"github.com/volcano6/opspulse/internal/storage"
 )
 
+// ErrUntracked reports that a backup ran without an audit record because its
+// SQLite run row could not be written in --allow-untracked emergency mode.
+var ErrUntracked = errors.New("backup completed but was not audited")
+
+// ExitUntracked is the process exit code the CLI returns for ErrUntracked, so
+// scripts can tell an unaudited success apart from a normal one.
+const ExitUntracked = 3
+
+// RunRecorder persists backup run audit records. *storage.BackupRepo is the
+// production implementation; the interface exists so the fail-closed and
+// untracked contracts can be exercised against deterministic persistence
+// failures (SQLite lock, read-only directory, disk error) without racing a real
+// database.
+type RunRecorder interface {
+	CreateRun(ctx context.Context, run *storage.BackupRun) (int64, error)
+	UpdateRun(ctx context.Context, run *storage.BackupRun) error
+}
+
 // Runner coordinates the execution of restic backup jobs and records their status in SQLite.
 type Runner struct {
-	executor      executor.Executor
-	localExecutor *executor.LocalExecutor
-	serverStore   *server.Store
-	backupRepo    *storage.BackupRepo
-	backupStore   *Store
-	assetStore    *asset.Store
+	executor       executor.Executor
+	localExecutor  *executor.LocalExecutor
+	serverStore    *server.Store
+	backupRepo     RunRecorder
+	backupStore    *Store
+	assetStore     *asset.Store
+	allowUntracked bool
 }
 
 // NewRunner creates a new backup Runner.
-func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo *storage.BackupRepo) *Runner {
+func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo RunRecorder) *Runner {
 	return NewRunnerWithStores(exec, serverStore, backupRepo, nil, nil)
 }
 
@@ -34,7 +54,7 @@ func NewRunner(exec executor.Executor, serverStore *server.Store, backupRepo *st
 func NewRunnerWithStores(
 	exec executor.Executor,
 	serverStore *server.Store,
-	backupRepo *storage.BackupRepo,
+	backupRepo RunRecorder,
 	backupStore *Store,
 	assetStore *asset.Store,
 ) *Runner {
@@ -52,6 +72,13 @@ func NewRunnerWithStores(
 func (r *Runner) SetStores(backupStore *Store, assetStore *asset.Store) {
 	r.backupStore = backupStore
 	r.assetStore = assetStore
+}
+
+// SetAllowUntracked toggles the emergency mode in which a backup still runs when
+// its audit record cannot be created. Every such run is marked untracked in the
+// database, the terminal and every notification, and exits with ExitUntracked.
+func (r *Runner) SetAllowUntracked(allow bool) {
+	r.allowUntracked = allow
 }
 
 // ResolveTarget determines whether the target is local or a remote server from inventory.
@@ -84,12 +111,27 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	}
 
 	startTime := time.Now()
+	runRecord, err := r.beginRun(ctx, job, consoleOut, startTime)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.executeRun(ctx, job, target, consoleOut, runRecord, startTime)
+}
+
+// beginRun writes the initial 'running' audit row for a job and returns it.
+//
+// It fails closed: when the row cannot be created the job is refused before any
+// remote work happens, because a backup that cannot be recorded cannot be
+// trusted. In --allow-untracked emergency mode the run proceeds instead and the
+// returned record is flagged Untracked so the caller, the persisted history and
+// every notification can mark the gap.
+func (r *Runner) beginRun(ctx context.Context, job Job, consoleOut io.Writer, startTime time.Time) (*storage.BackupRun, error) {
 	logFilePath, logErr := executor.LogPathFor("backup-"+job.Name, startTime)
 	if logErr != nil {
 		_, _ = fmt.Fprintf(consoleOut, "Warning: failed to initialize log file path: %v (running without log file)\n", logErr)
 	}
 
-	// 1. Record initial 'running' state in SQLite
 	runRecord := &storage.BackupRun{
 		JobName:    job.Name,
 		ServerName: job.Server,
@@ -98,13 +140,35 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 		StartedAt:  startTime,
 	}
 
-	if r.backupRepo != nil {
-		if _, err := r.backupRepo.CreateRun(ctx, runRecord); err != nil {
-			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to record initial backup run in database: %v\n", err)
-		}
+	if r.backupRepo == nil {
+		return runRecord, nil
 	}
 
-	// 2. Set up logging (Console with prefix + Log File + In-Memory Buffer for JSON parsing)
+	if _, err := r.backupRepo.CreateRun(ctx, runRecord); err != nil {
+		if !r.allowUntracked {
+			return nil, fmt.Errorf("refusing to run backup %q: its audit record could not be created in SQLite (%w); fix the database or re-run with --allow-untracked to proceed and mark the run untracked", job.Name, err)
+		}
+		runRecord.Untracked = true
+		_, _ = fmt.Fprintf(consoleOut, "Warning: cannot create the audit record for backup %q: %v\n", job.Name, err)
+		_, _ = fmt.Fprintf(consoleOut, "Warning: --allow-untracked is set; running anyway. This run is UNTRACKED (exit code %d).\n", ExitUntracked)
+	}
+
+	return runRecord, nil
+}
+
+// executeRun performs the actual backup against an already resolved target,
+// using the audit record created by beginRun.
+func (r *Runner) executeRun(
+	ctx context.Context,
+	job Job,
+	target executor.Target,
+	consoleOut io.Writer,
+	runRecord *storage.BackupRun,
+	startTime time.Time,
+) (*storage.BackupRun, error) {
+	logFilePath := runRecord.LogPath
+
+	// Set up logging (Console with prefix + Log File + In-Memory Buffer for JSON parsing)
 	var logFile *os.File
 	if logFilePath != "" {
 		var openErr error
@@ -138,7 +202,7 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	}
 	job.Env = resolvedEnv
 
-	// 3. Build script and execute via appropriate executor
+	// Build script and execute via appropriate executor
 	script, err := BuildBackupScript(job)
 	if err != nil {
 		return r.finalizeRun(ctx, runRecord, false, 0, err, startTime, logFile, prefixedConsole)
@@ -160,7 +224,7 @@ func (r *Runner) Run(ctx context.Context, job Job, consoleOut io.Writer) (*stora
 	execRes, execErr := execToUse.Execute(ctx, target, "backup-"+job.Name, script, multiWriter)
 	_ = prefixedConsole.Flush()
 
-	// 4. Parse restic summary from execution output
+	// Parse restic summary from execution output
 	outputStr := outputBuf.String()
 	summary := ParseResticSummary(outputStr)
 
@@ -221,16 +285,43 @@ func (r *Runner) finalizeRun(
 		}
 	}
 
-	// Update SQLite record
-	if r.backupRepo != nil && runRecord.ID > 0 {
-		if updateErr := r.backupRepo.UpdateRun(ctx, runRecord); updateErr != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to update backup run record in database: %v\n", updateErr)
+	// Persist the outcome. A run whose initial row was never created (untracked
+	// emergency mode) gets one last CreateRun attempt: a transient failure such
+	// as a SQLite lock may have cleared, and recording the audit gap is exactly
+	// what this mode must not silently drop.
+	//
+	// A failure here is itself an audit gap: the row would keep its stale
+	// 'running' status while the caller reports a normal success. Mark the run
+	// untracked so the terminal and every notification say so, and surface
+	// ErrUntracked when the backup itself succeeded - that is the case where the
+	// caller would otherwise exit 0 on an unaudited success.
+	var persistErr error
+	switch {
+	case r.backupRepo == nil:
+	case runRecord.ID > 0:
+		persistErr = r.backupRepo.UpdateRun(ctx, runRecord)
+	default:
+		_, persistErr = r.backupRepo.CreateRun(ctx, runRecord)
+	}
+	if persistErr != nil {
+		// In --allow-untracked mode the caller already accepted that this run
+		// would not be audited, so the flag alone carries the gap. Only a run that
+		// was audited until now turns an ordinary success into an unaudited one.
+		newlyUntracked := !runRecord.Untracked
+		runRecord.Untracked = true
+		_, _ = fmt.Fprintf(os.Stderr, "Warning: backup run %q could not be recorded in SQLite: %v\n", runRecord.JobName, persistErr)
+		if newlyUntracked && err == nil {
+			err = fmt.Errorf("backup run %q completed but its audit record could not be persisted: %w", runRecord.JobName, ErrUntracked)
 		}
 	}
 
 	if logFile != nil {
 		_, _ = fmt.Fprintf(logFile, "\n=== Finished Backup Job at %s (Status: %s) ===\n",
 			finishedAt.Format(time.RFC3339), runRecord.Status)
+	}
+
+	if runRecord.Untracked {
+		_, _ = fmt.Fprintf(console, "\n!!! UNTRACKED: this run has no audit record in SQLite; `ops backup status`/`history` will not list it as a normal run. !!!\n")
 	}
 
 	_ = console.Flush()

@@ -14,6 +14,9 @@ type Event struct {
 	DurationSeconds float64   `json:"duration_seconds"`
 	Error           string    `json:"error,omitempty"`
 	Timestamp       time.Time `json:"timestamp"`
+	// Untracked marks a run whose audit record could not be created. Receivers
+	// must not read such a "success" as a normal, audited success.
+	Untracked bool `json:"untracked,omitempty"`
 }
 
 // Notifier defines the interface for delivering notifications to a specific channel.

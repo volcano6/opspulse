@@ -313,6 +313,30 @@ func TestScheduler_RunOnce_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestScheduler_RunOnce_SkipsInvalidSchedules(t *testing.T) {
+	tmpDir := t.TempDir()
+	backupStore := backup.NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	if err := backupStore.Save(backup.Job{
+		Name:     "bad-cron-job",
+		Server:   "local",
+		Paths:    []string{"/tmp/data"},
+		Backend:  "/tmp/repo",
+		Schedule: "not-a-cron-expression",
+	}); err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	sched := New(backupStore, nil, nil, &buf)
+	err := sched.RunOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "all 1 scheduled job(s) have invalid schedules") {
+		t.Fatalf("RunOnce() error = %v, want invalid-schedule error", err)
+	}
+	if !strings.Contains(buf.String(), `job "bad-cron-job" skipped`) {
+		t.Fatalf("RunOnce() output = %q, want skipped-job warning", buf.String())
+	}
+}
+
 // fakeRunner is a Runner that blocks until released, letting tests observe the
 // shutdown path without a live remote executor.
 type fakeRunner struct {

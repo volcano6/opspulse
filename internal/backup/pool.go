@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"text/tabwriter"
 	"time"
@@ -49,7 +50,12 @@ type PoolResult struct {
 	TotalDuration time.Duration
 	SuccessCount  int
 	FailureCount  int
-	IsDryRun      bool
+	// UntrackedCount counts runs whose audit record could not be created
+	// (--allow-untracked emergency mode), whatever their outcome. They are kept
+	// apart from the plain success/failure tallies because the CLI must never
+	// report an untracked run as an ordinary one.
+	UntrackedCount int
+	IsDryRun       bool
 }
 
 // RunAll executes a slice of backup jobs respecting the concurrency limit.
@@ -137,9 +143,21 @@ func (p *Pool) RunAll(ctx context.Context, jobs []Job, dryRun bool, out io.Write
 				}
 			}
 			res.Runs[index] = runRecord
-			if err == nil && runRecord.Status == "success" {
+			switch {
+			case runRecord.Untracked:
+				// The run happened; only its audit record is missing. Count it by
+				// the outcome it really had and let the untracked tally carry the
+				// gap: an untracked success must not be reported as a failed
+				// backup, and an untracked failure is still a failure.
+				res.UntrackedCount++
+				if runRecord.Status == "success" {
+					res.SuccessCount++
+				} else {
+					res.FailureCount++
+				}
+			case err == nil && runRecord.Status == "success":
 				res.SuccessCount++
-			} else {
+			default:
 				res.FailureCount++
 			}
 			mu.Unlock()
@@ -149,6 +167,18 @@ func (p *Pool) RunAll(ctx context.Context, jobs []Job, dryRun bool, out io.Write
 	wg.Wait()
 	res.TotalDuration = time.Since(startTime)
 	return res, nil
+}
+
+// RunStatusLabel renders a run's status for the batch summary and the
+// status/history tables. An untracked run is flagged wherever its status is
+// shown, so an audit gap is never read as an ordinary result - whatever the
+// outcome.
+func RunStatusLabel(r storage.BackupRun) string {
+	label := strings.ToUpper(r.Status)
+	if r.Untracked {
+		label += " (UNTRACKED)"
+	}
+	return label
 }
 
 // PrintSummary writes a formatted table of batch backup execution results.
@@ -164,13 +194,10 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 			continue
 		}
 
-		status := r.Status
+		status := RunStatusLabel(*r)
 		if p.IsDryRun {
 			status = "DRY-RUN"
-		} else if status == "success" {
-			status = "SUCCESS"
-		} else if status == "failed" {
-			status = "FAILED"
+		} else if r.Status == "failed" {
 			failedJobs = append(failedJobs, r)
 		}
 
@@ -205,6 +232,9 @@ func (p *PoolResult) PrintSummary(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "------------------------------------------------------------------")
 	summaryLine := fmt.Sprintf("Total Jobs: %d | Succeeded: %d | Failed: %d | Total Duration: %.2fs",
 		len(p.Runs), p.SuccessCount, p.FailureCount, p.TotalDuration.Seconds())
+	if p.UntrackedCount > 0 {
+		summaryLine += fmt.Sprintf(" | Untracked: %d", p.UntrackedCount)
+	}
 	if p.IsDryRun {
 		summaryLine += " (Dry Run)"
 	}

@@ -153,7 +153,7 @@ var restoreHistoryCmd = &cobra.Command{
 		_, _ = fmt.Fprintln(tw, "--\t---\t------\t--------\t------\t------\t--------\t----------")
 
 		for _, r := range runs {
-			status := strings.ToUpper(r.Status)
+			status := restoreStatusLabel(r)
 			snapID := r.SnapshotID
 			if len(snapID) > 8 {
 				snapID = snapID[:8]
@@ -220,6 +220,17 @@ func completeRestoreAssetIDs(_ *cobra.Command, _ []string, _ string) ([]string, 
 		comps = append(comps, fmt.Sprintf("%s\t%s @ %s", a.ID, a.Type, a.Source))
 	}
 	return comps, cobra.ShellCompDirectiveNoFileComp
+}
+
+// restoreStatusLabel renders a restore run's status for the history table. A
+// failed run also shows the stage it failed in, so validation failures (nothing
+// was touched) are not confused with execution or post-restore failures.
+func restoreStatusLabel(r storage.RestoreRun) string {
+	label := strings.ToUpper(r.Status)
+	if r.FailureStage != "" {
+		label += " (" + strings.ToUpper(r.FailureStage) + ")"
+	}
+	return label
 }
 
 func checkRestoreConfirmation(in io.Reader, out io.Writer, jobName, targetServer, targetPath string, dryRun, yes bool) error {

@@ -106,6 +106,15 @@ func (r *Runner) RunContainerBackup(
 		execToUse = &scopedExec
 	}
 
+	// Create the audit record before touching the target: a container backup
+	// that cannot be recorded must fail closed before it writes a hot dump, a
+	// volume archive or a generated compose.yaml on the remote host.
+	startTime := time.Now()
+	runRecord, err := r.beginRun(ctx, Job{Name: finalName, Server: serverName}, consoleOut, startTime)
+	if err != nil {
+		return nil, err
+	}
+
 	_, _ = fmt.Fprintf(consoleOut, "==> Inspecting container %q on %s...\n", containerName, serverName)
 
 	// 1. Inspect container via docker inspect
@@ -322,7 +331,7 @@ func (r *Runner) RunContainerBackup(
 	cleanPaths := dedupPaths(backupPaths)
 	_, _ = fmt.Fprintf(consoleOut, "  -> Target paths to back up: %s\n", strings.Join(cleanPaths, ", "))
 
-	// 7. Execute backup
+	// 7. Execute backup against the already-created audit record
 	job := Job{
 		Name:        finalName,
 		Server:      serverName,
@@ -333,7 +342,7 @@ func (r *Runner) RunContainerBackup(
 		Description: fmt.Sprintf("Container backup for %s on %s", containerName, serverName),
 	}
 
-	runRecord, runErr := r.Run(ctx, job, consoleOut)
+	runRecord, runErr := r.executeRun(ctx, job, target, consoleOut, runRecord, startTime)
 	if runErr != nil {
 		return nil, runErr
 	}

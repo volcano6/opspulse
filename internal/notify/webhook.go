@@ -46,6 +46,9 @@ type webhookPayload struct {
 	Timestamp       time.Time `json:"timestamp"`
 	Text            string    `json:"text"`
 	Content         string    `json:"content"`
+	// Untracked mirrors Event.Untracked so machine consumers can tell an
+	// unaudited success apart from a normal one.
+	Untracked bool `json:"untracked,omitempty"`
 }
 
 // Send serializes the event into JSON and performs an HTTP POST request to the webhook URL with retries.
@@ -63,6 +66,7 @@ func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 		Timestamp:       event.Timestamp,
 		Text:            summaryText,
 		Content:         summaryText,
+		Untracked:       event.Untracked,
 	}
 
 	bodyData, err := json.Marshal(payload)
@@ -140,6 +144,10 @@ func formatSummaryText(event Event) string {
 			}
 			snapInfo = fmt.Sprintf(", snapshot: %s", snapID)
 		}
+		if event.Untracked {
+			return fmt.Sprintf("[OpsPulse] ⚠️ Backup job %q on %q SUCCEEDED but is UNTRACKED — its audit record could not be created (duration: %.2fs%s)",
+				event.JobName, event.Server, event.DurationSeconds, snapInfo)
+		}
 		return fmt.Sprintf("[OpsPulse] ✅ Backup job %q on %q SUCCEEDED (duration: %.2fs%s)",
 			event.JobName, event.Server, event.DurationSeconds, snapInfo)
 	}
@@ -148,6 +156,10 @@ func formatSummaryText(event Event) string {
 	if errDetail == "" {
 		errDetail = "unknown error"
 	}
-	return fmt.Sprintf("[OpsPulse] ❌ Backup job %q on %q %s: %s (duration: %.2fs)",
-		event.JobName, event.Server, statusUpper, errDetail, event.DurationSeconds)
+	untrackedNote := ""
+	if event.Untracked {
+		untrackedNote = " [UNTRACKED]"
+	}
+	return fmt.Sprintf("[OpsPulse] ❌ Backup job %q on %q %s: %s (duration: %.2fs)%s",
+		event.JobName, event.Server, statusUpper, errDetail, event.DurationSeconds, untrackedNote)
 }
