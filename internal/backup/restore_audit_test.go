@@ -181,6 +181,35 @@ func TestRestoreRunner_RecordsAssetValidationFailure(t *testing.T) {
 	}
 }
 
+// TestRestoreRunner_RecordsSecretValidationFailure covers the secret-resolution
+// call site: an unresolvable op:// reference aborts the attempt before any
+// remote work, so it must leave the same validation-stage row as the other
+// pre-flight failures. OPSPULSE_OP_PATH is pinned to a path that cannot exist
+// so the test never talks to a real 1Password installation.
+func TestRestoreRunner_RecordsSecretValidationFailure(t *testing.T) {
+	t.Setenv("OPSPULSE_OP_PATH", filepath.Join(t.TempDir(), "op-not-installed"))
+
+	f := newRestoreAuditFixture(t, &restoreAuditExecutor{})
+	job := f.job
+	job.Env = map[string]string{"DB_PASSWORD": "op://Private/opspulse_web_data/password"}
+
+	var buf bytes.Buffer
+	if _, err := f.runner.Run(context.Background(), job, RestoreOptions{SnapshotID: auditSnapshotID}, &buf); err == nil {
+		t.Fatal("expected secret resolution failure, got nil error")
+	}
+
+	got := f.onlyRun(t)
+	if got.Status != "failed" || got.FailureStage != storage.RestoreStageValidation {
+		t.Errorf("history status/stage = %q/%q, want failed/validation", got.Status, got.FailureStage)
+	}
+	if !strings.Contains(got.ErrorMessage, "failed to resolve secrets") {
+		t.Errorf("history error message = %q, want the secret resolution failure", got.ErrorMessage)
+	}
+	if got.SnapshotID != auditSnapshotID {
+		t.Errorf("history snapshot = %q, want the requested %q", got.SnapshotID, auditSnapshotID)
+	}
+}
+
 func TestRestoreRunner_RecordsUnknownTargetServer(t *testing.T) {
 	f := newRestoreAuditFixture(t, &restoreAuditExecutor{})
 

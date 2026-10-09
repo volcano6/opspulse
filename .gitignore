@@ -60,6 +60,9 @@ docs/internal/
 /test.*
 *.lock
 
+# Local context dumps (package sources concatenated into one file for review)
+/out_*.txt
+
 # Runtime logs
 *.log
 

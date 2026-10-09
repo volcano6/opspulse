@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -557,5 +558,99 @@ func TestRunContainerBackup_ScratchNamespaceIsolatesUserDirs(t *testing.T) {
 	}
 	if !hasPath {
 		t.Errorf("res.Paths = %v, want it to contain %q", res.Paths, projectDir)
+	}
+}
+
+// failingTaskExecutor fails every task whose name carries the given prefix, so
+// the failure paths that run after RunContainerBackup wrote its 'running' audit
+// row but before executeRun finalizes it can be exercised deterministically.
+type failingTaskExecutor struct {
+	dynamicMockExecutor
+	failPrefix string
+}
+
+func (m *failingTaskExecutor) Execute(ctx context.Context, target executor.Target, taskName, script string, output io.Writer) (*executor.Result, error) {
+	if strings.HasPrefix(taskName, m.failPrefix) {
+		return nil, fmt.Errorf("simulated failure of %s", taskName)
+	}
+	return m.dynamicMockExecutor.Execute(ctx, target, taskName, script, output)
+}
+
+// TestRunContainerBackup_FailedPreparationClosesAuditRow is the regression for
+// audit rows that stayed 'running' forever: the row is written before the target
+// is touched, so every failure up to executeRun must still close it, otherwise
+// `ops backup status` keeps reporting RUNNING and the real failure stays hidden.
+func TestRunContainerBackup_FailedPreparationClosesAuditRow(t *testing.T) {
+	inspectJSON := `[{
+		"Id": "abc12345",
+		"Name": "/nginx-test",
+		"Config": {"Image": "nginx:alpine"},
+		"Mounts": [
+			{"Type": "volume", "Name": "nginx-data", "Source": "/var/lib/docker/volumes/nginx-data/_data", "Destination": "/var/lib/data", "RW": true}
+		]
+	}]`
+
+	tests := []struct {
+		name       string
+		failPrefix string
+	}{
+		{"inspect fails", "inspect-"},
+		{"volume export fails", "export-vol-"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+			if err != nil {
+				t.Fatalf("storage.Open() error: %v", err)
+			}
+			defer func() { _ = db.Close() }()
+
+			backupRepo := storage.NewBackupRepo(db)
+			serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+			backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+			assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+			_ = serverStore.Save(server.Server{Name: "vps-09", Host: "203.0.113.10", User: "root"})
+			_ = backupStore.Save(Job{Name: "seed", Server: "vps-09", Paths: []string{"/var/log"}, Backend: "/mnt/repo"})
+
+			exec := &failingTaskExecutor{
+				dynamicMockExecutor: dynamicMockExecutor{inspectJSON: inspectJSON},
+				failPrefix:          tc.failPrefix,
+			}
+			runner := NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore)
+
+			var buf bytes.Buffer
+			res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+				Server:        "vps-09",
+				ContainerName: "nginx-test",
+			}, &buf)
+			if err == nil {
+				t.Fatalf("RunContainerBackup() error = nil, want the simulated %s failure", tc.failPrefix)
+			}
+			if res != nil {
+				t.Errorf("RunContainerBackup() result = %+v, want nil on failure", res)
+			}
+
+			runs, err := backupRepo.ListRuns(context.Background(), "nginx-test", 10)
+			if err != nil {
+				t.Fatalf("ListRuns() error: %v", err)
+			}
+			if len(runs) != 1 {
+				t.Fatalf("recorded runs = %d, want exactly 1 (the aborted attempt)", len(runs))
+			}
+
+			got := runs[0]
+			if got.Status != "failed" {
+				t.Errorf("run status = %q, want \"failed\": a 'running' row is reported as RUNNING forever", got.Status)
+			}
+			if got.FinishedAt == nil {
+				t.Error("run FinishedAt = nil, want the abort time")
+			}
+			if !strings.Contains(got.ErrorMessage, tc.failPrefix) {
+				t.Errorf("run ErrorMessage = %q, want it to name the failed step %q", got.ErrorMessage, tc.failPrefix)
+			}
+		})
 	}
 }

@@ -8,8 +8,8 @@ import (
 )
 
 // restoreRunColumns is the shared SELECT column list for the restore_runs table.
-// Keep it byte-identical to the pre-refactor literal so generated SQL is
-// unchanged.
+// The list must stay in sync with the INSERT/scan sites below and with
+// TestColumnConstantsByteEquivalence, which pins it byte-for-byte.
 const restoreRunColumns = "id, job_name, asset_id, snapshot_id, source_server, target_server, target_path,\n" +
 	"\t\t       status, files_restored, total_bytes_restored, duration_seconds, error_message,\n" +
 	"\t\t       log_path, started_at, finished_at, failure_stage"

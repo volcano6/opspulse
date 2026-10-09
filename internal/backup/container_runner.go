@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -69,7 +70,7 @@ func (r *Runner) RunContainerBackup(
 	ctx context.Context,
 	opts ContainerBackupOptions,
 	consoleOut io.Writer,
-) (*ContainerBackupResult, error) {
+) (result *ContainerBackupResult, err error) {
 	if consoleOut == nil {
 		consoleOut = io.Discard
 	}
@@ -114,6 +115,24 @@ func (r *Runner) RunContainerBackup(
 	if err != nil {
 		return nil, err
 	}
+
+	// Every failure between here and executeRun (inspection, volume export,
+	// database dump, compose/manifest writes, missing repository) has to close
+	// the audit row this run already wrote: a row left at 'running' makes `ops
+	// backup status` report RUNNING and `ops backup history` list a run that
+	// never finishes, hiding the real failure. executeRun finalizes the row
+	// itself, so this guard only fires while the status is still 'running'.
+	defer func() {
+		if runRecord == nil || runRecord.ID == 0 || runRecord.Status != "running" {
+			return
+		}
+		abortErr := err
+		if abortErr == nil {
+			abortErr = errors.New("container backup stopped before execution")
+		}
+		_, _ = r.finalizeRun(ctx, runRecord, false, time.Since(startTime), abortErr, startTime, nil,
+			executor.NewPrefixedWriter(fmt.Sprintf("[%s:%s] ", serverName, finalName), consoleOut))
+	}()
 
 	_, _ = fmt.Fprintf(consoleOut, "==> Inspecting container %q on %s...\n", containerName, serverName)
 

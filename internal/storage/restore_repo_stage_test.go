@@ -42,6 +42,9 @@ func TestRestoreRepo_FailureStageRoundTrip(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("expected 1 run, got %d", len(runs))
 	}
+	if runs[0].Status != "running" {
+		t.Errorf("pre-validation row status = %q, want running", runs[0].Status)
+	}
 	if runs[0].FailureStage != "" {
 		t.Errorf("running row failure stage = %q, want empty", runs[0].FailureStage)
 	}
