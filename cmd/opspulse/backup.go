@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -87,6 +88,7 @@ var (
 	backupRunParallel       string
 	backupRunAs             string
 	backupRunAllowUntracked bool
+	backupRunYes            bool
 )
 
 var backupRunCmd = &cobra.Command{
@@ -136,9 +138,10 @@ var backupRunCmd = &cobra.Command{
 				defer cancel()
 
 				opts := backup.ContainerBackupOptions{
-					Server:        srv,
-					ContainerName: ctr,
-					AliasName:     backupRunAs,
+					Server:              srv,
+					ContainerName:       ctr,
+					AliasName:           backupRunAs,
+					ConfirmSensitiveEnv: confirmContainerSensitiveEnv(cmd.InOrStdin(), os.Stdout, readerIsInteractive(cmd.InOrStdin()), backupRunYes),
 				}
 
 				res, err := runner.RunContainerBackup(ctx, opts, os.Stdout)
@@ -485,12 +488,30 @@ func completeBackupRunArgs(_ *cobra.Command, args []string, toComplete string) (
 	return comps, cobra.ShellCompDirectiveNoFileComp
 }
 
+// confirmContainerSensitiveEnv gates the one step of a container backup that
+// writes credentials to disk: reverse-generating compose.yaml from a container
+// whose environment holds a password, token or API key. The prompt is the only
+// place the operator sees the risk before the file lands on the target host and
+// inside the backup snapshot, and --yes is the deliberate opt-in for
+// non-interactive runs (same contract as `ops restore run --yes`).
+func confirmContainerSensitiveEnv(in io.Reader, out io.Writer, interactive, yes bool) func([]string) error {
+	return func(keys []string) error {
+		joined := strings.Join(keys, ", ")
+		prompt := fmt.Sprintf("Write generated compose.yaml containing sensitive environment variable(s) %s to the target? [y/N]: ", joined)
+		return confirmGate(in, out, interactive, yes, prompt,
+			fmt.Errorf("refusing to write a generated compose.yaml containing sensitive environment variable(s) (%s) in a non-interactive shell; re-run with --yes to accept", joined),
+			fmt.Errorf("container backup cancelled by user; re-run with --yes to skip the confirmation prompt"))
+	}
+}
+
 func init() {
 	backupRunCmd.Flags().BoolVar(&backupRunDryRun, "dry-run", false, "预演执行，不真正运行 restic（不支持 <server>:<container> 目标）")
 	backupRunCmd.Flags().StringVarP(&backupRunParallel, "parallel", "j", "", "最大并发作业数（默认 5，'unlimited' 表示不设上限）")
 	backupRunCmd.Flags().StringVar(&backupRunAs, "as", "", "重命名生成的 Compose 与备份作业中的容器（使用 <server>:<container> 时）")
 	backupRunCmd.Flags().BoolVar(&backupRunAllowUntracked, "allow-untracked", false,
 		"应急模式：审计记录无法创建时仍执行备份（结果标记为未审计，退出码 3）")
+	backupRunCmd.Flags().BoolVarP(&backupRunYes, "yes", "y", false,
+		"跳过交互确认（含生成的 compose.yaml 含敏感环境变量时的确认），不包含硬阻止项")
 
 	backupHistoryCmd.Flags().IntVarP(&historyLimit, "limit", "n", 20, "最多显示的历史记录条数")
 

@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/volcano6/opspulse/internal/platform"
 	"github.com/volcano6/opspulse/internal/secret"
@@ -210,11 +213,36 @@ func missing1PCLINonInteractiveError() error {
 }
 
 func stdinIsInteractive() bool {
-	info, err := os.Stdin.Stat()
-	if err != nil {
+	return readerIsInteractive(os.Stdin)
+}
+
+// readerIsInteractive reports whether r is an interactive terminal. Commands
+// that must behave differently in scripts take the reader from the cobra command
+// (cmd.InOrStdin()) so a test can inject a non-terminal stream instead of
+// depending on what stdin happens to be attached to the test process.
+//
+// term.IsTerminal is used rather than os.ModeCharDevice because /dev/null is a
+// character device: `ops ... < /dev/null` is the standard way to run a command
+// unattended, and treating it as a terminal would both print prompts into a log
+// and let --show-secret print live credentials.
+func readerIsInteractive(r io.Reader) bool {
+	return isTerminalStream(r)
+}
+
+// writerIsTerminal reports whether w is an interactive terminal. Printing live
+// credentials needs the verdict on the output side too: an interactive stdin
+// with `ops notify list --show-secret > urls.txt` would still write the tokens
+// into a file, and the warning line would be swallowed by the same redirection.
+func writerIsTerminal(w io.Writer) bool {
+	return isTerminalStream(w)
+}
+
+func isTerminalStream(stream any) bool {
+	file, ok := stream.(*os.File)
+	if !ok {
 		return false
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(file.Fd()))
 }
 
 func install1PCLI() error {

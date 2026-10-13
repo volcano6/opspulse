@@ -654,3 +654,130 @@ func TestRunContainerBackup_FailedPreparationClosesAuditRow(t *testing.T) {
 		})
 	}
 }
+
+// TestRunContainerBackup_SensitiveEnvRequiresConfirmation is the regression for
+// silently writing credentials into a reverse-generated compose.yaml: the file
+// lands on the target host and inside the backup snapshot, so a container whose
+// environment holds a password or token must produce a risk report and an
+// explicit confirmation before anything is written.
+func TestRunContainerBackup_SensitiveEnvRequiresConfirmation(t *testing.T) {
+	const inspectJSON = `[{
+		"Id": "abc12345",
+		"Name": "/nginx-test",
+		"Config": {
+			"Image": "nginx:alpine",
+			"Env": ["MYSQL_ROOT_PASSWORD=supersecret", "API_TOKEN=abc123", "TZ=UTC", "PATH=/usr/local/bin"]
+		}
+	}]`
+
+	newHarness := func(t *testing.T) (*Runner, *dynamicMockExecutor, *storage.BackupRepo) {
+		t.Helper()
+		tmpDir := t.TempDir()
+		db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+		if err != nil {
+			t.Fatalf("storage.Open() error: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+
+		backupRepo := storage.NewBackupRepo(db)
+		serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+		backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+		assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+		_ = serverStore.Save(server.Server{Name: "vps-10", Host: "203.0.113.10", User: "root"})
+		// Seed a job so the backup can inherit a repository backend.
+		_ = backupStore.Save(Job{Name: "seed", Server: "vps-10", Paths: []string{"/var/log"}, Backend: "/mnt/repo"})
+
+		exec := &dynamicMockExecutor{
+			inspectJSON:  inspectJSON,
+			resticOutput: `{"message_type":"summary","files_new":1,"data_added":1,"total_duration":0.1,"snapshot_id":"snap-env"}`,
+		}
+		return NewRunnerWithStores(exec, serverStore, backupRepo, backupStore, assetStore), exec, backupRepo
+	}
+
+	assertAbortedWithoutCompose := func(t *testing.T, exec *dynamicMockExecutor, repo *storage.BackupRepo, out string) {
+		t.Helper()
+		if _, ok := exec.executedScripts["write-compose-nginx-test"]; ok {
+			t.Error("generated compose.yaml was written despite the missing confirmation")
+		}
+		if !strings.Contains(out, "MYSQL_ROOT_PASSWORD") || !strings.Contains(out, "API_TOKEN") {
+			t.Errorf("risk report did not name the sensitive variables:\n%s", out)
+		}
+		if strings.Contains(out, "supersecret") || strings.Contains(out, "abc123") {
+			t.Errorf("risk report leaked a secret value:\n%s", out)
+		}
+
+		runs, err := repo.ListRuns(context.Background(), "nginx-test", 10)
+		if err != nil {
+			t.Fatalf("ListRuns() error: %v", err)
+		}
+		if len(runs) != 1 {
+			t.Fatalf("recorded runs = %d, want exactly 1 (the aborted attempt)", len(runs))
+		}
+		if runs[0].Status != "failed" {
+			t.Errorf("run status = %q, want \"failed\"", runs[0].Status)
+		}
+	}
+
+	t.Run("no confirmation callback refuses", func(t *testing.T) {
+		runner, exec, repo := newHarness(t)
+
+		var buf bytes.Buffer
+		res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+			Server:        "vps-10",
+			ContainerName: "nginx-test",
+		}, &buf)
+		if err == nil {
+			t.Fatal("RunContainerBackup() error = nil, want a refusal")
+		}
+		if res != nil {
+			t.Errorf("RunContainerBackup() result = %+v, want nil on refusal", res)
+		}
+		assertAbortedWithoutCompose(t, exec, repo, buf.String())
+	})
+
+	t.Run("declined confirmation aborts", func(t *testing.T) {
+		runner, exec, repo := newHarness(t)
+
+		var buf bytes.Buffer
+		res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+			Server:              "vps-10",
+			ContainerName:       "nginx-test",
+			ConfirmSensitiveEnv: func([]string) error { return fmt.Errorf("declined by operator") },
+		}, &buf)
+		if err == nil {
+			t.Fatal("RunContainerBackup() error = nil, want the declined confirmation to abort")
+		}
+		if res != nil {
+			t.Errorf("RunContainerBackup() result = %+v, want nil on refusal", res)
+		}
+		assertAbortedWithoutCompose(t, exec, repo, buf.String())
+	})
+
+	t.Run("confirmed run writes compose", func(t *testing.T) {
+		runner, exec, _ := newHarness(t)
+
+		var gotKeys []string
+		var buf bytes.Buffer
+		res, err := runner.RunContainerBackup(context.Background(), ContainerBackupOptions{
+			Server:        "vps-10",
+			ContainerName: "nginx-test",
+			ConfirmSensitiveEnv: func(keys []string) error {
+				gotKeys = keys
+				return nil
+			},
+		}, &buf)
+		if err != nil {
+			t.Fatalf("RunContainerBackup() error: %v", err)
+		}
+		if res == nil || res.SnapshotID != "snap-env" {
+			t.Fatalf("RunContainerBackup() result = %+v, want a completed backup", res)
+		}
+		if strings.Join(gotKeys, ",") != "API_TOKEN,MYSQL_ROOT_PASSWORD" {
+			t.Errorf("ConfirmSensitiveEnv keys = %v, want [API_TOKEN MYSQL_ROOT_PASSWORD]", gotKeys)
+		}
+		if _, ok := exec.executedScripts["write-compose-nginx-test"]; !ok {
+			t.Error("generated compose.yaml was not written after confirmation")
+		}
+	})
+}

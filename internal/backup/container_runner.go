@@ -25,6 +25,16 @@ type ContainerBackupOptions struct {
 	Server        string // Server name from inventory or "local"
 	ContainerName string // Name or ID of the container
 	AliasName     string // Optional alias to rename the container in generated Compose and backup job
+
+	// ConfirmSensitiveEnv is called before a reverse-generated compose.yaml
+	// that would contain likely credentials (DB_PASSWORD, API_TOKEN, ...) is
+	// written to the target. It receives the sorted variable names, never their
+	// values, and a non-nil error aborts the backup before anything is written.
+	//
+	// A nil callback refuses that write outright: writing secrets into a
+	// generated file is exactly the kind of step that must be opted into, not
+	// inherited by forgetting to wire a prompt.
+	ConfirmSensitiveEnv func(keys []string) error
 }
 
 // validateContainerAlias rejects aliases that cannot serve as a Compose
@@ -206,6 +216,28 @@ func (r *Runner) RunContainerBackup(
 	} else {
 		projectDir = fmt.Sprintf("/var/lib/opspulse/containers/%s", finalName)
 		composePath = path.Join(projectDir, composeFileName)
+	}
+
+	// The reverse-generated compose.yaml carries the container's environment
+	// verbatim. A password or token there would be written onto the target host
+	// and then stored inside the backup snapshot, so the operator has to see
+	// the risk report and confirm before the file is written. This runs before
+	// the volume export and the database dump so a refusal costs nothing.
+	if !isCompose {
+		if sensitive := docker.SensitiveEnvVars(info); len(sensitive) > 0 {
+			joined := strings.Join(sensitive, ", ")
+			_, _ = fmt.Fprintf(consoleOut, "  ⚠️  Detected %d likely sensitive environment variable(s): %s (values not shown)\n",
+				len(sensitive), joined)
+			_, _ = fmt.Fprintf(consoleOut, "      They will be written verbatim into %s and stored in the backup. Prefer external secret references (for example ${VAR} from an env file) in production.\n",
+				composePath)
+			if opts.ConfirmSensitiveEnv == nil {
+				return nil, fmt.Errorf("refusing to write a generated compose.yaml for %q: it would contain %d sensitive environment variable(s) (%s) and no confirmation callback is configured",
+					finalName, len(sensitive), joined)
+			}
+			if confirmErr := opts.ConfirmSensitiveEnv(sensitive); confirmErr != nil {
+				return nil, confirmErr
+			}
+		}
 	}
 
 	// Every artifact OpsPulse generates (hot dumps, volume archives and the

@@ -173,16 +173,26 @@ ops notify list
 ```text
 NAME            TYPE       TRIGGER   URL
 ----            ----       -------   ---
-slack-ops       webhook    failure   https://hooks.slack.com/services/T0000000/B0000000/XXXXXXXXXXXXXXXXXXXXXXXX
-discord-alerts  webhook    failure   https://discord.com/api/webhooks/000000000000000000/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-feishu-bot      webhook    always    https://open.feishu.cn/open-apis/bot/v2/hook/00000000-0000-0000-0000-000000000000
+slack-ops       webhook    failure   https://hooks.slack.com/<redacted>
+discord-alerts  webhook    failure   https://discord.com/<redacted>
+feishu-bot      webhook    always    https://open.feishu.cn/<redacted>
 ```
 
-> [!WARNING]
-> 上表里的 URL 是**原样打印的完整 URL**——webhook 的鉴权 token 就在 path 里，
-> 换句话说 `ops notify list` 会把凭据显示在终端上。请只在本地终端查看，
-> 不要把它重定向到共享文件、粘进 Issue/PR，或让它出现在 CI 日志里。
-> （当前实现不做打码；需要脱敏时请自行截断输出。）
+> [!NOTE]
+> 上表里的 URL 默认**只显示 `scheme://host/<redacted>`**：webhook 的鉴权 token 就在 path 里，
+> 完整 URL 等于凭据本身。脱敏同样适用于错误信息、守护进程日志与通知投递失败的原因——
+> webhook 返回的响应片段里若回显了请求 URL，也会先脱敏再打印。
+>
+> 需要核对完整 URL（例如排查某个渠道是否配错）时用 `--show-secret`：
+>
+> ```bash
+> ops notify list --show-secret
+> ```
+>
+> 该选项**要求 stdin 与 stdout 都是交互式终端**：非交互 shell，或把输出重定向到文件、管道
+> （`ops notify list --show-secret > urls.txt`），都会直接报错退出，避免完整凭据被写进
+> 重定向文件、脚本输出或 CI 日志。警告行单独写到 stderr，不会混进重定向的输出里。
+> 渠道本身用 `NAME` 区分，日常检查不需要看 token。
 
 #### 测试通知投递
 

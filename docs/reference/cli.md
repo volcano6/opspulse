@@ -400,6 +400,7 @@ servers.yaml 里仍然持有 'op://' 引用的服务器会在还原过程中迁�
 | `--as` | - | (空) | 重命名生成的 Compose 与备份作业中的容器（使用 <server>:<container> 时） |
 | `--dry-run` | - | `false` | 预演执行，不真正运行 restic（不支持 <server>:<container> 目标） |
 | `--parallel` | `-j` | (空) | 最大并发作业数（默认 5，'unlimited' 表示不设上限） |
+| `--yes` | `-y` | `false` | 跳过交互确认（含生成的 compose.yaml 含敏感环境变量时的确认），不包含硬阻止项 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
@@ -641,7 +642,8 @@ flag 必须写在服务器名之前：服务器名之后的一切都是远程命
 
 示例：
 ```
-  ops notify list                 # 列出全部已配置渠道
+  ops notify list                 # 列出全部已配置渠道（URL 默认脱敏）
+  ops notify list --show-secret   # 显示完整 webhook URL（仅限交互式终端）
   ops notify test                 # 向全部渠道发送测试事件
   ops notify test ops-alerts      # 仅向指定渠道发送测试事件
 ```
@@ -652,9 +654,15 @@ flag 必须写在服务器名之前：服务器名之后的一切都是远程命
 
 ### `ops notify list`
 
-列出全部已配置通知渠道
+列出全部已配置通知渠道。
 
-该命令没有自己的 flag。
+Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://host/<redacted>。
+需要核对完整 URL 时用 --show-secret：该选项要求 stdin 与 stdout 都是交互式终端，
+否则直接拒绝，避免凭据被写进脚本输出、重定向文件或 CI 日志。
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--show-secret` | - | `false` | 显示完整 webhook URL（含 token），仅限交互式终端 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 

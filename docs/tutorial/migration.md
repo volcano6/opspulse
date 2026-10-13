@@ -67,6 +67,11 @@ docker run -d --name blog-db -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=blo
 ops backup run vps-1:blog-db
 ```
 
+> **会先要求确认**：`blog-db` 的环境变量里有 `MYSQL_ROOT_PASSWORD`，逆向生成的 `compose.yaml`
+> 会把它的取值原样写进去，因此命令会先列出疑似凭据的变量名（不回显取值）并要求确认。
+> 确认方式、非交互写法与替代方案见
+> [一键容器智能备份](../reference/backup.md#一键容器智能备份-无需前置配置)。
+
 > **Ops 在后台自动完成**：
 > 1. 自动识别该容器镜像属于 MySQL 引擎。
 > 2. 自动在容器内部通过管道执行 `mysqldump --single-transaction --quick -u root $PASS --all-databases | gzip`。

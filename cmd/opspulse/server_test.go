@@ -162,28 +162,42 @@ func blockStoreWrites(t *testing.T, filePath string) {
 	}
 }
 
-func captureStderr(t *testing.T, fn func()) string {
+// captureStream redirects a process-wide stream (os.Stdout / os.Stderr) for the
+// duration of fn and returns everything written to it. Commands that print
+// through fmt/os.Stdout rather than cobra's out writer are only observable
+// through the process stream.
+func captureStream(t *testing.T, stream **os.File, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("create pipe: %v", err)
 	}
-	old := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = old }()
+	old := *stream
+	*stream = w
+	defer func() { *stream = old }()
 
 	fn()
 
-	os.Stderr = old
+	*stream = old
 	if err := w.Close(); err != nil {
 		t.Fatalf("close pipe writer: %v", err)
 	}
 	data, err := io.ReadAll(r)
 	if err != nil {
-		t.Fatalf("read captured stderr: %v", err)
+		t.Fatalf("read captured stream: %v", err)
 	}
 	_ = r.Close()
 	return string(data)
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureStream(t, &os.Stderr, fn)
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	return captureStream(t, &os.Stdout, fn)
 }
 
 func TestBackupRefCheckFindsReferencesInJobs(t *testing.T) {

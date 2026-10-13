@@ -398,19 +398,13 @@ func countRestorePasswords(plans []restorePlan) int {
 // A non-interactive shell is refused rather than prompted at. Reading from a
 // pipe that never closes would hang a script, and defaulting to "yes" would
 // write a secret nobody agreed to. The I/O and the interactivity verdict are
-// parameters so the policy can be tested without touching the real terminal.
+// parameters so the policy can be tested without touching the real terminal;
+// the policy itself lives in confirmGate.
 func confirmPlaintextRestore(in io.Reader, out io.Writer, count int, interactive, yes bool) error {
-	if yes {
-		return nil
-	}
-	if !interactive {
-		return fmt.Errorf("refusing to write %d plaintext password(s) into servers.yaml without confirmation; re-run with --yes to accept this in a non-interactive shell", count)
-	}
 	prompt := fmt.Sprintf("⚠️  Warning: restoring will write %d plaintext password(s) into servers.yaml.\nAre you sure you want to proceed? [y/N]: ", count)
-	if !promptConfirm(in, out, prompt, false) {
-		return fmt.Errorf("restore cancelled by user")
-	}
-	return nil
+	return confirmGate(in, out, interactive, yes, prompt,
+		fmt.Errorf("refusing to write %d plaintext password(s) into servers.yaml without confirmation; re-run with --yes to accept this in a non-interactive shell", count),
+		fmt.Errorf("restore cancelled by user"))
 }
 
 // countMigratedServers counts the servers whose op:// references were replaced

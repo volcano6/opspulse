@@ -233,6 +233,10 @@ func restoreStatusLabel(r storage.RestoreRun) string {
 	return label
 }
 
+// checkRestoreConfirmation keeps its own shape instead of going through
+// confirmGate: --dry-run has to skip it as well, and the overwrite warning is
+// worth printing even when stdin is a pipe (the run still aborts when nothing
+// answers the prompt, so a script cannot silently accept it).
 func checkRestoreConfirmation(in io.Reader, out io.Writer, jobName, targetServer, targetPath string, dryRun, yes bool) error {
 	if dryRun || yes {
 		return nil

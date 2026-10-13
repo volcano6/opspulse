@@ -121,6 +121,21 @@ ops backup run vps-01:nginx-test --as nginx
 > - 自动继承默认存储仓库并将配置持久化登记至 `backups.yaml` 与 `assets.yaml`。
 > - 详见 [跨机迁移与环境备份](../tutorial/migration.md)。
 
+> **敏感环境变量确认**：野生容器的环境变量会被**原样**写进逆向生成的 `compose.yaml`，并随备份
+> 进入快照。若变量名疑似凭据（含 `PASSWORD` / `PASSWD` / `SECRET` / `TOKEN` / `API_KEY` /
+> `ACCESS_KEY` / `PRIVATE_KEY` / `CREDENTIAL` 等片段，或 `MYSQL_PWD` 这类复合名），命令会先打印
+> **变量名清单（不回显取值）** 并要求确认，确认前不会写入任何文件：
+>
+> ```text
+>   ⚠️  Detected 2 likely sensitive environment variable(s): API_TOKEN, MYSQL_ROOT_PASSWORD (values not shown)
+>       They will be written verbatim into /var/lib/opspulse/containers/nginx/compose.yaml and stored in the backup.
+> Write generated compose.yaml containing sensitive environment variable(s) API_TOKEN, MYSQL_ROOT_PASSWORD to the target? [y/N]:
+> ```
+>
+> 拒绝、或在非交互 shell 里没有显式给 `--yes`，都会在写入前中止（此时审计记录标记为 failed）。
+> 生产环境建议改用外部 secret 引用（例如 env 文件里的 `${VAR}`），而不是把凭据固化进生成的
+> Compose。Compose 项目本身不逆向生成文件，因此不触发该确认。
+
 ### 远端暂存目录 `.opspulse/`
 
 容器备份在目标机上产生的中间产物（数据库热导、命名卷归档、`manifest.yaml`）统一放在
