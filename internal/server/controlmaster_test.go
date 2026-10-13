@@ -44,6 +44,9 @@ func TestControlMasterArgsRequireAPreparedDirectory(t *testing.T) {
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + wantPath,
 		"-o", "ControlPersist=" + ControlPersist,
+		"-o", "ServerAliveInterval=" + ServerAliveInterval,
+		"-o", "ServerAliveCountMax=" + ServerAliveCountMax,
+		"-o", "TCPKeepAlive=yes",
 	}
 	got := ControlMasterArgs()
 	if strings.Join(got, " ") != strings.Join(want, " ") {
@@ -61,8 +64,8 @@ func TestControlMasterConfigLinesMirrorTheArgs(t *testing.T) {
 	}
 
 	lines := ControlMasterConfigLines()
-	if len(lines) != 3 {
-		t.Fatalf("ControlMasterConfigLines() = %v, want 3 lines", lines)
+	if len(lines) != 6 {
+		t.Fatalf("ControlMasterConfigLines() = %v, want 6 lines", lines)
 	}
 
 	// The two spellings must agree on the socket, otherwise 'ops ssh' and a
@@ -130,3 +133,35 @@ func TestControlMasterPathUsesPerTargetTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestControlMasterDisabledViaEnvVar(t *testing.T) {
+	for _, val := range []string{"0", "false", "off", "no", "FALSE"} {
+		t.Setenv("OPSPULSE_SSH_CONTROL_MASTER", val)
+		if ControlMasterEnabled() {
+			t.Errorf("ControlMasterEnabled() = true with env %q, want false", val)
+		}
+	}
+}
+
+func TestControlMasterSocketFor(t *testing.T) {
+	home := setControlMasterHome(t)
+	sock, err := ControlMasterSocketFor("alice", "10.0.0.1", 2222)
+	if err != nil {
+		t.Fatalf("ControlMasterSocketFor error: %v", err)
+	}
+	want := filepath.ToSlash(filepath.Join(home, ".ssh", ControlMasterDirName, "alice@10.0.0.1:2222"))
+	if sock != want {
+		t.Errorf("ControlMasterSocketFor = %q, want %q", sock, want)
+	}
+
+	// Default user and port fallback
+	sockDefault, err := ControlMasterSocketFor("", "10.0.0.1", 0)
+	if err != nil {
+		t.Fatalf("ControlMasterSocketFor error: %v", err)
+	}
+	wantDefault := filepath.ToSlash(filepath.Join(home, ".ssh", ControlMasterDirName, "root@10.0.0.1:22"))
+	if sockDefault != wantDefault {
+		t.Errorf("ControlMasterSocketFor default = %q, want %q", sockDefault, wantDefault)
+	}
+}
+

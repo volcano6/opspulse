@@ -3,9 +3,11 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/volcano6/opspulse/internal/executor"
@@ -79,6 +82,7 @@ var sshCmd = &cobra.Command{
 		}
 
 		prepareControlMaster()
+		preflightControlMaster(sshPath, *srv, sshReconnect)
 
 		// This path drives the system ssh(1) binary and never reaches
 		// executor.BuildClientConfig, so the op:// guard has to be applied here.
@@ -219,11 +223,58 @@ func selectServerInteractively(in io.Reader, out io.Writer, servers []server.Ser
 // connects, it just cannot reuse a session, and the user should know why the
 // second 'ops ssh' to the same box authenticated again.
 func prepareControlMaster() {
-	if !server.ControlMasterEnabled() {
+	if !server.ControlMasterEnabled() || sshNoControlMaster {
 		return
 	}
 	if err := server.EnsureControlMasterDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "⚠️  SSH session reuse is off: %v\n", err)
+	}
+}
+
+// preflightControlMaster checks whether an existing ControlMaster socket for srv
+// is healthy. If the socket is stale (process dead) or hung (process unresponsive),
+// or if reconnect is requested, it tears down the socket before ssh(1) attaches to it.
+func preflightControlMaster(sshPath string, srv server.Server, reconnect bool) {
+	if !server.ControlMasterEnabled() || sshNoControlMaster {
+		return
+	}
+	sockPath, err := server.ControlMasterSocketFor(srv.User, srv.Host, srv.Port)
+	if err != nil {
+		return
+	}
+	if _, err := os.Stat(sockPath); err != nil {
+		return
+	}
+
+	if reconnect {
+		_ = server.CleanupControlMaster(sshPath, srv.User, srv.Host, srv.Port)
+		fmt.Fprintf(os.Stderr, "🔄 Cleared existing SSH multiplexing session for %s\n", srv.Name)
+		return
+	}
+
+	// 1. Fast standard-library check: does the unix socket answer connections?
+	conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err != nil {
+		// Connection refused -> stale socket file from crashed/killed process
+		_ = os.Remove(sockPath)
+		return
+	}
+	_ = conn.Close()
+
+	// 2. The socket is listening. Verify that OpenSSH Master responds to MUX check.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, sshPath, "-O", "check", "-S", sockPath, srv.Address())
+	out, _ := cmd.CombinedOutput()
+
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "⚠️  Existing SSH multiplex session for %s is unresponsive; cleaning up...\n", srv.Name)
+		_ = server.CleanupControlMaster(sshPath, srv.User, srv.Host, srv.Port)
+		return
+	}
+
+	if !strings.Contains(string(out), "Master running") {
+		_ = server.CleanupControlMaster(sshPath, srv.User, srv.Host, srv.Port)
 	}
 }
 
@@ -235,7 +286,9 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCm
 
 	// Session reuse comes first so a user-supplied '-o ControlMaster=...' in
 	// extraArgs still wins: later options override earlier ones in ssh(1).
-	args = append(args, server.ControlMasterArgs()...)
+	if !sshNoControlMaster {
+		args = append(args, server.ControlMasterArgs()...)
+	}
 
 	// Compatibility with legacy RSA/DSA host keys and public keys when explicitly tagged.
 	// SECURITY NOTE: This is intentional, opt-in backwards compatibility for legacy hosts
@@ -736,13 +789,17 @@ func overrideEnv(environ []string, values map[string]string) []string {
 }
 
 var (
-	sshNoTitle bool
-	sshExec    string
+	sshNoTitle         bool
+	sshExec            string
+	sshNoControlMaster bool
+	sshReconnect       bool
 )
 
 func init() {
 	sshCmd.Flags().BoolVar(&sshNoTitle, "no-title", false, "SSH 会话期间不改写终端标题")
 	sshCmd.Flags().StringVar(&sshExec, "exec", "", "以非交互方式在服务器上执行一条命令，并以该命令的退出码退出")
+	sshCmd.Flags().BoolVar(&sshNoControlMaster, "no-cm", false, "本次连接禁用 SSH 连接复用 (ControlMaster)")
+	sshCmd.Flags().BoolVar(&sshReconnect, "reconnect", false, "清理现有复用连接并强制重新建立新连接")
 	sshCmd.ValidArgsFunction = completeServerNames
 	rootCmd.AddCommand(sshCmd)
 }

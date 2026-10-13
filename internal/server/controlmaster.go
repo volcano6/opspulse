@@ -1,10 +1,14 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 )
 
 // ControlMasterDirName is the ~/.ssh subdirectory holding the multiplexing
@@ -18,13 +22,29 @@ const ControlMasterDirName = "opspulse-cm"
 // does not outlive the work.
 const ControlPersist = "10m"
 
+// ServerAliveInterval is how often (in seconds) the client sends a keepalive probe.
+// This prevents intermediate NAT gateways and firewalls from dropping idle connections.
+const ServerAliveInterval = "15"
+
+// ServerAliveCountMax is the number of unanswered keepalive probes before the client
+// severs the connection and cleans up the ControlMaster socket.
+const ServerAliveCountMax = "3"
+
 // ControlMasterEnabled reports whether connection multiplexing is worth
 // injecting on this platform.
 //
 // Windows' bundled OpenSSH does not implement the unix sockets ControlPath
 // needs, so the flags are left out there rather than handed to a client that
 // cannot honour them.
+//
+// Users can also disable connection multiplexing explicitly by setting
+// OPSPULSE_SSH_CONTROL_MASTER=0 (or "false"/"off"/"no").
 func ControlMasterEnabled() bool {
+	if env := os.Getenv("OPSPULSE_SSH_CONTROL_MASTER"); env != "" {
+		if env == "0" || strings.EqualFold(env, "false") || strings.EqualFold(env, "off") || strings.EqualFold(env, "no") {
+			return false
+		}
+	}
 	return runtime.GOOS != "windows"
 }
 
@@ -48,6 +68,49 @@ func ControlMasterPath() (string, error) {
 		return "", err
 	}
 	return filepath.ToSlash(filepath.Join(dir, "%r@%h:%p")), nil
+}
+
+// ControlMasterSocketFor returns the concrete filesystem path of the multiplexing
+// socket for a given user, host, and port.
+func ControlMasterSocketFor(user, host string, port int) (string, error) {
+	dir, err := ControlMasterDir()
+	if err != nil {
+		return "", err
+	}
+	if user == "" {
+		user = "root"
+	}
+	if port <= 0 {
+		port = 22
+	}
+	return filepath.ToSlash(filepath.Join(dir, fmt.Sprintf("%s@%s:%d", user, host, port))), nil
+}
+
+// CleanupControlMaster cleans up any active or stale multiplexing socket for the given target.
+// If sshPath is provided, it attempts a graceful 'ssh -O exit' with a short timeout before
+// removing the socket file.
+func CleanupControlMaster(sshPath, user, host string, port int) error {
+	sock, err := ControlMasterSocketFor(user, host, port)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(sock); err != nil {
+		return nil
+	}
+	if sshPath != "" {
+		dest := host
+		if port > 0 && port != 22 {
+			dest = fmt.Sprintf("%s:%d", host, port)
+		}
+		if user != "" {
+			dest = fmt.Sprintf("%s@%s", user, dest)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		_ = exec.CommandContext(ctx, sshPath, "-O", "exit", "-S", sock, dest).Run()
+	}
+	_ = os.Remove(sock)
+	return nil
 }
 
 // EnsureControlMasterDir creates the socket directory with 0700.
@@ -107,6 +170,9 @@ func ControlMasterArgs() []string {
 		"-o", "ControlMaster=auto",
 		"-o", "ControlPath=" + path,
 		"-o", "ControlPersist=" + ControlPersist,
+		"-o", "ServerAliveInterval=" + ServerAliveInterval,
+		"-o", "ServerAliveCountMax=" + ServerAliveCountMax,
+		"-o", "TCPKeepAlive=yes",
 	}
 }
 
@@ -121,5 +187,9 @@ func ControlMasterConfigLines() []string {
 		"    ControlMaster auto",
 		"    ControlPath " + path,
 		"    ControlPersist " + ControlPersist,
+		"    ServerAliveInterval " + ServerAliveInterval,
+		"    ServerAliveCountMax " + ServerAliveCountMax,
+		"    TCPKeepAlive yes",
 	}
 }
+

@@ -251,6 +251,50 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 	}
 }
 
+func TestBuildSSHArgsRespectsNoCMFlag(t *testing.T) {
+	if !server.ControlMasterEnabled() {
+		t.Skip("connection multiplexing is disabled on this platform")
+	}
+	setTestHome(t, t.TempDir())
+	_ = server.EnsureControlMasterDir()
+
+	srv := server.Server{Name: "vps-01", Host: "192.168.1.10", Port: 22, User: "root"}
+
+	sshNoControlMaster = true
+	defer func() { sshNoControlMaster = false }()
+
+	got := buildSSHArgs("ssh", srv, nil, "", nil)
+	if strings.Contains(strings.Join(got, " "), "ControlMaster") {
+		t.Errorf("buildSSHArgs() = %v, want no ControlMaster when sshNoControlMaster is true", got)
+	}
+}
+
+func TestPreflightControlMasterCleansStaleSocket(t *testing.T) {
+	if !server.ControlMasterEnabled() {
+		t.Skip("connection multiplexing is disabled on this platform")
+	}
+	home := t.TempDir()
+	setTestHome(t, home)
+	_ = server.EnsureControlMasterDir()
+
+	srv := server.Server{Name: "vps-stale", Host: "192.168.1.99", Port: 22, User: "root"}
+	sockPath, err := server.ControlMasterSocketFor(srv.User, srv.Host, srv.Port)
+	if err != nil {
+		t.Fatalf("ControlMasterSocketFor error: %v", err)
+	}
+
+	// Create a dummy stale socket file
+	if err := os.WriteFile(sockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("WriteFile stale socket error: %v", err)
+	}
+
+	preflightControlMaster("ssh", srv, false)
+
+	if _, err := os.Stat(sockPath); !os.IsNotExist(err) {
+		t.Errorf("preflightControlMaster did not remove stale socket file %s", sockPath)
+	}
+}
+
 func TestNewAskpassFileIsPrivateAndCleanable(t *testing.T) {
 	cfg := askpassConfig{DefaultPass: "s3cret", HostPass: map[string]string{"web": "s3cret"}}
 
