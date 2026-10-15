@@ -88,6 +88,10 @@ type ContainerInfo struct {
 	Env           []string          `json:"env,omitempty"`
 	RestartPolicy string            `json:"restart_policy,omitempty"`
 	NetworkMode   string            `json:"network_mode,omitempty"`
+	Privileged    bool              `json:"privileged,omitempty"`
+	CapAdd        []string          `json:"cap_add,omitempty"`
+	CapDrop       []string          `json:"cap_drop,omitempty"`
+	Healthcheck   bool              `json:"healthcheck,omitempty"`
 	Ports         []PortMapping     `json:"ports,omitempty"`
 	Mounts        []VolumeMount     `json:"mounts,omitempty"`
 	Devices       []string          `json:"devices,omitempty"`
@@ -199,12 +203,17 @@ type rawInspectContainer struct {
 }
 
 type rawConfig struct {
-	Image      string            `json:"Image"`
-	Cmd        []string          `json:"Cmd"`
-	Entrypoint []string          `json:"Entrypoint"`
-	Env        []string          `json:"Env"`
-	WorkingDir string            `json:"WorkingDir"`
-	Labels     map[string]string `json:"Labels"`
+	Image       string            `json:"Image"`
+	Cmd         []string          `json:"Cmd"`
+	Entrypoint  []string          `json:"Entrypoint"`
+	Env         []string          `json:"Env"`
+	WorkingDir  string            `json:"WorkingDir"`
+	Labels      map[string]string `json:"Labels"`
+	Healthcheck *rawHealthcheck   `json:"Healthcheck"`
+}
+
+type rawHealthcheck struct {
+	Test []string `json:"Test"`
 }
 
 type rawHostConfig struct {
@@ -215,6 +224,9 @@ type rawHostConfig struct {
 	PortBindings map[string][]rawPortBinding `json:"PortBindings"`
 	Binds        []string                    `json:"Binds"`
 	NetworkMode  string                      `json:"NetworkMode"`
+	Privileged   bool                        `json:"Privileged"`
+	CapAdd       []string                    `json:"CapAdd"`
+	CapDrop      []string                    `json:"CapDrop"`
 	Devices      []rawDevice                 `json:"Devices"`
 }
 
@@ -275,6 +287,10 @@ func ParseInspectJSON(data []byte) (*ContainerInfo, error) {
 		Env:           raw.Config.Env,
 		RestartPolicy: raw.HostConfig.RestartPolicy.Name,
 		NetworkMode:   raw.HostConfig.NetworkMode,
+		Privileged:    raw.HostConfig.Privileged,
+		CapAdd:        raw.HostConfig.CapAdd,
+		CapDrop:       raw.HostConfig.CapDrop,
+		Healthcheck:   hasHealthcheck(raw.Config.Healthcheck),
 		Labels:        raw.Config.Labels,
 	}
 
@@ -396,4 +412,14 @@ func parseBindString(b string) (string, string, bool, bool) {
 
 func isDriveLetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// hasHealthcheck reports whether an inspected container defines a healthcheck.
+// Docker serializes a disabled healthcheck as {"Test":["NONE"]}, so a present
+// but disabled check must not be reported as configured.
+func hasHealthcheck(hc *rawHealthcheck) bool {
+	if hc == nil || len(hc.Test) == 0 {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(hc.Test[0]), "NONE")
 }

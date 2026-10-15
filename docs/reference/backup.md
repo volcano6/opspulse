@@ -524,7 +524,50 @@ systemctl status ops.service
 
 ---
 
-## 5. 相关文档 (See Also)
+## 5. Docker 服务发现与迁移能力 (`docker list` / `docker inspect`)
+
+在真正备份或迁移容器之前，先用这组**只读**命令看清 VPS 上有什么、每个容器能不能迁。
+它们只执行 `docker ps` / `docker inspect` 与一次环境能力探测，**不会**执行数据库 dump、
+volume 归档、restic 备份或 `compose up`，也不会修改远端任何文件。
+
+### 列出容器 (`ops docker list`)
+
+```bash
+ops docker list vps-01          # 只列运行中的容器
+ops docker list vps-01 --all    # 连已停止的一起列
+ops docker list vps-01 --json   # 结构化输出，便于脚本处理
+```
+
+表格给出容器名、镜像、编排方式（`compose:<项目>` 或 `run`）、识别到的数据库类型、状态与
+端口。`--json` 输出 `{"server": "...", "containers": [...]}`。
+
+### 单个容器的迁移分析 (`ops docker inspect`)
+
+```bash
+ops docker inspect vps-01 blog-db
+ops docker inspect vps-01 blog-db --json
+```
+
+分析内容：
+
+- 编排方式：Docker Compose 项目/服务，或普通 `docker run` 容器；
+- 挂载：named volume 与 bind mount 分别列出；
+- 数据库：识别 MySQL / MariaDB / Percona / PostgreSQL，给出逻辑导出策略与数据目录；
+- 外部宿主机依赖：bind mount、系统挂载、设备、自定义网络；
+- 疑似敏感环境变量：**只列变量名，不回显取值**；
+- 各 Docker 属性的支持级别：`supported` / `partial` / `unsupported`；
+- 远端能力：Docker / Compose / restic / helper 镜像 / registry 可达性 / 磁盘空间，以及容器
+  用到的宿主机路径是否可写；缺 Docker、Compose、restic、helper 镜像或磁盘空间不足时给出明确提示。
+
+`--json` 输出结构化结果，环境变量同样只含名字（`env_keys`），不含取值。
+
+> 这组命令只负责「看清现状」，不负责备份或迁移；真正执行仍走
+> [一键容器智能备份](#一键容器智能备份-无需前置配置) 与 [还原](#3-还原-restore)。
+> Docker 属性的完整支持边界矩阵由后续文档统一维护，本节只说明命令本身的输出。
+
+---
+
+## 6. 相关文档 (See Also)
 
 - [命令行参考](cli.md)：`ops` 全部命令与每个 flag 的权威清单（生成物）。
 - [配置与模板](configuration.md)：配置与数据目录位置、`servers.yaml` / `assets.yaml` / `notifications.yaml` 字段、Webhook payload 结构与 SQLite 落盘位置。

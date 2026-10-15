@@ -34,6 +34,9 @@
 | `ops completion [bash\|zsh\|fish\|powershell]` | 生成 Shell 补全脚本或自动安装 |
 | `ops cp [flags] <source> <destination>` | 经 SFTP 在本地与远端服务器之间拷贝文件或目录 |
 | `ops daemon` | 运行后台调度器守护进程，自动执行定时备份 |
+| `ops docker` | 发现远端 Docker 服务并报告迁移能力 |
+| `ops docker inspect <server> <container>` | 查看单个容器的迁移分析与远端能力 |
+| `ops docker list <server>` | 列出指定服务器上的 Docker 容器 |
 | `ops doctor [flags]` | 巡检集群健康（SSH 延迟、磁盘占用、Docker 状态） |
 | `ops exec [server] <command...>` | 在远端服务器上执行命令 |
 | `ops export` | 导出配置与工具集成 |
@@ -512,6 +515,59 @@ cron 表达式执行备份作业。
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
+### `ops docker`
+
+只读地发现远端服务器上的 Docker 服务，并报告每个容器的迁移能力与风险。
+
+本组命令只做只读探测（docker ps / docker inspect / 环境能力检查），不会执行数据库
+dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何文件。
+
+子命令：
+```
+  list     列出容器及每个容器的迁移摘要
+  inspect  查看单个容器的结构化迁移分析（含远端能力与缺口提示）
+```
+
+该命令没有自己的 flag。
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker inspect <server> <container>`
+
+对指定容器做只读的迁移分析：编排方式、镜像、端口、named volume、bind mount、
+数据库类型、外部宿主机依赖、敏感环境变量与各 Docker 属性的支持级别；同时报告远端缺少
+Docker / Compose / restic / helper 镜像 / 数据库工具或磁盘空间不足等缺口。
+
+示例：
+```
+  ops docker inspect vps-01 blog-db
+  ops docker inspect vps-01 blog-db --json
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--json` | - | `false` | 以 JSON 输出结构化结果（环境变量只含名字，不含取值） |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker list <server>`
+
+列出指定服务器上的 Docker 容器，并标注每个容器是 Compose 管理还是普通 docker run。
+
+示例：
+```
+  ops docker list vps-01          # 只列运行中的容器
+  ops docker list vps-01 --all    # 连已停止的一起列
+  ops docker list vps-01 --json   # 结构化输出，便于脚本处理
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--all` | `-a` | `false` | 显示全部容器（默认只显示运行中的） |
+| `--json` | - | `false` | 以 JSON 输出结构化结果 |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
 ### `ops doctor [flags]`
 
 对清单中的服务器执行非侵入式健康巡检。
@@ -957,7 +1013,9 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
 | flag | 简写 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--exec` | - | (空) | 以非交互方式在服务器上执行一条命令，并以该命令的退出码退出 |
+| `--no-cm` | - | `false` | 本次连接禁用 SSH 连接复用 (ControlMaster) |
 | `--no-title` | - | `false` | SSH 会话期间不改写终端标题 |
+| `--reconnect` | - | `false` | 清理现有复用连接并强制重新建立新连接 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
