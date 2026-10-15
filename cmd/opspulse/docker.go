@@ -52,7 +52,9 @@ dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何
 
 子命令：
   list     列出容器及每个容器的迁移摘要
-  inspect  查看单个容器的结构化迁移分析（含远端能力与缺口提示）`,
+  inspect  查看单个容器的结构化迁移分析（含远端能力与缺口提示）
+  plan     为一个或多个容器生成只读、可保存的迁移 plan
+  plan show 读取并显示已保存的 plan`,
 }
 
 var dockerListCmd = &cobra.Command{

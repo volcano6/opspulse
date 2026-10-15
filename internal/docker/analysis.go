@@ -29,6 +29,15 @@ type AttributeSupport struct {
 	Detail    string       `json:"detail,omitempty" yaml:"detail,omitempty"`
 }
 
+// Database dump strategies reported by Analyze. A logical dump is consistent;
+// a file-level copy is not, and the plan has to say which one applies.
+const (
+	// DatabaseStrategyLogicalDump means OpsPulse can take a consistent hot dump.
+	DatabaseStrategyLogicalDump = "logical_dump"
+	// DatabaseStrategyFileLevel means only the raw data directory can be copied.
+	DatabaseStrategyFileLevel = "file_level"
+)
+
 // ExternalDependency is a host resource a container relies on that a migration
 // cannot carry automatically: host directories, sockets, devices and networks.
 type ExternalDependency struct {
@@ -205,14 +214,14 @@ func analyzeDatabase(info *ContainerInfo) *DatabaseAnalysis {
 		return nil
 	}
 
-	db := &DatabaseAnalysis{Engine: engine, Strategy: "logical_dump"}
+	db := &DatabaseAnalysis{Engine: engine, Strategy: DatabaseStrategyLogicalDump}
 	switch engine {
 	case EngineMySQL:
 		db.Tool = "mysqldump --single-transaction --quick --all-databases"
 	case EnginePostgres:
 		db.Tool = "pg_dumpall"
 	default:
-		db.Strategy = "file_level"
+		db.Strategy = DatabaseStrategyFileLevel
 	}
 
 	for _, m := range info.Mounts {

@@ -37,6 +37,8 @@
 | `ops docker` | 发现远端 Docker 服务并报告迁移能力 |
 | `ops docker inspect <server> <container>` | 查看单个容器的迁移分析与远端能力 |
 | `ops docker list <server>` | 列出指定服务器上的 Docker 容器 |
+| `ops docker plan <server> [container]` | 为一个或多个容器生成只读、可保存的迁移 plan |
+| `ops docker plan show <plan-file>` | 读取并显示已保存的迁移 plan |
 | `ops doctor [flags]` | 巡检集群健康（SSH 延迟、磁盘占用、Docker 状态） |
 | `ops exec [server] <command...>` | 在远端服务器上执行命令 |
 | `ops export` | 导出配置与工具集成 |
@@ -526,6 +528,8 @@ dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何
 ```
   list     列出容器及每个容器的迁移摘要
   inspect  查看单个容器的结构化迁移分析（含远端能力与缺口提示）
+  plan     为一个或多个容器生成只读、可保存的迁移 plan
+  plan show 读取并显示已保存的 plan
 ```
 
 该命令没有自己的 flag。
@@ -565,6 +569,54 @@ Docker / Compose / restic / helper 镜像 / 数据库工具或磁盘空间不足
 | --- | --- | --- | --- |
 | `--all` | `-a` | `false` | 显示全部容器（默认只显示运行中的） |
 | `--json` | - | `false` | 以 JSON 输出结构化结果 |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker plan <server> [container]`
+
+生成 Docker 迁移 plan：源、目标、服务名、配置、named volume、bind mount、数据库、
+镜像获取方式、目标路径与端口，以及 hard blocker / warning / informational follow-up 三类风险。
+
+plan 只做只读探测与计算：不写备份配置、不生成快照、不启动服务、不覆盖文件。默认把 plan
+保存为可审查的 YAML 文件并打印路径（--no-save 可关闭），用 `ops docker plan show <file>` 可重新读取。
+
+默认只处理显式指定的容器；要批量规划整台服务器上的运行中容器，必须显式加 --all。
+
+示例：
+```
+  ops docker plan vps-01 blog-db
+  ops docker plan vps-01 blog-db --target vps-02 --save migration-plan.yaml
+  ops docker plan vps-01 --all --json
+  ops docker plan vps-01 blog-db --write-config --yes
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--all` | - | `false` | 显式批量：规划该服务器上所有运行中的容器 |
+| `--json` | - | `false` | 以 JSON 输出 plan（stdout 只含 JSON） |
+| `--no-save` | - | `false` | 不保存 plan 文件，只打印（纯只读） |
+| `--save` | - | (空) | plan 保存路径（默认保存到 OpsPulse 配置目录的 plans/ 下） |
+| `--target` | - | (空) | 目标服务器名（默认不指定：目标路径与端口按源机记录） |
+| `--write-config` | - | `false` | 确认后把 plan 中提议的备份作业写入 backups.yaml（默认不写） |
+| `--yes` | `-y` | `false` | 跳过写入备份配置前的交互确认（不包含 hard blocker） |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker plan show <plan-file>`
+
+读取一个由 `ops docker plan` 保存的 plan 文件并显示其内容。
+
+只读取文件，不会连接任何服务器，也不会执行 plan 中的任何步骤；格式版本不匹配时会明确报错。
+
+示例：
+```
+  ops docker plan show migration-plan.yaml
+  ops docker plan show migration-plan.yaml --json
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--json` | - | `false` | 以 JSON 输出 plan |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 

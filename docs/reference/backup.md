@@ -565,6 +565,50 @@ ops docker inspect vps-01 blog-db --json
 > [一键容器智能备份](#一键容器智能备份-无需前置配置) 与 [还原](#3-还原-restore)。
 > Docker 属性的完整支持边界矩阵由后续文档统一维护，本节只说明命令本身的输出。
 
+### 只读迁移 plan (`ops docker plan`)
+
+在真正备份或迁移之前，为一个容器（或**显式**选择的一组容器）生成可审查、可保存的 plan：
+
+```bash
+ops docker plan vps-01 blog-db                  # 单容器 plan：默认保存为 YAML 并打印路径
+ops docker plan vps-01 blog-db --target vps-02  # 指定目标机：额外检查目标机能力
+ops docker plan vps-01 blog-db --save migration-plan.yaml
+ops docker plan vps-01 --all                    # 显式批量：该服务器上所有运行中的容器
+ops docker plan vps-01 --all --json             # 结构化输出，便于脚本处理
+ops docker plan show migration-plan.yaml        # 重新读取已保存的 plan
+```
+
+默认只处理**显式指定**的容器：不写容器名时必须加 `--all`，否则命令直接报错——不会因为漏参数
+就把整台 VPS 的服务全部纳入 plan。
+
+plan 记录的内容：
+
+- 源与目标（未指定目标时按源机原样记录路径与端口，并明确标注「未指定」）；
+- 服务名/容器名、编排方式（`compose:<项目>` 或 `run`）；
+- 配置：Compose 文件、项目目录、重启策略、端口、环境变量名（**只列名字**）与疑似敏感变量；
+- named volume、bind mount、数据库引擎与导出策略（`logical_dump` / `file_level`）、一致性策略；
+- 镜像获取方式：`pull_from_registry` / `preload_required` / `unknown`；
+- 目标路径与目标端口（可在 plan 文件中手工编辑，执行前会重新校验）；
+- 每个 Docker 属性的支持级别（`supported` / `partial` / `unsupported`，与 `ops docker inspect`
+  同一张表）。
+
+风险分三档，plan 与 `--json` 输出都按这三档分组：
+
+- **hard blocker**：阻止执行。例如目标机缺 Docker / Compose / restic / helper 镜像、磁盘空间不足、
+  必需路径无法创建、容器本身无法按单容器迁移。
+- **warning**：可见、可确认继续。例如外部 bind mount、宿主机设备、自定义网络、特权模式、敏感环境
+  变量、镜像必须预置、非受支持数据库只能文件级复制。
+- **informational follow-up**：人工后续步骤。例如在目标机创建目录/网络、预置镜像、迁移后逐项核对属性。
+
+plan 严格只读：不写入备份配置、不生成快照、不启动服务、不覆盖文件。保存 plan 时若同名文件已存在会
+直接拒绝覆盖；`--no-save` 可完全关闭落盘。默认保存位置是 OpsPulse 配置目录下的
+`plans/<时间戳>-<服务器>-<标签>.yaml`，可用 `ops docker plan show <file>` 重新读取（文件带
+`format_version`，版本不匹配会明确报错）。
+
+写入备份配置必须显式加 `--write-config`：命令先打印变更摘要（新增还是更新、作业名、server、paths、
+backend）与敏感环境变量风险，只有在交互确认或显式 `--yes` 之后才会写入 `backups.yaml`；非交互环境
+下没有 `--yes` 会直接拒绝。没有可继承的 restic 仓库时同样拒绝写入。
+
 ---
 
 ## 6. 相关文档 (See Also)
