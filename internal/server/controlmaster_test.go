@@ -164,4 +164,3 @@ func TestControlMasterSocketFor(t *testing.T) {
 		t.Errorf("ControlMasterSocketFor default = %q, want %q", sockDefault, wantDefault)
 	}
 }
-

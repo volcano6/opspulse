@@ -192,4 +192,3 @@ func ControlMasterConfigLines() []string {
 		"    TCPKeepAlive yes",
 	}
 }
-
