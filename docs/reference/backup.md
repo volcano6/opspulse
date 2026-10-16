@@ -609,6 +609,39 @@ plan 严格只读：不写入备份配置、不生成快照、不启动服务、
 backend）与敏感环境变量风险，只有在交互确认或显式 `--yes` 之后才会写入 `backups.yaml`；非交互环境
 下没有 `--yes` 会直接拒绝。没有可继承的 restic 仓库时同样拒绝写入。
 
+### 按 plan 执行迁移 (`ops docker apply`)
+
+`ops docker apply` 读取一份已保存的 plan，**先按当前环境重新校验**，再复用现有的容器备份与恢复
+引擎执行迁移：源容器逐个 `ops backup run <server>:<container>` 式备份，再 `ops restore run` 式
+还原到目标机并启动服务。
+
+```bash
+ops docker apply migration-plan.yaml             # 预检后交互确认执行
+ops docker apply migration-plan.yaml --dry-run   # 只做应用前校验与冲突检查，不执行任何步骤
+ops docker apply migration-plan.yaml --yes       # 跳过交互确认（不绕过 hard blocker）
+ops docker apply migration-plan.yaml --json      # 结构化输出预检与逐服务结果
+```
+
+执行前会重新检查：源容器是否仍存在且与 plan 一致（镜像、编排方式、Compose 项目/服务、named
+volume、bind mount、数据库策略），目标机连接与 Docker/Compose/restic/helper 镜像、镜像获取
+方式、端口、路径与权限、数据库条件，以及目标机是否已有同名容器、同名 Compose 项目、已占用端口
+或已存在的项目目录。
+
+- **plan 不是绕过当前检查的后门**：环境与 plan 发生关键差异时停止执行并逐条说明差异。
+- 目标机已有同名服务、端口或目录冲突时**阻止执行**；默认保留服务名与项目名，**不会**为了避开
+  冲突自动改名。同一 plan 选中同一 Compose 项目下的多个服务时也会阻止（现有引擎按容器逐份
+  执行、以项目名作为作业名）。
+- 在 plan 文件中显式改过的 `target_ports` / `target_paths` 会被执行：命令会按 plan 调整目标机
+  上的端口与 bind mount 宿主机路径，并在目标机上重写 Compose 文件（注释与格式会丢失）。
+- 外部挂载、特殊权限、非标准数据库与镜像 registry 依赖会以 warning 或 hard blocker 明确展示。
+- 独立且安全的服务继续执行，最终汇总**成功 / 失败 / 跳过**与人工处理项；只要有服务失败或被跳过，
+  退出码即为非零。`--yes` 只能跳过交互确认，不能绕过硬阻止项。
+- **不承诺通用自动回滚**：数据库导入、外部 bind mount 与宿主机侧副作用失败后需按汇总说明人工
+  处理。
+
+> 迁移前先用 `ops docker list` / `ops docker inspect` 看清现状，用 `ops docker plan` 生成并
+> 审查 plan；本命令只负责按 plan 执行。Docker 支持边界矩阵见专门的文档（由后续工单维护）。
+
 ---
 
 ## 6. 相关文档 (See Also)

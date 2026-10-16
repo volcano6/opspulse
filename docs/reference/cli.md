@@ -35,6 +35,7 @@
 | `ops cp [flags] <source> <destination>` | 经 SFTP 在本地与远端服务器之间拷贝文件或目录 |
 | `ops daemon` | 运行后台调度器守护进程，自动执行定时备份 |
 | `ops docker` | 发现远端 Docker 服务并报告迁移能力 |
+| `ops docker apply <plan-file>` | 按迁移 plan 安全执行 Docker 服务迁移 |
 | `ops docker inspect <server> <container>` | 查看单个容器的迁移分析与远端能力 |
 | `ops docker list <server>` | 列出指定服务器上的 Docker 容器 |
 | `ops docker plan <server> [container]` | 为一个或多个容器生成只读、可保存的迁移 plan |
@@ -256,8 +257,9 @@ servers.yaml 里仍然持有 'op://' 引用的服务器会在还原过程中迁�
 目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
 默认用户为 root，默认 SSH 端口为 22。
 
-新增时服务器名会被规范化：下划线改写为中划线，"web_1" 保存为 "web-1"，
-避免同一台机器以两个肉眼难分的名字在清单里出现两次。已存在的条目不会被改名。
+服务器名只允许字母、数字和中划线。新增时下划线会自动改写为中划线
+"web_1" 保存为 "web-1"（会打印一行提示），其它非法字符（如 "."、"@"）
+会直接报错。已存在的条目不会被自动改名。
 
 示例：
 ```
@@ -530,9 +532,40 @@ dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何
   inspect  查看单个容器的结构化迁移分析（含远端能力与缺口提示）
   plan     为一个或多个容器生成只读、可保存的迁移 plan
   plan show 读取并显示已保存的 plan
+  apply    按 plan 重新校验源/目标后安全执行迁移
 ```
 
 该命令没有自己的 flag。
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker apply <plan-file>`
+
+读取一份由 `ops docker plan` 保存的 plan，先按当前环境重新校验源容器与目标机，再复用现有的
+容器备份与恢复引擎执行迁移。
+
+执行前会重新检查：源容器是否仍存在且与 plan 一致、目标连接与 Docker/Compose/restic、
+镜像获取方式、端口、路径与权限、helper 镜像、数据库条件，以及目标机是否已有同名容器、
+同名 Compose 项目、已占用端口或已存在的项目目录。发现 hard blocker 时停止执行并逐条说明
+差异——plan 不是绕过当前检查的后门。
+
+默认保留服务名与项目名，不会为了避开冲突自动改名。plan 中显式改过的 target_ports /
+target_paths 会被执行；独立且安全的服务继续执行，最终汇总成功、失败、跳过与人工处理项。
+退出码非零表示有必需步骤失败或被跳过。本命令不承诺通用自动回滚。
+
+示例：
+```
+  ops docker apply migration-plan.yaml            # 交互确认后执行
+  ops docker apply migration-plan.yaml --dry-run  # 只做应用前校验，不执行
+  ops docker apply migration-plan.yaml --yes      # 跳过交互确认（不绕过 hard blocker）
+  ops docker apply migration-plan.yaml --json     # 结构化输出结果
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--dry-run` | - | `false` | 只做应用前的重新校验与冲突检查，不执行任何备份/恢复/启动 |
+| `--json` | - | `false` | 以 JSON 输出预检结果与逐服务结果（执行日志走 stderr） |
+| `--yes` | `-y` | `false` | 跳过执行前的交互确认（不绕过 hard blocker） |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
@@ -870,8 +903,9 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
 目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
 默认用户为 root，默认 SSH 端口为 22。
 
-新增时服务器名会被规范化：下划线改写为中划线，"web_1" 保存为 "web-1"，
-避免同一台机器以两个肉眼难分的名字在清单里出现两次。已存在的条目不会被改名。
+服务器名只允许字母、数字和中划线。新增时下划线会自动改写为中划线
+"web_1" 保存为 "web-1"（会打印一行提示），其它非法字符（如 "."、"@"）
+会直接报错。已存在的条目不会被自动改名。
 
 示例：
 ```

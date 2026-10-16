@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -104,4 +105,44 @@ func ParseLabels(raw string) map[string]string {
 		labels[key] = strings.TrimSpace(value)
 	}
 	return labels
+}
+
+// PublishedPort is one host-side port published by a running container, as
+// rendered by `docker ps` in its "0.0.0.0:8080->80/tcp" form.
+type PublishedPort struct {
+	HostPort string
+	Protocol string
+}
+
+// ParsePublishedPorts extracts the host-side ports from the `docker ps` Ports
+// field. Entries that publish no host port (container-only) and malformed
+// fragments are skipped, so callers get a conflict set they can trust.
+func ParsePublishedPorts(raw string) []PublishedPort {
+	var out []PublishedPort
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		arrow := strings.Index(entry, "->")
+		if arrow < 0 {
+			continue
+		}
+		host, rest := entry[:arrow], entry[arrow+2:]
+
+		proto := "tcp"
+		if i := strings.Index(rest, "/"); i >= 0 {
+			proto = strings.ToLower(strings.TrimSpace(rest[i+1:]))
+		}
+
+		// "0.0.0.0:8080", "[::]:8080" and "127.0.0.1:8080" all end with the
+		// numeric host port after the last colon.
+		i := strings.LastIndex(host, ":")
+		if i < 0 {
+			continue
+		}
+		port := strings.TrimSpace(host[i+1:])
+		if _, err := strconv.Atoi(port); err != nil {
+			continue
+		}
+		out = append(out, PublishedPort{HostPort: port, Protocol: proto})
+	}
+	return out
 }

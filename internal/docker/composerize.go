@@ -44,7 +44,7 @@ func GenerateComposeYAML(info *ContainerInfo, aliasName string) (string, error) 
 	}
 
 	// Clean service name for YAML key (lowercase, alphanumeric, hyphens, underscores)
-	serviceKey := sanitizeServiceName(serviceName)
+	serviceKey := SanitizeServiceName(serviceName)
 
 	service := ComposeService{
 		ContainerName: serviceName,
@@ -141,7 +141,11 @@ func GenerateComposeYAML(info *ContainerInfo, aliasName string) (string, error) 
 	return string(yamlBytes), nil
 }
 
-func sanitizeServiceName(name string) string {
+// SanitizeServiceName reduces a name to the Compose service-key charset:
+// lowercase ASCII plus '-', '_' and digits. It is exported because the apply
+// step has to address the same generated key when it rewrites a restored
+// Compose file.
+func SanitizeServiceName(name string) string {
 	name = strings.ToLower(name)
 	var sb strings.Builder
 	for _, r := range name {

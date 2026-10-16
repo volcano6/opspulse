@@ -52,6 +52,12 @@ type Check struct {
 	Name   string `json:"name" yaml:"name"`
 	Status Status `json:"status" yaml:"status"`
 	Detail string `json:"detail,omitempty" yaml:"detail,omitempty"`
+	// Exists and Writable are only meaningful for path checks (StatusOK /
+	// StatusPartial / StatusMissing on a directory). They are recorded
+	// separately from Status because apply has to tell "directory already
+	// exists" (a target conflict) apart from "directory is writable".
+	Exists   bool `json:"exists,omitempty" yaml:"exists,omitempty"`
+	Writable bool `json:"writable,omitempty" yaml:"writable,omitempty"`
 }
 
 // DiskSpace reports free space on the filesystem that holds the migration
@@ -81,6 +87,7 @@ type Report struct {
 	Registry      Check     `json:"registry" yaml:"registry"`
 	Disk          DiskSpace `json:"disk" yaml:"disk"`
 	Paths         []Check   `json:"paths" yaml:"paths"`
+	Images        []Check   `json:"images,omitempty" yaml:"images,omitempty"`
 	Notes         []string  `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
 
@@ -90,6 +97,10 @@ type ProbeOptions struct {
 	// include - for example the Compose project directory and bind-mount
 	// sources of the container being inspected.
 	Paths []string
+	// Images are container images whose local presence the report should
+	// include. Apply uses this to confirm a plan's preload-required images are
+	// actually present on a target that cannot pull them.
+	Images []string
 }
 
 // Remote is the single high-level seam between the Docker migration commands
@@ -246,6 +257,16 @@ func BuildProbeScript(opts ProbeOptions) (string, error) {
 		b.WriteString(probeScriptPaths)
 	}
 
+	images, err := probeQuotedImages(opts.Images)
+	if err != nil {
+		return "", err
+	}
+	if len(images) > 0 {
+		fmt.Fprintf(&b, "\nif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then\n  for opspulse_image in %s; do\n",
+			strings.Join(images, " "))
+		b.WriteString(probeScriptImages)
+	}
+
 	b.WriteString(probeScriptTail)
 	return b.String(), nil
 }
@@ -263,6 +284,24 @@ func probeQuotedPaths(paths []string) ([]string, error) {
 			return nil, err
 		}
 		quoted = append(quoted, shellquote.Quote(p))
+	}
+	return quoted, nil
+}
+
+// probeQuotedImages validates and single-quotes the image references to check.
+// Image references never contain a newline or a pipe either, and both would
+// corrupt the line-oriented probe output.
+func probeQuotedImages(images []string) ([]string, error) {
+	quoted := make([]string, 0, len(images))
+	for _, image := range images {
+		image = strings.TrimSpace(image)
+		if image == "" {
+			continue
+		}
+		if strings.ContainsAny(image, "\n\r") || strings.Contains(image, "|") {
+			return nil, fmt.Errorf("invalid probe image %q: must not contain newlines or '|'", image)
+		}
+		quoted = append(quoted, shellquote.Quote(image))
 	}
 	return quoted, nil
 }
@@ -360,6 +399,15 @@ const probeScriptPaths = `  if [ -e "$opspulse_path" ]; then opspulse_exists=yes
 done
 `
 
+const probeScriptImages = `    if docker image inspect "$opspulse_image" >/dev/null 2>&1; then
+      echo "IMAGE=$opspulse_image|present"
+    else
+      echo "IMAGE=$opspulse_image|missing"
+    fi
+  done
+fi
+`
+
 const probeScriptTail = `echo "---OPSPULSE-CAPABILITY-END---"
 exit 0
 `
@@ -370,14 +418,19 @@ exit 0
 func ParseProbeOutput(server, raw string) *Report {
 	values := make(map[string]string)
 	var pathLines []string
+	var imageLines []string
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		if key == "PATH" {
+		switch key {
+		case "PATH":
 			pathLines = append(pathLines, value)
+			continue
+		case "IMAGE":
+			imageLines = append(imageLines, value)
 			continue
 		}
 		values[key] = value
@@ -397,6 +450,7 @@ func ParseProbeOutput(server, raw string) *Report {
 		Registry:      registryCheck(values),
 		Disk:          diskCheck(values),
 		Paths:         pathChecks(pathLines),
+		Images:        imageChecks(imageLines),
 	}
 	report.Notes = reportHints(report)
 	return report
@@ -526,15 +580,47 @@ func pathChecks(lines []string) []Check {
 			continue
 		}
 		p, exists, writable := parts[0], parts[1], parts[2]
+		check := Check{
+			Name:     p,
+			Exists:   exists == "yes",
+			Writable: writable == "yes",
+		}
 		switch {
 		case exists == "yes" && writable == "yes":
-			checks = append(checks, Check{Name: p, Status: StatusOK, Detail: "目录存在且可写"})
+			check.Status = StatusOK
+			check.Detail = "目录存在且可写"
 		case exists == "yes":
-			checks = append(checks, Check{Name: p, Status: StatusPartial, Detail: "目录存在但当前用户不可写"})
+			check.Status = StatusPartial
+			check.Detail = "目录存在但当前用户不可写"
 		case writable == "yes":
-			checks = append(checks, Check{Name: p, Status: StatusPartial, Detail: "目录不存在，但父目录可写，可在迁移时创建"})
+			check.Status = StatusPartial
+			check.Detail = "目录不存在，但父目录可写，可在迁移时创建"
 		default:
-			checks = append(checks, Check{Name: p, Status: StatusMissing, Detail: "目录不存在且父目录不可写"})
+			check.Status = StatusMissing
+			check.Detail = "目录不存在且父目录不可写"
+		}
+		checks = append(checks, check)
+	}
+	return checks
+}
+
+// imageChecks turns the probe's IMAGE lines into per-image presence checks.
+// A name whose probe line is malformed is skipped rather than guessed.
+func imageChecks(lines []string) []Check {
+	checks := make([]Check, 0, len(lines))
+	for _, line := range lines {
+		image, state, ok := strings.Cut(line, "|")
+		image = strings.TrimSpace(image)
+		if !ok || image == "" {
+			continue
+		}
+		switch strings.TrimSpace(state) {
+		case "present":
+			checks = append(checks, Check{Name: image, Status: StatusOK, Detail: "目标机已有该镜像"})
+		case "missing":
+			checks = append(checks, Check{Name: image, Status: StatusMissing, Detail: "目标机没有该镜像，需要 docker pull 或预置"})
+		default:
+			checks = append(checks, Check{Name: image, Status: StatusUnknown})
 		}
 	}
 	return checks
@@ -574,6 +660,11 @@ func reportHints(r *Report) []string {
 	for _, p := range r.Paths {
 		if p.Status == StatusMissing {
 			hints = append(hints, fmt.Sprintf("远端路径 %s 不可写：迁移前需创建并授权。", p.Name))
+		}
+	}
+	for _, image := range r.Images {
+		if image.Status == StatusMissing {
+			hints = append(hints, fmt.Sprintf("远端没有镜像 %s：迁移前需 docker pull 或预置。", image.Name))
 		}
 	}
 	return hints

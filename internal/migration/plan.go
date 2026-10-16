@@ -688,7 +688,7 @@ func collectRisks(plan *Plan, in BuildInput) RiskSummary {
 		}
 	}
 
-	summary.add(sourceRisks(in.SourceCapability, hasVolumes)...)
+	summary.Add(sourceRisks(in.SourceCapability, hasVolumes)...)
 
 	if plan.Target.Server == "" {
 		summary.FollowUps = append(summary.FollowUps, Risk{
@@ -697,13 +697,13 @@ func collectRisks(plan *Plan, in BuildInput) RiskSummary {
 			Action: "执行前用 --target 指定目标服务器重新生成 plan，并在目标机复核路径与端口",
 		})
 	} else {
-		summary.add(targetRisks(plan.Target.Server, in.TargetCapability, hasVolumes)...)
+		summary.Add(targetRisks(plan.Target.Server, in.TargetCapability, hasVolumes)...)
 	}
 
 	for _, service := range plan.Services {
-		summary.add(scoped(service.Blockers, service.Name)...)
-		summary.add(scoped(service.Warnings, service.Name)...)
-		summary.add(scoped(service.FollowUps, service.Name)...)
+		summary.Add(scoped(service.Blockers, service.Name)...)
+		summary.Add(scoped(service.Warnings, service.Name)...)
+		summary.Add(scoped(service.FollowUps, service.Name)...)
 	}
 
 	if strings.TrimSpace(in.Backup.Backend) == "" {
@@ -867,9 +867,11 @@ func diskRiskCode(isSource, full bool) string {
 	return RiskTargetDiskTight
 }
 
-// add appends risks, skipping exact duplicates so a batch plan does not repeat
-// the same endpoint risk once per service.
-func (r *RiskSummary) add(risks ...Risk) {
+// Add appends risks, skipping exact duplicates so a batch plan does not repeat
+// the same endpoint risk once per service. It is exported so the apply step can
+// accumulate freshly revalidated risks with the same severity routing the plan
+// itself uses.
+func (r *RiskSummary) Add(risks ...Risk) {
 	for _, risk := range risks {
 		switch {
 		case r.contains(r.Blockers, risk):
@@ -883,6 +885,11 @@ func (r *RiskSummary) add(risks ...Risk) {
 			r.Warnings = append(r.Warnings, risk)
 		}
 	}
+}
+
+// HasBlockers reports whether anything in the summary forbids execution.
+func (r *RiskSummary) HasBlockers() bool {
+	return r != nil && len(r.Blockers) > 0
 }
 
 func (r *RiskSummary) contains(list []Risk, risk Risk) bool {
@@ -902,7 +909,10 @@ func (r Risk) isBlocker() bool {
 	case RiskAnalysisBlocker, RiskSourceDockerUnavailable, RiskSourceResticMissing,
 		RiskSourceHelperImageMissing, RiskSourceDiskFull, RiskTargetDockerUnavailable,
 		RiskTargetComposeMissing, RiskTargetResticMissing, RiskTargetHelperImageMissing,
-		RiskTargetDiskFull, RiskTargetPathUnavailable:
+		RiskTargetDiskFull, RiskTargetPathUnavailable,
+		RiskApplySourceMissing, RiskApplySourceDrift, RiskApplyTargetContainerConflict,
+		RiskApplyTargetProjectConflict, RiskApplyTargetPortConflict, RiskApplyTargetPathConflict,
+		RiskApplyTargetImageMissing, RiskApplyProjectMultiService:
 		return true
 	default:
 		return false
