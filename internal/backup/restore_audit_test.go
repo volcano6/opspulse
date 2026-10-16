@@ -242,14 +242,24 @@ func TestRestoreRunner_RecordsExecutionFailure(t *testing.T) {
 
 	var buf bytes.Buffer
 	record, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
-		SnapshotID: auditSnapshotID,
-		NoStart:    true,
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyNoStart,
 	}, &buf)
 	if err == nil {
 		t.Fatal("expected execution failure, got nil error")
 	}
 	if record == nil || record.FailureStage != storage.RestoreStageExecution {
 		t.Fatalf("record failure stage = %v, want execution", record)
+	}
+	// A failed file restore blocks everything downstream instead of leaving the
+	// steps silently unreported.
+	if got := stepStatus(t, record, RestoreStepFiles); got.Status != RestoreStepFailed {
+		t.Errorf("files step = %+v, want failed", got)
+	}
+	for _, kind := range []string{RestoreStepVolumes, RestoreStepDatabase, RestoreStepCompose} {
+		if got := stepStatus(t, record, kind); got.Status != RestoreStepBlocked {
+			t.Errorf("%s step = %+v, want blocked", kind, got)
+		}
 	}
 
 	got := f.onlyRun(t)
@@ -268,13 +278,25 @@ func TestRestoreRunner_RecordsPostRestoreFailure(t *testing.T) {
 
 	var buf bytes.Buffer
 	record, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
-		SnapshotID: auditSnapshotID,
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyStart,
 	}, &buf)
 	if err == nil {
 		t.Fatal("expected post-restore failure, got nil error")
 	}
 	if record == nil || record.Status != "partial" || record.FailureStage != storage.RestoreStagePostRestore {
 		t.Fatalf("record = %+v, want partial/post_restore", record)
+	}
+	// The file restore itself succeeded; the Compose step is the one that did
+	// not, and the result has to say which.
+	if got := stepStatus(t, record, RestoreStepFiles); got.Status != RestoreStepSuccess {
+		t.Errorf("files step = %+v, want success", got)
+	}
+	if got := stepStatus(t, record, RestoreStepCompose); got.Status != RestoreStepFailed {
+		t.Errorf("compose step = %+v, want failed", got)
+	}
+	if got := stepStatus(t, record, RestoreStepCompose); got.NextStep == "" {
+		t.Error("a failed step must carry the operator's next step")
 	}
 
 	got := f.onlyRun(t)
@@ -288,8 +310,8 @@ func TestRestoreRunner_SuccessKeepsFailureStageEmpty(t *testing.T) {
 
 	var buf bytes.Buffer
 	record, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
-		SnapshotID: auditSnapshotID,
-		NoStart:    true,
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyNoStart,
 	}, &buf)
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)

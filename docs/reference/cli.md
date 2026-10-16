@@ -857,6 +857,14 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
 
 将 restic 备份快照中的文件还原到原始服务器或另一台服务器。
 
+还原结束后会逐步骤报告结果（文件恢复、volume 恢复、数据库导入、Compose 启动），
+每一步各自是 success / failed / skipped / blocked / manual，总状态仍是
+success / partial / failed / dry-run。
+
+是否启动服务按场景决定：普通文件恢复与同机恢复默认只写回文件、不启动服务；
+跨机恢复在找到与本任务匹配的容器 manifest 时才会自动启动。需要强制启动用
+--start，需要只解压文件用 --no-start（两者互斥）。
+
 示例：
 ```
   # 还原最新快照到原始服务器和原始路径
@@ -865,8 +873,11 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
   # 还原指定快照
   ops restore run blog-backup --snapshot abc12345
 
-  # 跨机迁移：还原到新 VPS
+  # 跨机迁移：还原到新 VPS（有容器 manifest 时自动启动服务）
   ops restore run blog-backup --target-server new-vps --target-path /data/blog
+
+  # 普通文件恢复但需要启动目标机上已还原的服务
+  ops restore run blog-backup --start
 
   # 单资产精准还原
   ops restore run blog-backup --asset blog-mysql
@@ -880,8 +891,9 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
 | `--as` | - | (空) | 在目标服务器上重命名容器/服务项目名 |
 | `--asset` | - | (空) | 仅还原指定资产（按资产 ID） |
 | `--dry-run` | - | `false` | 预演模式：仅列出文件，不执行实际还原 |
-| `--no-start` | - | `false` | 还原后不自动启动：仅解压文件，不拉起容器也不灌库 |
+| `--no-start` | - | `false` | 还原后不启动：仅解压文件，不拉起容器也不灌库（与 --start 互斥） |
 | `--snapshot` | - | `latest` | 用于还原的快照 ID（'latest' 表示最新快照） |
+| `--start` | - | `false` | 还原后显式启动容器服务与数据库导入（普通文件恢复与同机恢复默认不启动） |
 | `--target-path` | - | (空) | 覆盖还原目标路径以实现路径重映射（默认使用快照中的原始路径） |
 | `--target-server` | - | (空) | 跨机迁移的目标服务器（默认与源相同） |
 | `--yes` | `-y` | `false` | 跳过执行前的交互式确认 |

@@ -408,9 +408,13 @@ func (m *engineDockerApplyMigrator) Migrate(ctx context.Context, plan *migration
 	restoreRunner := backup.NewRestoreRunner(exec, serverStore, storage.NewRestoreRepo(db), store, assetStore)
 	adjustment := migration.Adjustments(service)
 	if !adjustment.Any() {
+		// A plan-driven migration is the scenario that may start services
+		// without a separate flag: the plan is the operator's explicit
+		// statement that this service should come up on the target.
 		_, err = restoreRunner.Run(ctx, *job, backup.RestoreOptions{
 			SnapshotID:   res.SnapshotID,
 			TargetServer: plan.Target.Server,
+			StartPolicy:  backup.StartPolicyStart,
 			AliasName:    alias,
 		}, out)
 		if err != nil {
@@ -425,7 +429,7 @@ func (m *engineDockerApplyMigrator) Migrate(ctx context.Context, plan *migration
 	_, err = restoreRunner.Run(ctx, *job, backup.RestoreOptions{
 		SnapshotID:   res.SnapshotID,
 		TargetServer: plan.Target.Server,
-		NoStart:      true,
+		StartPolicy:  backup.StartPolicyNoStart,
 		AliasName:    alias,
 	}, out)
 	if err != nil {

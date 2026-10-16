@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/volcano6/opspulse/internal/backup"
 )
 
 func TestCheckRestoreConfirmation_YesBypassesPrompt(t *testing.T) {
@@ -92,5 +94,62 @@ func TestRestoreRunCmd_YesFlagRegistered(t *testing.T) {
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("expected default value 'false', got %q", flag.DefValue)
+	}
+}
+
+// TestRestoreRunCmd_StartFlagsRegistered pins the two explicit start switches:
+// both default to off so the scenario-aware policy decides, and the help text
+// has to say so (the flag help is part of the CLI contract).
+func TestRestoreRunCmd_StartFlagsRegistered(t *testing.T) {
+	for _, name := range []string{"start", "no-start"} {
+		flag := restoreRunCmd.Flags().Lookup(name)
+		if flag == nil {
+			t.Fatalf("expected --%s flag to be registered on restoreRunCmd", name)
+		}
+		if flag.DefValue != "false" {
+			t.Errorf("--%s default = %q, want false", name, flag.DefValue)
+		}
+		if strings.TrimSpace(flag.Usage) == "" {
+			t.Errorf("--%s has no help text", name)
+		}
+	}
+}
+
+// TestRestoreStartPolicy pins the mapping from the flags to the engine policy,
+// including the mutually exclusive combination: silently picking one of
+// "--start" and "--no-start" would hide a scripted mistake.
+func TestRestoreStartPolicy(t *testing.T) {
+	cases := []struct {
+		name    string
+		start   bool
+		noStart bool
+		want    backup.StartPolicy
+		wantErr bool
+	}{
+		{"neither flag keeps the scenario-aware default", false, false, backup.StartPolicyAuto, false},
+		{"--start forces a start", true, false, backup.StartPolicyStart, false},
+		{"--no-start restores files only", false, true, backup.StartPolicyNoStart, false},
+		{"both flags are rejected", true, true, "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := restoreStartPolicy(tc.start, tc.noStart)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("restoreStartPolicy(%v, %v) = %q, want an error", tc.start, tc.noStart, got)
+				}
+				if !strings.Contains(err.Error(), "--start") || !strings.Contains(err.Error(), "--no-start") {
+					t.Errorf("error should name both flags: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("restoreStartPolicy(%v, %v) error: %v", tc.start, tc.noStart, err)
+			}
+			if got != tc.want {
+				t.Errorf("restoreStartPolicy(%v, %v) = %q, want %q", tc.start, tc.noStart, got, tc.want)
+			}
+		})
 	}
 }

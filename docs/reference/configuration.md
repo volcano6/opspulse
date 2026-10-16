@@ -242,6 +242,45 @@ OpsPulse 发送标准 HTTP POST 请求，Header 包含：
 > 路由上这类事件等同失败：只订阅 `failure`（未写 `on` 时的默认值）的渠道同样会收到，因此默认
 > 配置不会漏掉未审计的成功。
 
+### 还原结果消息体
+
+`ops restore run` 结束后同样会推送通知，`event` 为 `restore_success` / `restore_partial` /
+`restore_failed` / `restore_dry-run`，并额外带三个字段描述逐步骤结果：
+
+```json
+{
+  "event": "restore_partial",
+  "job_name": "blog",
+  "status": "partial",
+  "server": "vps-02",
+  "snapshot": "4f8c1d2a9b3e",
+  "duration_seconds": 12.34,
+  "error": "restore completed but container auto-start failed: compose up failed for \"blog\": exit status 127",
+  "timestamp": "2026-10-16T09:30:00Z",
+  "steps": [
+    {"kind": "files", "label": "文件恢复", "status": "success", "detail": "快照 4f8c1d2a 已还原到 vps-02:/"},
+    {"kind": "volumes", "label": "volume 恢复", "status": "success", "detail": "1 个命名卷已导入"},
+    {"kind": "database", "label": "数据库导入", "status": "blocked", "detail": "Compose 启动失败，未导入数据库"},
+    {"kind": "compose", "label": "Compose 启动", "status": "failed", "detail": "compose up failed for \"blog\": exit status 127",
+     "next_step": "在目标机手工执行：cd /opt/blog && docker compose -f compose.yaml up -d"}
+  ],
+  "warnings": ["external host mount /srv/data is missing on target vps-02"],
+  "pending": ["在目标机 vps-02 上准备宿主机挂载 /srv/data"],
+  "text": "[OpsPulse] ❌ Restore job \"blog\" on \"vps-02\" PARTIAL (duration: 12.34s, snapshot: 4f8c1d2a)\n  steps: files=success, volumes=success, database=blocked, compose=failed\n  warnings: ...\n  pending: ...",
+  "content": "..."
+}
+```
+
+- `steps`：四个步骤（`files` / `volumes` / `database` / `compose`）各自的状态，取值
+  `success` / `failed` / `skipped` / `blocked` / `manual`，失败的步骤带 `next_step` 建议命令。
+- `warnings`：非致命提示（例如目标机缺少外部宿主机挂载）。
+- `pending`：尚未完成、需要人工处理的事项。
+
+`status` 仍是聚合状态（`success` / `partial` / `failed` / `dry-run`），因此老的消费方按
+`status` 路由不受影响；`partial` 与 `failed` 都会触发只订阅 `failure` 的渠道。启动策略
+（普通文件恢复与同机还原默认不启动、`--start` / `--no-start`）见
+[逐步骤结果与场景化启动策略](backup.md#逐步骤结果与场景化启动策略)。
+
 ---
 
 ## 6. 模板与 Frontmatter (Templates)

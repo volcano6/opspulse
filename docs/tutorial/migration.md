@@ -19,7 +19,7 @@ Ops 引入了**智能容器漂移引擎**，无论原服务是普通 Docker 容�
 2. **野生容器自动逆向**：自动抓取端口、挂载卷、环境变量与重启策略，反编译为标准现代化 `compose.yaml`。
 3. **数据库无损热 Dump**：针对 MySQL / MariaDB / PostgreSQL 容器，备份前自动在容器内执行在线热导出与 gzip 实时压缩，杜绝脏页与文件锁冲突。
 4. **两代 Compose 自适应**：底层自动检测并兼容 `docker compose` 与独立式 `docker-compose`。
-5. **跨机还原默认直接跑起来**：`ops restore run <app> --target-server <new-vps>`，解压配置和数据后默认自动执行 `$COMPOSE up -d` 并自动等待数据库就绪后灌入数据，服务直接上线！
+5. **跨机还原默认直接跑起来**：`ops restore run <app> --target-server <new-vps>`，解压配置和数据后，只要快照里带着与本任务匹配的容器 manifest，就会自动执行 `$COMPOSE up -d` 并灌入数据，服务直接上线！（普通文件恢复与同机还原默认只写回文件，需要启动时显式加 `--start`。）
 6. **自由改名（转正）**：支持 `--as <new-name>`，在备份或还原时轻松把临时测试名（如 `nginx-test`）换成规范名（如 `nginx`）。
 
 ### 实战场景一：野生普通容器跨机迁移并改名
@@ -52,7 +52,7 @@ ops restore run nginx --target-server vps-2
 > 3. 自动执行 `docker compose up -d`。
 > 4. 容器 `nginx` 已经在 `vps-2` 上顺利跑起来了！
 
-`--target-server` 之外的还原参数（`--as`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）见
+`--target-server` 之外的还原参数（`--as`、`--start`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）见
 [备份、还原与调度指南](../reference/backup.md#3-还原-restore)。
 
 ### 实战场景二：数据库容器在线安全迁移 (MySQL / Postgres)
@@ -98,6 +98,16 @@ ops restore run nginx --target-server vps-2 --no-start
 ```
 
 Ops 将只解压全部配置文件和数据，不会执行 `docker compose up -d`，也不会触发数据库自动灌入。
+
+反过来的情况——普通文件恢复或同机还原却需要把服务拉起来——用 `--start` 显式开启
+（`--start` 与 `--no-start` 互斥，不能同时给）：
+```bash
+ops restore run my-wsl-env --start
+```
+
+每次还原结束都会打印逐步骤结果（文件恢复、volume 恢复、数据库导入、Compose 启动），
+失败或被跳过的步骤会带上下一步命令，完整状态词表见
+[逐步骤结果与场景化启动策略](../reference/backup.md#逐步骤结果与场景化启动策略)。
 
 ## 2. WSL 环境备份与还原 (WSL Environment Backup and Restore)
 
@@ -184,7 +194,7 @@ ops restore run my-wsl-env --target-server vps-01
 
 - 备份作业的字段规范（`server` / `paths` / `assets` / `backend` / `retention` / `env`）与容器直备的
   行为细节见[备份、还原与调度指南](../reference/backup.md)；
-- 还原的完整参数表（`--target-server`、`--as`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）
+- 还原的完整参数表（`--target-server`、`--as`、`--start`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）
   与工作流示例见[备份、还原与调度指南](../reference/backup.md#restore-run-完整参数)；
 - 所有命令与 flag 的默认值见[命令行参考](../reference/cli.md)。
 

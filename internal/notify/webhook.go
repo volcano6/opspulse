@@ -49,6 +49,12 @@ type webhookPayload struct {
 	// Untracked mirrors Event.Untracked so machine consumers can tell an
 	// unaudited success apart from a normal one.
 	Untracked bool `json:"untracked,omitempty"`
+	// Steps, Warnings and Pending describe a restore: a consumer must be able to
+	// see which step failed and what is still outstanding without parsing the
+	// human-readable text.
+	Steps    []StepStatus `json:"steps,omitempty"`
+	Warnings []string     `json:"warnings,omitempty"`
+	Pending  []string     `json:"pending,omitempty"`
 }
 
 // Send serializes the event into JSON and performs an HTTP POST request to the webhook URL with retries.
@@ -56,7 +62,7 @@ func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 	summaryText := formatSummaryText(event)
 
 	payload := webhookPayload{
-		Event:           "backup_" + event.Status,
+		Event:           eventName(event),
 		JobName:         event.JobName,
 		Status:          event.Status,
 		Server:          event.Server,
@@ -67,6 +73,9 @@ func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 		Text:            summaryText,
 		Content:         summaryText,
 		Untracked:       event.Untracked,
+		Steps:           event.Steps,
+		Warnings:        event.Warnings,
+		Pending:         event.Pending,
 	}
 
 	bodyData, err := json.Marshal(payload)
@@ -146,16 +155,26 @@ func (w *WebhookNotifier) Send(ctx context.Context, event Event) error {
 	return lastErr
 }
 
+// eventName renders the payload's "event" discriminator. A restore event is
+// named restore_<status> so consumers can route it without inspecting "kind".
+func eventName(event Event) string {
+	kind := event.Kind
+	if kind == "" {
+		kind = EventKindBackup
+	}
+	return kind + "_" + event.Status
+}
+
 func formatSummaryText(event Event) string {
+	if event.Kind == EventKindRestore {
+		return formatRestoreSummaryText(event)
+	}
+
 	statusUpper := strings.ToUpper(event.Status)
 	if event.Status == "success" {
 		snapInfo := ""
 		if event.Snapshot != "" {
-			snapID := event.Snapshot
-			if len(snapID) > 8 {
-				snapID = snapID[:8]
-			}
-			snapInfo = fmt.Sprintf(", snapshot: %s", snapID)
+			snapInfo = fmt.Sprintf(", snapshot: %s", shortID(event.Snapshot))
 		}
 		if event.Untracked {
 			return fmt.Sprintf("[OpsPulse] ⚠️ Backup job %q on %q SUCCEEDED but is UNTRACKED — its audit record could not be created (duration: %.2fs%s)",
@@ -175,4 +194,49 @@ func formatSummaryText(event Event) string {
 	}
 	return fmt.Sprintf("[OpsPulse] ❌ Backup job %q on %q %s: %s (duration: %.2fs)%s",
 		event.JobName, event.Server, statusUpper, errDetail, event.DurationSeconds, untrackedNote)
+}
+
+// formatRestoreSummaryText renders the restore card: status, snapshot and
+// duration on the first line, then the step verdicts, warnings and the
+// outstanding items. A restore that only says "partial" is not actionable.
+func formatRestoreSummaryText(event Event) string {
+	icon := "✅"
+	if event.Status != "success" {
+		icon = "❌"
+	}
+
+	snapInfo := ""
+	if event.Snapshot != "" {
+		snapInfo = fmt.Sprintf(", snapshot: %s", shortID(event.Snapshot))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[OpsPulse] %s Restore job %q on %q %s (duration: %.2fs%s)",
+		icon, event.JobName, event.Server, strings.ToUpper(event.Status), event.DurationSeconds, snapInfo)
+	if event.Error != "" && event.Status != "success" {
+		fmt.Fprintf(&b, ": %s", event.Error)
+	}
+
+	if len(event.Steps) > 0 {
+		parts := make([]string, 0, len(event.Steps))
+		for _, step := range event.Steps {
+			parts = append(parts, fmt.Sprintf("%s=%s", step.Kind, step.Status))
+		}
+		fmt.Fprintf(&b, "\n  steps: %s", strings.Join(parts, ", "))
+	}
+	if len(event.Warnings) > 0 {
+		fmt.Fprintf(&b, "\n  warnings: %s", strings.Join(event.Warnings, "; "))
+	}
+	if len(event.Pending) > 0 {
+		fmt.Fprintf(&b, "\n  pending: %s", strings.Join(event.Pending, "; "))
+	}
+	return b.String()
+}
+
+// shortID truncates a snapshot ID for display.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }

@@ -54,7 +54,21 @@ func (m *restoreMockExecutor) Test(_ context.Context, _ executor.Target) (time.D
 	return 10 * time.Millisecond, "Linux", nil
 }
 
-func TestRestoreRunner_Run_AutoStartByDefault(t *testing.T) {
+// stepStatus returns the recorded outcome of one restore step.
+func stepStatus(t *testing.T, result *RestoreResult, kind string) RestoreStep {
+	t.Helper()
+	for _, step := range result.Steps {
+		if step.Kind == kind {
+			return step
+		}
+	}
+	t.Fatalf("restore result has no %q step: %+v", kind, result.Steps)
+	return RestoreStep{}
+}
+
+// A cross-machine restore of plain files (no container manifest) must not start
+// anything: the default is files-only unless a manifest drives the migration.
+func TestRestoreRunner_Run_PlainFilesDoNotStartByDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -84,8 +98,6 @@ func TestRestoreRunner_Run_AutoStartByDefault(t *testing.T) {
 	opts := RestoreOptions{
 		SnapshotID:   "snap-abcdef1234567890",
 		TargetServer: "vps-02",
-		AliasName:    "my-renamed-app",
-		NoStart:      false, // default behavior
 	}
 
 	var buf bytes.Buffer
@@ -98,20 +110,31 @@ func TestRestoreRunner_Run_AutoStartByDefault(t *testing.T) {
 		t.Errorf("record.Status = %q, want success", record.Status)
 	}
 
-	// Verify autostart or manifest check was invoked
-	foundAutostart := false
+	// The read-only manifest probe is how the scenario is decided, so it is
+	// expected; actually starting or importing something is not.
 	for _, task := range mockExec.tasksExecuted {
-		if strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "read-manifest-") {
-			foundAutostart = true
-			break
+		switch {
+		case strings.HasPrefix(task, "autostart-"),
+			strings.HasPrefix(task, "compose-up-"),
+			strings.HasPrefix(task, "restore-vol-"):
+			t.Errorf("plain file restore must not touch container services, ran: %v", mockExec.tasksExecuted)
 		}
 	}
-	if !foundAutostart {
-		t.Errorf("expected autostart or read-manifest task to be executed, executed tasks: %v", mockExec.tasksExecuted)
+
+	if got := stepStatus(t, record, RestoreStepFiles); got.Status != RestoreStepSuccess {
+		t.Errorf("files step = %+v, want success", got)
+	}
+	if got := stepStatus(t, record, RestoreStepCompose); got.Status != RestoreStepSkipped {
+		t.Errorf("compose step = %+v, want skipped", got)
+	}
+	if len(record.Pending) == 0 {
+		t.Error("a restore that left the services stopped must list the follow-up")
 	}
 }
 
-func TestRestoreRunner_Run_NoStartSuppressed(t *testing.T) {
+// The same-host default is the other half of the policy: putting files back on
+// their original server must not restart the services that own them.
+func TestRestoreRunner_Run_SameHostDoesNotStartByDefault(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
 	if err != nil {
@@ -138,9 +161,7 @@ func TestRestoreRunner_Run_NoStartSuppressed(t *testing.T) {
 	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
 
 	opts := RestoreOptions{
-		SnapshotID:   "snap-abcdef1234567890",
-		TargetServer: "vps-02",
-		NoStart:      true, // suppress auto start
+		SnapshotID: "snap-abcdef1234567890",
 	}
 
 	var buf bytes.Buffer
@@ -153,11 +174,127 @@ func TestRestoreRunner_Run_NoStartSuppressed(t *testing.T) {
 		t.Errorf("record.Status = %q, want success", record.Status)
 	}
 
-	// Verify autostart was NOT invoked
+	for _, task := range mockExec.tasksExecuted {
+		if strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "read-manifest-") || strings.HasPrefix(task, "compose-up-") {
+			t.Errorf("same-host restore must not start services, ran: %v", mockExec.tasksExecuted)
+		}
+	}
+	if got := stepStatus(t, record, RestoreStepCompose); got.Status != RestoreStepSkipped {
+		t.Errorf("compose step = %+v, want skipped", got)
+	}
+}
+
+// --start is the explicit opt-in: it restores files and then runs the generic
+// auto-start, which is the behaviour every script written before the
+// scenario-aware default relied on.
+func TestRestoreRunner_Run_ExplicitStartRunsGenericAutoStart(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	restoreRepo := storage.NewRestoreRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
+	_ = serverStore.Save(server.Server{Name: "vps-02", Host: "10.0.0.2", User: "root"})
+
+	job := Job{
+		Name:    "my-app",
+		Server:  "vps-01",
+		Paths:   []string{"/data"},
+		Backend: "/mnt/repo",
+	}
+
+	mockExec := &restoreMockExecutor{}
+	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
+
+	var buf bytes.Buffer
+	record, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:  "snap-abcdef1234567890",
+		StartPolicy: StartPolicyStart,
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+	if record.Status != "success" {
+		t.Errorf("record.Status = %q, want success", record.Status)
+	}
+
+	foundAutostart := false
+	for _, task := range mockExec.tasksExecuted {
+		if strings.HasPrefix(task, "autostart-") {
+			foundAutostart = true
+		}
+	}
+	if !foundAutostart {
+		t.Errorf("--start must run the generic auto-start, executed tasks: %v", mockExec.tasksExecuted)
+	}
+	if got := stepStatus(t, record, RestoreStepCompose); got.Status != RestoreStepSuccess {
+		t.Errorf("compose step = %+v, want success", got)
+	}
+	if got := stepStatus(t, record, RestoreStepVolumes); got.Status != RestoreStepSkipped {
+		t.Errorf("volumes step = %+v, want skipped (no manifest)", got)
+	}
+}
+
+// --no-start restores files only and never even probes for a manifest.
+func TestRestoreRunner_Run_NoStartSkipsEveryContainerStep(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	restoreRepo := storage.NewRestoreRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	backupStore := NewStore(filepath.Join(tmpDir, "backups.yaml"))
+	assetStore := asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))
+
+	_ = serverStore.Save(server.Server{Name: "vps-01", Host: "10.0.0.1", User: "root"})
+	_ = serverStore.Save(server.Server{Name: "vps-02", Host: "10.0.0.2", User: "root"})
+
+	job := Job{
+		Name:    "my-app",
+		Server:  "vps-01",
+		Paths:   []string{"/data"},
+		Backend: "/mnt/repo",
+	}
+
+	mockExec := &restoreMockExecutor{}
+	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
+
+	var buf bytes.Buffer
+	record, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+		StartPolicy:  StartPolicyNoStart,
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+	if record.Status != "success" {
+		t.Errorf("record.Status = %q, want success", record.Status)
+	}
+
 	for _, task := range mockExec.tasksExecuted {
 		if strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "read-manifest-") {
-			t.Errorf("autostart task should NOT be executed when NoStart is true, got: %v", mockExec.tasksExecuted)
+			t.Errorf("--no-start must not run container tasks, got: %v", mockExec.tasksExecuted)
 		}
+	}
+	for _, kind := range []string{RestoreStepVolumes, RestoreStepDatabase, RestoreStepCompose} {
+		step := stepStatus(t, record, kind)
+		if step.Status != RestoreStepSkipped {
+			t.Errorf("%s step = %+v, want skipped", kind, step)
+		}
+	}
+	if !strings.Contains(stepStatus(t, record, RestoreStepCompose).Detail, "--no-start") {
+		t.Errorf("skipped compose step must name the flag that skipped it: %+v", stepStatus(t, record, RestoreStepCompose))
 	}
 }
 
@@ -248,7 +385,8 @@ func TestRestoreRunner_Run_AutoStartExit127_MarksPartialStatus(t *testing.T) {
 	runner := NewRestoreRunner(mockExec, serverStore, restoreRepo, backupStore, assetStore)
 
 	opts := RestoreOptions{
-		SnapshotID: "snap-abcdef1234567890",
+		SnapshotID:  "snap-abcdef1234567890",
+		StartPolicy: StartPolicyStart,
 	}
 
 	var buf bytes.Buffer
@@ -383,7 +521,10 @@ func TestRestoreRunner_Manifest_LegacyLayoutStillRestorable(t *testing.T) {
 	runner, _, job := newRestoreTestRunner(t, mock)
 
 	var buf bytes.Buffer
-	record, err := runner.Run(context.Background(), job, RestoreOptions{SnapshotID: "snap-abcdef1234567890"}, &buf)
+	record, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
 	if err != nil {
 		t.Fatalf("RestoreRunner.Run() error = %v", err)
 	}
@@ -418,7 +559,10 @@ func TestRestoreRunner_Manifest_ScratchLayoutRestorable(t *testing.T) {
 	runner, _, job := newRestoreTestRunner(t, mock)
 
 	var buf bytes.Buffer
-	record, err := runner.Run(context.Background(), job, RestoreOptions{SnapshotID: "snap-abcdef1234567890"}, &buf)
+	record, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
 	if err != nil {
 		t.Fatalf("RestoreRunner.Run() error = %v", err)
 	}
@@ -443,8 +587,53 @@ func TestRestoreRunner_Manifest_ScratchLayoutRestorable(t *testing.T) {
 	}
 }
 
-// A manifest that names a different application must never be used to start
-// this job's containers.
+// A manifest that names a database without a logical dump cannot be imported
+// automatically: the step is reported as manual (with a follow-up) instead of
+// being silently treated as done, and the aggregate stays success because the
+// data question is the operator's call, not a failed step.
+func TestRestoreRunner_Manifest_DatabaseWithoutDumpIsManual(t *testing.T) {
+	const manifestWithBareDatabase = `format_version: 1
+app: blog
+compose_file: compose.yaml
+database:
+    engine: mysql
+    container: blog-db
+`
+	mock := &manifestRestoreExecutor{manifests: map[string]string{
+		"/opt/blog/.opspulse/manifest.yaml": manifestWithBareDatabase,
+	}}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	result, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+
+	if result.Status != "success" {
+		t.Errorf("record.Status = %q, want success", result.Status)
+	}
+	databaseStep := stepStatus(t, result, RestoreStepDatabase)
+	if databaseStep.Status != RestoreStepManual {
+		t.Errorf("database step = %+v, want manual", databaseStep)
+	}
+	if databaseStep.NextStep == "" {
+		t.Error("a manual step must tell the operator what to do")
+	}
+	if mock.hasTaskPrefix("import-db-") {
+		t.Errorf("a database without a dump must not be imported: %v", mock.executed)
+	}
+	if len(result.Pending) == 0 {
+		t.Error("a manual step must appear in the outstanding work")
+	}
+}
+
+// A manifest that names a different application must never drive the restore.
+// With an explicit --start the engine falls back to the generic auto-start (the
+// pre-08a behaviour); without it, no service is touched at all.
 func TestRestoreRunner_Manifest_MismatchFallsBackInsteadOfStarting(t *testing.T) {
 	const otherAppManifest = `format_version: 1
 app: other-app
@@ -456,7 +645,11 @@ compose_file: compose.yaml
 	runner, _, job := newRestoreTestRunner(t, mock)
 
 	var buf bytes.Buffer
-	if _, err := runner.Run(context.Background(), job, RestoreOptions{SnapshotID: "snap-abcdef1234567890"}, &buf); err != nil {
+	if _, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+		StartPolicy:  StartPolicyStart,
+	}, &buf); err != nil {
 		t.Fatalf("RestoreRunner.Run() error = %v", err)
 	}
 
@@ -536,7 +729,10 @@ external_mounts:
 	runner, _, job := newRestoreTestRunner(t, mock)
 
 	var buf bytes.Buffer
-	if _, err := runner.Run(context.Background(), job, RestoreOptions{SnapshotID: "snap-abcdef1234567890"}, &buf); err != nil {
+	if _, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf); err != nil {
 		t.Fatalf("RestoreRunner.Run() error = %v", err)
 	}
 
@@ -546,6 +742,41 @@ external_mounts:
 	out := buf.String()
 	if !strings.Contains(out, "/sys/fs/cgroup") || !strings.Contains(out, "is missing on target") {
 		t.Errorf("missing system mount was not reported: %s", out)
+	}
+}
+
+// The mismatch warning is not enough on its own: with the scenario-aware
+// default (no --start) a manifest that belongs to another app must leave every
+// service alone.
+func TestRestoreRunner_Manifest_MismatchDoesNotStartWithoutExplicitStart(t *testing.T) {
+	const otherAppManifest = `format_version: 1
+app: other-app
+compose_file: compose.yaml
+`
+	mock := &manifestRestoreExecutor{manifests: map[string]string{
+		"/opt/blog/.opspulse/manifest.yaml": otherAppManifest,
+	}}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	result, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+
+	for _, task := range mock.executed {
+		if strings.HasPrefix(task, "compose-up-") || strings.HasPrefix(task, "autostart-") || strings.HasPrefix(task, "restore-vol-") {
+			t.Errorf("a manifest for another app must not start or import anything, ran: %v", mock.executed)
+		}
+	}
+	if got := stepStatus(t, result, RestoreStepCompose); got.Status != RestoreStepSkipped {
+		t.Errorf("compose step = %+v, want skipped", got)
+	}
+	if len(result.Warnings) == 0 {
+		t.Error("the rejected manifest must still be reported as a warning")
 	}
 }
 
@@ -579,8 +810,9 @@ func TestRestoreRunner_RejectsUnsafeAlias(t *testing.T) {
 
 		var buf bytes.Buffer
 		if _, err := runner.Run(context.Background(), job, RestoreOptions{
-			SnapshotID: "snap-abcdef1234567890",
-			AliasName:  "blog-v2",
+			SnapshotID:  "snap-abcdef1234567890",
+			AliasName:   "blog-v2",
+			StartPolicy: StartPolicyStart,
 		}, &buf); err != nil {
 			t.Fatalf("RestoreRunner.Run() error = %v", err)
 		}

@@ -219,10 +219,12 @@ OpsPulse 提供基于 restic 快照的精准还原能力，支持同机还原、
 
 | 概念 | 说明 |
 |:---|:---|
-| **同机还原** | 将快照还原到备份的原始服务器和原始路径 |
-| **跨机迁移并直接启动** | 还原到新服务器后**默认自动拉起容器并自动灌库** |
+| **同机还原** | 将快照还原到备份的原始服务器和原始路径；**默认只写回文件，不启动服务** |
+| **跨机迁移** | 还原到另一台服务器；找到与本任务匹配的容器 manifest 时**默认自动拉起容器并灌库**，否则只写回文件 |
 | **容器改名** | 通过 `--as` 在还原启动时指定新服务/容器名 |
-| **仅恢复文件** | 通过 `--no-start` 跳过容器启动和数据库灌入 |
+| **仅恢复文件** | 通过 `--no-start` 强制跳过 volume 导入、容器启动和数据库灌入 |
+| **显式启动** | 通过 `--start` 强制启动：普通文件恢复或同机还原也执行 volume 导入、Compose 启动与灌库 |
+| **逐步骤结果** | 每次还原结束后分别报告文件恢复、volume 恢复、数据库导入、Compose 启动四步的状态 |
 | **路径重映射** | 通过 `--target-path` 将数据还原到不同的目录结构；任务里配置的 `remap`（源前缀 → 目标前缀）在同一次还原中一并生效 |
 | **单资产精准还原** | 通过 `--asset` 仅还原指定业务资产的文件 |
 | **Dry-Run 预览** | 通过 `--dry-run` 列出将被还原的文件列表，不写入任何数据 |
@@ -240,13 +242,16 @@ OpsPulse 提供基于 restic 快照的精准还原能力，支持同机还原、
 # 还原最新快照到原始服务器和路径
 ops restore run web-data
 
-# 跨机迁移：还原到新 VPS 并默认自动拉起容器（无需额外参数！）
+# 跨机迁移：还原到新 VPS（找到匹配的容器 manifest 时自动拉起容器并灌库）
 ops restore run my-app --target-server new-vps
+
+# 普通文件恢复或同机还原也强制启动服务
+ops restore run my-app --start
 
 # 跨机迁移时改名
 ops restore run my-app --target-server new-vps --as clean-app
 
-# 仅恢复文件，不自动启动容器
+# 仅恢复文件，不导入卷、不灌库、不启动容器
 ops restore run my-app --target-server new-vps --no-start
 
 # 指定特定快照 ID
@@ -264,6 +269,52 @@ ops restore run web-data --dry-run
 # 非交互执行（脚本 / CI）：跳过确认提示
 ops restore run web-data --target-server new-vps --yes
 ```
+
+#### 逐步骤结果与场景化启动策略
+
+每次还原结束后都会打印一张**逐步骤结果表**，而不是只给一个笼统的 `partial`：
+
+```text
+恢复结果（任务 "my-app"，快照 4f8c1d2a，目标 vps-02，耗时 12.34s，总状态：PARTIAL）
+  1. [success] 文件恢复：快照 4f8c1d2a 已还原到 vps-02:/
+  2. [success] volume 恢复：1 个命名卷已导入
+  3. [blocked] 数据库导入：Compose 启动失败，未导入数据库
+  4. [failed] Compose 启动：compose up failed for "my-app": exit status 127
+     下一步：在目标机手工执行：cd /opt/my-app && docker compose -f compose.yaml up -d
+  警告：
+    - external host mount /srv/data is missing on target vps-02
+  未完成事项：
+    - 在目标机 vps-02 上准备宿主机挂载 /srv/data
+```
+
+四步各自的状态：
+
+| 状态 | 含义 |
+|:---|:---|
+| `success` | 该步骤执行并完成 |
+| `failed` | 该步骤执行后失败 |
+| `skipped` | 刻意未执行（无事可做，或按场景/`--no-start` 要求只恢复文件）；**不会拉低总状态** |
+| `blocked` | 前置条件缺失而无法执行（上一步失败、目标机缺 Compose 引擎或 helper 镜像） |
+| `manual` | 无法自动化、留给人工处理（例如 manifest 声明了数据库但没有逻辑导出） |
+
+总状态仍是向后兼容的 `SUCCESS` / `PARTIAL` / `FAILED` / `DRY-RUN`：文件恢复失败即 `FAILED`，
+其余步骤出现 `failed` 或 `blocked` 即 `PARTIAL`，刻意 `skipped` 不算降级。失败或被阻止的步骤
+都会带一条「下一步」建议命令或人工处理说明。
+
+**是否启动服务按场景决定**（不给任何 flag 时）：
+
+| 场景 | 默认行为 |
+|:---|:---|
+| 普通文件恢复（快照里没有容器 manifest） | 只写回文件，不启动服务 |
+| 同机还原（目标服务器 = 源服务器） | 只写回文件，不启动服务，避免误启动线上服务 |
+| 跨机迁移且找到与本任务匹配的容器 manifest | 导入命名卷 → `docker compose up -d` → 灌入数据库 |
+
+`--start` 强制启动（普通文件恢复走通用 auto-start），`--no-start` 强制只解压文件；
+两者互斥，同时给出会直接报错。被跳过或被阻止的步骤会在结果与通知里列出对应的后续命令。
+
+还原结果同样会经已配置的通知渠道发出（`event` 为 `restore_success` / `restore_partial` /
+`restore_failed` / `restore_dry-run`），请求体带 `steps`、`warnings`、`pending` 三个字段，
+结构见[告警请求体结构](configuration.md#5-告警请求体结构-webhook-payload)。
 
 #### 查看还原历史
 
@@ -307,7 +358,8 @@ ops restore history web-data --limit 5
 | `--target-server` | 与源相同 | 目标服务器名（用于跨机迁移） |
 | `--target-path` | （空 = 快照中的原始绝对路径） | 还原目标路径（用于路径重映射） |
 | `--as` | （原名） | 重命名还原后的容器/服务名 |
-| `--no-start` | `false` | 抑制自动启动：仅解压文件，不拉起容器也不灌库 |
+| `--start` | `false` | 显式启动：还原后导入命名卷、`docker compose up -d` 并灌库（普通文件恢复与同机还原也适用） |
+| `--no-start` | `false` | 抑制启动：仅解压文件，不导入命名卷、不拉起容器也不灌库（与 `--start` 互斥） |
 | `--asset` | （空=全部还原） | 指定资产 ID，仅还原该资产对应的文件 |
 | `--dry-run` | `false` | 预览模式：仅列出文件，不执行实际还原（同样跳过确认提示） |
 | `--yes` / `-y` | `false` | 跳过执行前的交互式确认；脚本、CI 等非交互场景必须显式传入 |
@@ -361,6 +413,9 @@ ops restore run web-data --asset blog-mysql --dry-run
 | `TARGET` | 目标服务器名称（跨机时显示不同值） |
 | `DURATION` | 执行耗时 |
 | `STARTED AT` | 开始时间 |
+
+`ops restore history` 保存的是聚合状态；文件恢复、volume 恢复、数据库导入、Compose 启动的逐步骤
+明细在还原结束时的终端输出与通知里，不单独入库。
 
 `ops restore run` 在状态为 `FAILED` 或 `PARTIAL` 时以非 0 退出码结束，脚本与 CI 可直接据此判定；
 `PARTIAL` 同样会触发失败类告警渠道，见[配置与模板](configuration.md#4-通知渠道-notificationsyaml)的通知渠道与 Webhook 请求体结构。
