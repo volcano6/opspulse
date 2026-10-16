@@ -83,7 +83,7 @@ func writeBackupItem(ctx context.Context, cli secret.CLI, vault, title string, p
 	if editErr == nil {
 		return nil
 	}
-	if !strings.Contains(editErr.Error(), itemMissingMarker) {
+	if !itemMissing(editErr) {
 		return fmt.Errorf("%s\n\nupdate 1Password item %q: %w", onePasswordFailureHint(cli, editErr), title, editErr)
 	}
 
@@ -164,17 +164,8 @@ func readPreviousBackup(ctx context.Context, cli secret.CLI, vault, title string
 
 // backupItemAbsent reports whether a failed `op read` means the item simply is
 // not there yet, which is the normal state of a first backup.
-//
-// The wording is the only signal available: the CLI exits 1 for every kind of
-// failure. "could not find item" is the same text `op item edit` reports for a
-// title that names nothing (see itemMissingMarker), and it is what scripts/opstub
-// answers for a read of an item the vault does not hold; "item not found" covers
-// the phrasing other CLI versions use for the same state. Anything else - a
-// locked vault, a stalled call, a wrong account - fails closed, because the
-// alternative is overwriting a document that was never read.
 func backupItemAbsent(err error) bool {
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, itemMissingMarker) || strings.Contains(msg, "item not found")
+	return itemMissing(err)
 }
 
 // inheritMissingKeys folds the private keys this machine can no longer read into

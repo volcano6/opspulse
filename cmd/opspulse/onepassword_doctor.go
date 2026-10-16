@@ -138,7 +138,7 @@ func runOnePasswordDoctor(ctx context.Context, out io.Writer) error {
 	ref := secret.BuildInventoryRef(vault, title)
 	payload, err := cli.Run(ctx, "read", ref, "--no-newline")
 	switch {
-	case err != nil && strings.Contains(err.Error(), itemMissingMarker):
+	case err != nil && itemMissing(err):
 		add(doctorWarn, "backup item", fmt.Sprintf("%q does not exist yet", title), "run 'ops 1p backup' to create it")
 	case err != nil && secret.AuthFailure(err):
 		add(doctorFail, "backup item", err.Error(), onePasswordAuthHint(cli))

@@ -208,14 +208,40 @@ func buildBackup(servers []server.Server, out io.Writer) (server.BackupFile, []s
 	}, unreadable
 }
 
-// itemMissingMarker is the fragment `op item edit` reports when the title names
-// no item. Verified against op 2.39.0: "unable to process line 1: could not find
-// item to edit".
+// itemMissingMarkers are the message fragments different op CLI versions report
+// when a title names no item. It is the only signal for "this is a first
+// backup", and it has to be matched on the message rather than the exit code,
+// which is 1 for every kind of failure.
 //
-// It is the only signal available for "this is a first backup", and it has to be
-// matched on the message rather than the exit code, which is 1 for every kind of
-// failure.
-const itemMissingMarker = "could not find item"
+//   - "could not find item": `op item edit`, verified against op 2.39.0
+//     ("unable to process line 1: could not find item to edit").
+//   - "isn't an item in": `op read`, verified against op 2.34.1
+//     (`"title" isn't an item in the "Vault" vault.`).
+//   - "item not found" / "is not an item in": spellings other builds use.
+//
+// Anything else - a locked vault, a stalled call, a wrong account - must fail
+// closed, because the alternative is overwriting a document nobody read.
+var itemMissingMarkers = []string{
+	"could not find item",
+	"item not found",
+	"isn't an item in",
+	"is not an item in",
+}
+
+// itemMissing reports whether err means the referenced item simply does not
+// exist yet.
+func itemMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range itemMissingMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // backupBlob is one machine's backup as read from the vault, with the title it
 // came from so that a report can name it.
