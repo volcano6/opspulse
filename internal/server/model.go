@@ -29,9 +29,12 @@ var (
 )
 
 // ValidateServerName checks if a server name is a safe, valid identifier.
-// It prohibits empty names, leading/trailing whitespace, path traversal characters (/, \, :),
-// names starting with '.' or '-', and names containing characters other than
-// letters, digits, hyphens, underscores, dots, or '@'.
+//
+// A name may contain only ASCII letters, digits, and hyphens. It cannot be
+// empty, start or end with a hyphen, carry leading/trailing whitespace, or
+// contain path separators or colons. Underscores, dots, and '@' are rejected:
+// one machine keeps one canonical spelling, and those characters either look
+// like a hyphen in many fonts or collide with "user@host" target syntax.
 func ValidateServerName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: cannot be empty", ErrInvalidServerName)
@@ -42,11 +45,11 @@ func ValidateServerName(name string) error {
 	if len(name) > 255 {
 		return fmt.Errorf("%w: name exceeds maximum length of 255 characters", ErrInvalidServerName)
 	}
-	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "-") {
-		return fmt.Errorf("%w: cannot start with '.' or '-'", ErrInvalidServerName)
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return fmt.Errorf("%w: cannot start or end with '-'", ErrInvalidServerName)
 	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("%w: cannot be '.' or '..'", ErrInvalidServerName)
+	if strings.Contains(name, "_") {
+		return fmt.Errorf("%w: %q contains '_'; use '-' instead", ErrInvalidServerName, name)
 	}
 	if strings.ContainsAny(name, "/\\:") {
 		return fmt.Errorf("%w: cannot contain path separators or colons", ErrInvalidServerName)
@@ -55,18 +58,18 @@ func ValidateServerName(name string) error {
 		return fmt.Errorf("%w: cannot contain path navigation characters", ErrInvalidServerName)
 	}
 	for _, r := range name {
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' && r != '.' && r != '@' {
-			return fmt.Errorf("%w: %q contains invalid character %q", ErrInvalidServerName, name, r)
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' {
+			return fmt.Errorf("%w: %q contains invalid character %q; server names may contain only letters, digits, and hyphens", ErrInvalidServerName, name, r)
 		}
 	}
 	return nil
 }
 
 // NormalizeServerName returns the canonical form of a server name: underscores
-// become hyphens. Both characters are accepted by ValidateServerName and they are
-// hard to tell apart in many fonts, so "web_1" and "web-1" would otherwise name
-// one machine twice. Callers apply it to names they are about to create; existing
-// entries are never rewritten, so lookups stay predictable.
+// become hyphens. ValidateServerName does not accept underscores, so callers
+// apply this to names they are about to create, turning "web_1" into "web-1"
+// before validation. Existing entries are never rewritten here; a one-off
+// migration handles those.
 func NormalizeServerName(name string) string {
 	return strings.ReplaceAll(name, "_", "-")
 }

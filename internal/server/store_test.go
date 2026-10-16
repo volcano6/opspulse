@@ -141,9 +141,8 @@ func TestValidateServerName(t *testing.T) {
 	valid := []string{
 		"web",
 		"web-01",
-		"db_master",
-		"vps.prod.backup",
-		"admin@node1",
+		"vps-prod-backup",
+		"Web-1",
 		"host123",
 	}
 	for _, name := range valid {
@@ -166,6 +165,10 @@ func TestValidateServerName(t *testing.T) {
 		"c:drive",
 		".hidden",
 		"-flag",
+		"trailing-",
+		"db_master",
+		"vps.prod.backup",
+		"admin@node1",
 		"has space",
 		"invalid*char",
 		"invalid?char",
