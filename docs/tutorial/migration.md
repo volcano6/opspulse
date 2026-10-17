@@ -43,17 +43,29 @@ ops backup run vps-1:nginx-test --as nginx
 
 #### 第二步：一键漂移到新 VPS 并直接启动
 ```bash
-ops restore run nginx --target-server vps-2
+ops docker plan vps-1 nginx-test --health-url http://vps-2:8080/   # 生成迁移 plan（可选记录 HTTP 检查地址）
+ops docker apply migration-plan.yaml                               # 按 plan 迁移：备份 → 恢复 → 启动 → 健康检查
 ```
 
 > **执行结果**：
 > 1. 数据解压到 `vps-2` 的对应目录中。
 > 2. Ops 自动探测 `vps-2` 上的 Compose 引擎。
 > 3. 自动执行 `docker compose up -d`。
-> 4. 容器 `nginx` 已经在 `vps-2` 上顺利跑起来了！
+> 4. 启动后逐项检查容器 running / 端口监听 / 数据库 readiness / 可选 HTTP，确认服务**真的可用**，
+>    而不是只看进程有没有起来；未通过的服务给出下一步命令并把迁移标记为失败。
+> 5. 容器 `nginx` 已经在 `vps-2` 上顺利跑起来了！
 
 `--target-server` 之外的还原参数（`--as`、`--start`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）见
 [备份、还原与调度指南](../reference/backup.md#3-还原-restore)。
+
+迁移完成后可以随时复核健康状态（只读，不会动目标机）：
+
+```bash
+ops docker health migration-plan.yaml
+```
+
+四项检查（容器、端口、数据库、可选 HTTP）的状态词与下一步建议见
+[迁移后健康检查](../reference/backup.md#迁移后健康检查-ops-docker-health)。
 
 ### 实战场景二：数据库容器在线安全迁移 (MySQL / Postgres)
 

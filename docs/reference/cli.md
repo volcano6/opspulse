@@ -36,6 +36,7 @@
 | `ops daemon` | 运行后台调度器守护进程，自动执行定时备份 |
 | `ops docker` | 发现远端 Docker 服务并报告迁移能力 |
 | `ops docker apply <plan-file>` | 按迁移 plan 安全执行 Docker 服务迁移 |
+| `ops docker health <plan-file>` | 迁移后检查容器、端口、数据库与可选 HTTP 是否可用 |
 | `ops docker inspect <server> <container>` | 查看单个容器的迁移分析与远端能力 |
 | `ops docker list <server>` | 列出指定服务器上的 Docker 容器 |
 | `ops docker plan <server> [container]` | 为一个或多个容器生成只读、可保存的迁移 plan |
@@ -551,7 +552,10 @@ dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何
 
 默认保留服务名与项目名，不会为了避开冲突自动改名。plan 中显式改过的 target_ports /
 target_paths 会被执行；独立且安全的服务继续执行，最终汇总成功、失败、跳过与人工处理项。
-退出码非零表示有必需步骤失败或被跳过。本命令不承诺通用自动回滚。
+启动成功后默认按 plan 逐项检查服务是否真的可用（容器 running 与重启异常、端口监听、
+数据库 readiness、以及 plan 中配置的 HTTP），未通过的服务会被标为失败并给出下一步命令，
+`--no-health` 可跳过。退出码非零表示有必需步骤失败、被跳过或健康检查未通过。
+本命令不承诺通用自动回滚。
 
 示例：
 ```
@@ -559,13 +563,45 @@ target_paths 会被执行；独立且安全的服务继续执行，最终汇总�
   ops docker apply migration-plan.yaml --dry-run  # 只做应用前校验，不执行
   ops docker apply migration-plan.yaml --yes      # 跳过交互确认（不绕过 hard blocker）
   ops docker apply migration-plan.yaml --json     # 结构化输出结果
+  ops docker apply migration-plan.yaml --no-health # 只迁移不检查
 ```
 
 | flag | 简写 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--dry-run` | - | `false` | 只做应用前的重新校验与冲突检查，不执行任何备份/恢复/启动 |
 | `--json` | - | `false` | 以 JSON 输出预检结果与逐服务结果（执行日志走 stderr） |
+| `--no-health` | - | `false` | 启动后跳过健康检查（默认会检查容器 running/重启、端口监听、数据库 readiness 与 plan 中配置的 HTTP） |
 | `--yes` | `-y` | `false` | 跳过执行前的交互确认（不绕过 hard blocker） |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops docker health <plan-file>`
+
+按迁移 plan 检查目标机上的服务是否真的可用，而不是只看进程有没有起来。
+
+对每个服务依次检查：
+```
+  - 容器：Compose 项目/服务标签解析到容器后，确认状态是 running 且没有处于 restarting、
+    没有发生重启（重启次数 > 0 视为崩溃循环）；
+  - 端口：plan 记录的每个固定宿主端口是否在监听（ss 或 netstat，都没有时如实报 manual）；
+  - 数据库：MySQL/MariaDB 走 mysqladmin ping、PostgreSQL 走 pg_isready，在容器内轮询到就绪；
+  - HTTP：仅当 plan 的 services[].health.http_url 配置了地址时才检查，未配置时明确显示 skipped。
+```
+
+本命令只读：不启动服务、不改配置、不写任何文件。每项非 ok 的检查都会给出下一步命令或人工确认方式。
+默认检查 plan 记录的目标服务器，可用 --server 覆盖。
+
+示例：
+```
+  ops docker health migration-plan.yaml
+  ops docker health migration-plan.yaml --server vps-02
+  ops docker health migration-plan.yaml --json
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--json` | - | `false` | 以 JSON 输出健康检查结果（执行过程走 stderr） |
+| `--server` | - | (空) | 覆盖 plan 记录的目标服务器 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
@@ -626,6 +662,7 @@ plan 只做只读探测与计算：不写备份配置、不生成快照、不启
 | flag | 简写 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--all` | - | `false` | 显式批量：规划该服务器上所有运行中的容器 |
+| `--health-url` | - | (空) | 单容器 plan 的可选 HTTP 健康检查地址（如 http://vps-02:8080/health；不填则迁移后 HTTP 检查显示 skipped） |
 | `--json` | - | `false` | 以 JSON 输出 plan（stdout 只含 JSON） |
 | `--no-save` | - | `false` | 不保存 plan 文件，只打印（纯只读） |
 | `--save` | - | (空) | plan 保存路径（默认保存到 OpsPulse 配置目录的 plans/ 下） |

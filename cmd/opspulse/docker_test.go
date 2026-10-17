@@ -57,6 +57,21 @@ func (f *fakeDockerRemote) Probe(_ context.Context, _ executor.Target, opts capa
 	return f.report, nil
 }
 
+// HealthCheck is part of the capability.Remote seam; the list/inspect tests do
+// not exercise it, so it reports every requested service as pass-through ok.
+func (f *fakeDockerRemote) HealthCheck(_ context.Context, _ executor.Target, opts capability.HealthOptions) (*capability.HealthReport, error) {
+	report := &capability.HealthReport{}
+	for _, t := range opts.Targets {
+		report.Services = append(report.Services, capability.ServiceHealth{
+			Service: t.Service, Container: t.Container, Healthy: true,
+			Checks: []capability.HealthCheckResult{{
+				Kind: capability.HealthKindContainer, Label: "容器状态", Status: capability.HealthOK, Detail: "容器正在运行",
+			}},
+		})
+	}
+	return report, nil
+}
+
 func installFakeDockerRemote(t *testing.T, fake *fakeDockerRemote) {
 	t.Helper()
 	prev := newDockerRemote

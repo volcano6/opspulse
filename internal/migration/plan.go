@@ -102,6 +102,12 @@ const (
 	RiskBackupRepository  = "backup_repository_missing"
 	RiskManualPreparation = "manual_preparation"
 	RiskSystemMount       = "system_mount"
+
+	// Health-check notices. A migration without an HTTP check can still be
+	// verified for container/port/database, so this is a follow-up, not a
+	// blocker: it tells the operator what the health report will and will not
+	// be able to prove.
+	RiskHealthHTTPNotConfigured = "health_http_not_configured"
 )
 
 // Errors returned by the plan file helpers. They are sentinels so callers can
@@ -212,6 +218,7 @@ type ServicePlan struct {
 	Attributes           []docker.AttributeSupport   `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 	TargetPaths          []TargetPath                `yaml:"target_paths,omitempty" json:"target_paths,omitempty"`
 	TargetPorts          []string                    `yaml:"target_ports,omitempty" json:"target_ports,omitempty"`
+	Health               *HealthPlan                 `yaml:"health,omitempty" json:"health,omitempty"`
 	BackupConfig         *BackupConfigPlan           `yaml:"backup_config,omitempty" json:"backup_config,omitempty"`
 	Blockers             []Risk                      `yaml:"blockers,omitempty" json:"blockers,omitempty"`
 	Warnings             []Risk                      `yaml:"warnings,omitempty" json:"warnings,omitempty"`
@@ -256,6 +263,10 @@ type BuildInput struct {
 	Backup           BackupDefaults
 	Generator        string
 	Now              time.Time
+	// HealthURL is the optional HTTP endpoint the post-start health check
+	// should call. It applies to a single-container plan; a batch plan leaves
+	// it empty and the operator fills in services[].health.http_url per service.
+	HealthURL string
 }
 
 // BuildPlan turns collected evidence into a plan. It performs no I/O and never
@@ -284,17 +295,36 @@ func BuildPlan(in BuildInput) (*Plan, error) {
 	}
 
 	names := jobNames(in.Containers)
+	health, err := buildPlanHealth(in)
+	if err != nil {
+		return nil, err
+	}
 	plan.Services = make([]ServicePlan, 0, len(in.Containers))
 	for i, evidence := range in.Containers {
 		service, err := buildService(evidence, names[i], in)
 		if err != nil {
 			return nil, err
 		}
+		service.Health = health
 		plan.Services = append(plan.Services, service)
 	}
 
 	plan.Risks = collectRisks(plan, in)
 	return plan, nil
+}
+
+// buildPlanHealth validates the optional HTTP health URL. An address belongs to
+// one service: a batch plan leaves it empty and the operator fills in
+// services[].health.http_url per service, so accepting it here would silently
+// attach one address to every service.
+func buildPlanHealth(in BuildInput) (*HealthPlan, error) {
+	if strings.TrimSpace(in.HealthURL) == "" {
+		return nil, nil
+	}
+	if len(in.Containers) != 1 {
+		return nil, errors.New("HTTP health check URL applies to a single-container plan; fill in services[].health.http_url per service on a batch plan")
+	}
+	return ParseHealthURL(in.HealthURL)
 }
 
 // HasBlockers reports whether anything in the plan forbids execution.
@@ -713,6 +743,7 @@ func collectRisks(plan *Plan, in BuildInput) RiskSummary {
 			Action: "先配置仓库（ops backup run 或 backups.yaml），否则无法写入备份配置、也无法执行备份",
 		})
 	}
+	summary.Add(HealthPlanRisks(plan)...)
 	return summary
 }
 
@@ -921,7 +952,8 @@ func (r Risk) isBlocker() bool {
 
 func (r Risk) isFollowUp() bool {
 	switch r.Code {
-	case RiskTargetUnspecified, RiskBackupRepository, RiskManualPreparation, RiskSystemMount:
+	case RiskTargetUnspecified, RiskBackupRepository, RiskManualPreparation, RiskSystemMount,
+		RiskHealthHTTPNotConfigured:
 		return true
 	default:
 		return false

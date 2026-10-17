@@ -22,17 +22,20 @@ import (
 // keyed by target name so a single fake can serve both the source and the
 // target endpoint without ever contacting a host.
 type planFakeRemote struct {
-	containers map[string][]docker.ContainerSummary
-	infos      map[string]*docker.ContainerInfo
-	reports    map[string]*capability.Report
+	containers    map[string][]docker.ContainerSummary
+	infos         map[string]*docker.ContainerInfo
+	reports       map[string]*capability.Report
+	healthReports map[string]*capability.HealthReport
 
 	listErr    error
 	inspectErr error
 	probeErr   error
+	healthErr  error
 
 	listCalls    int
 	inspectCalls int
 	probePaths   map[string][]string
+	healthCalls  []capability.HealthOptions
 }
 
 func (f *planFakeRemote) ListContainers(_ context.Context, target executor.Target, _ bool) ([]docker.ContainerSummary, error) {
@@ -69,6 +72,31 @@ func (f *planFakeRemote) Probe(_ context.Context, target executor.Target, opts c
 	return &capability.Report{Server: target.Name, Reachable: true}, nil
 }
 
+// HealthCheck returns a synthetic health report whose per-check status follows
+// the target's probe verdict. Tests that care about the health verdict override
+// healthReports; everything else gets a passing report so unrelated assertions
+// stay focused.
+func (f *planFakeRemote) HealthCheck(_ context.Context, target executor.Target, opts capability.HealthOptions) (*capability.HealthReport, error) {
+	f.healthCalls = append(f.healthCalls, opts)
+	if f.healthErr != nil {
+		return nil, f.healthErr
+	}
+	if f.healthReports != nil {
+		if report, ok := f.healthReports[target.Name]; ok {
+			return report, nil
+		}
+	}
+	report := &capability.HealthReport{Server: target.Name}
+	for _, t := range opts.Targets {
+		service := capability.ServiceHealth{Service: t.Service, Container: t.Container, Healthy: true}
+		service.Checks = append(service.Checks, capability.HealthCheckResult{
+			Kind: capability.HealthKindContainer, Label: "容器状态", Status: capability.HealthOK, Detail: "容器正在运行",
+		})
+		report.Services = append(report.Services, service)
+	}
+	return report, nil
+}
+
 func installPlanRemote(t *testing.T, fake *planFakeRemote) {
 	t.Helper()
 	prev := newDockerRemote
@@ -89,6 +117,7 @@ func resetDockerPlanFlagValues() {
 	dockerPlanWriteConfig = false
 	dockerPlanYes = false
 	dockerPlanShowJSON = false
+	dockerPlanHealthURL = ""
 }
 
 func resetDockerPlanFlags(t *testing.T) {

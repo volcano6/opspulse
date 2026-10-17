@@ -34,6 +34,7 @@ var (
 	dockerPlanWriteConfig bool
 	dockerPlanYes         bool
 	dockerPlanShowJSON    bool
+	dockerPlanHealthURL   string
 )
 
 var dockerPlanCmd = &cobra.Command{
@@ -133,6 +134,7 @@ func runDockerPlan(cmd *cobra.Command, args []string) error {
 		Backup:           dockerPlanBackupDefaults(),
 		Generator:        fmt.Sprintf("ops %s", version.Version),
 		Now:              time.Now(),
+		HealthURL:        dockerPlanHealthURL,
 	})
 	if err != nil {
 		return err
@@ -188,6 +190,8 @@ func validateDockerPlanFlags(containerArg string) error {
 		return errors.New("不能同时指定容器名与 --all：请二选一")
 	case dockerPlanNoSave && strings.TrimSpace(dockerPlanSave) != "":
 		return errors.New("不能同时使用 --save 与 --no-save")
+	case strings.TrimSpace(dockerPlanHealthURL) != "" && containerArg == "":
+		return errors.New("--health-url 只能用于单个容器的 plan：批量 plan 请生成后逐个在 services[].health.http_url 中填写各自的地址")
 	default:
 		return nil
 	}
@@ -471,6 +475,11 @@ func writeDockerPlanService(w io.Writer, index, total int, service migration.Ser
 	if len(service.TargetPorts) > 0 {
 		_, _ = fmt.Fprintf(w, "  目标端口: %s\n", strings.Join(service.TargetPorts, ", "))
 	}
+	if health := service.Health; health != nil && strings.TrimSpace(health.HTTPURL) != "" {
+		_, _ = fmt.Fprintf(w, "  HTTP 健康检查: %s\n", health.HTTPURL)
+	} else {
+		_, _ = fmt.Fprintln(w, "  HTTP 健康检查: 未配置（迁移后 HTTP 检查会显示 skipped）")
+	}
 	for _, attr := range service.Attributes {
 		_, _ = fmt.Fprintf(w, "  属性:     %s=%s\n", attr.Attribute, attr.Level)
 	}
@@ -543,6 +552,8 @@ func init() {
 	dockerPlanCmd.Flags().BoolVar(&dockerPlanWriteConfig, "write-config", false,
 		"确认后把 plan 中提议的备份作业写入 backups.yaml（默认不写）")
 	dockerPlanCmd.Flags().BoolVarP(&dockerPlanYes, "yes", "y", false, "跳过写入备份配置前的交互确认（不包含 hard blocker）")
+	dockerPlanCmd.Flags().StringVar(&dockerPlanHealthURL, "health-url", "",
+		"单容器 plan 的可选 HTTP 健康检查地址（如 http://vps-02:8080/health；不填则迁移后 HTTP 检查显示 skipped）")
 
 	dockerPlanShowCmd.Flags().BoolVar(&dockerPlanShowJSON, "json", false, "以 JSON 输出 plan")
 

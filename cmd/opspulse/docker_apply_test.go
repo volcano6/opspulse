@@ -52,6 +52,7 @@ func resetDockerApplyFlagValues() {
 	dockerApplyYes = false
 	dockerApplyDryRun = false
 	dockerApplyJSON = false
+	dockerApplyNoHealth = false
 }
 
 // runApplyOps runs one command with a non-terminal stdin, so the confirmation
@@ -242,6 +243,83 @@ func TestDockerApplyExecutesServicesPreservingNames(t *testing.T) {
 	}
 	if !strings.Contains(out, "迁移汇总") || !strings.Contains(out, "成功 1 / 失败 0 / 跳过 0") {
 		t.Errorf("summary missing:\n%s", out)
+	}
+	// A successful migration ends with the post-start health verdict, so the
+	// operator sees that "the service is usable" was actually verified.
+	if len(fake.healthCalls) != 1 {
+		t.Fatalf("health calls = %d, want the apply run to verify the started service", len(fake.healthCalls))
+	}
+	if !strings.Contains(out, "健康检查") || !strings.Contains(out, "通过健康检查") {
+		t.Errorf("apply output must include the health verdict:\n%s", out)
+	}
+}
+
+func TestDockerApplyFailsWhenHealthCheckFindsBrokenService(t *testing.T) {
+	home := seedPlanServers(t, "vps-a", "vps-b")
+	resetDockerFlags(t)
+	fake := applyFake("vps-a", "vps-b")
+	fake.infos = map[string]*docker.ContainerInfo{"blog-db": planContainerInfo()}
+	fake.healthReports = map[string]*capability.HealthReport{
+		"vps-b": healthReport("vps-b", "db", capability.HealthCheckResult{
+			Kind: capability.HealthKindPorts, Label: "端口 3306/tcp", Status: capability.HealthFailed,
+			Detail: "宿主机没有在 3306/tcp 上监听", NextStep: "在目标机执行 `ss -ltn | grep 3306` 确认端口",
+		}),
+	}
+	installPlanRemote(t, fake)
+	installFakeApplyMigrator(t, &fakeApplyMigrator{})
+
+	path := writeApplyPlan(t, home, "vps-a", "vps-b", planContainerInfo())
+	out, err := runApplyOps(t, "docker", "apply", path, "--yes")
+	if err == nil || !strings.Contains(err.Error(), "未全部完成") {
+		t.Fatalf("error = %v, want the migration to fail when the service is not usable\n%s", err, out)
+	}
+	if !strings.Contains(out, "成功 0 / 失败 1 / 跳过 0") {
+		t.Errorf("a service that started but failed its health check must be reported failed:\n%s", out)
+	}
+	if !strings.Contains(out, "ss -ltn") {
+		t.Errorf("summary must carry the health check's next step:\n%s", out)
+	}
+}
+
+func TestDockerApplyNoHealthSkipsTheProbe(t *testing.T) {
+	home := seedPlanServers(t, "vps-a", "vps-b")
+	resetDockerFlags(t)
+	fake := applyFake("vps-a", "vps-b")
+	fake.infos = map[string]*docker.ContainerInfo{"blog-db": planContainerInfo()}
+	installPlanRemote(t, fake)
+	installFakeApplyMigrator(t, &fakeApplyMigrator{})
+
+	path := writeApplyPlan(t, home, "vps-a", "vps-b", planContainerInfo())
+	out, err := runApplyOps(t, "docker", "apply", path, "--yes", "--no-health")
+	if err != nil {
+		t.Fatalf("apply --no-health error: %v\n%s", err, out)
+	}
+	if len(fake.healthCalls) != 0 {
+		t.Errorf("--no-health must skip the probe, got %+v", fake.healthCalls)
+	}
+	if strings.Contains(out, "健康检查") {
+		t.Errorf("--no-health must not print a health verdict:\n%s", out)
+	}
+}
+
+func TestDockerApplyHealthCheckFailuresDoNotAffectSkippedServices(t *testing.T) {
+	home := seedPlanServers(t, "vps-a", "vps-b")
+	resetDockerFlags(t)
+	fake := applyFake("vps-a", "vps-b")
+	fake.infos = map[string]*docker.ContainerInfo{"blog-db": planContainerInfo()}
+	// The only container is blocked before execution, so there is nothing to
+	// health-check and the probe must not run against a service that was never
+	// started.
+	fake.containers["vps-b"] = []docker.ContainerSummary{{Name: "blog-db", State: "running"}}
+	installPlanRemote(t, fake)
+	installFakeApplyMigrator(t, &fakeApplyMigrator{})
+
+	path := writeApplyPlan(t, home, "vps-a", "vps-b", planContainerInfo())
+	if _, err := runApplyOps(t, "docker", "apply", path, "--yes"); err == nil {
+		t.Fatal("apply must fail while the target has a same-named container")
+	}
+	if len(fake.healthCalls) != 0 {
+		t.Errorf("a blocked service must not be health-checked, got %+v", fake.healthCalls)
 	}
 }
 

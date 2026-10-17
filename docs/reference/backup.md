@@ -627,6 +627,7 @@ ops docker inspect vps-01 blog-db --json
 ```bash
 ops docker plan vps-01 blog-db                  # 单容器 plan：默认保存为 YAML 并打印路径
 ops docker plan vps-01 blog-db --target vps-02  # 指定目标机：额外检查目标机能力
+ops docker plan vps-01 blog-db --health-url http://vps-02:8080/health   # 记录可选 HTTP 健康检查地址
 ops docker plan vps-01 blog-db --save migration-plan.yaml
 ops docker plan vps-01 --all                    # 显式批量：该服务器上所有运行中的容器
 ops docker plan vps-01 --all --json             # 结构化输出，便于脚本处理
@@ -644,6 +645,8 @@ plan 记录的内容：
 - named volume、bind mount、数据库引擎与导出策略（`logical_dump` / `file_level`）、一致性策略；
 - 镜像获取方式：`pull_from_registry` / `preload_required` / `unknown`；
 - 目标路径与目标端口（可在 plan 文件中手工编辑，执行前会重新校验）；
+- HTTP 健康检查地址（可选，见[迁移后健康检查](#迁移后健康检查-ops-docker-health)）：单容器 plan
+  用 `--health-url` 写入，批量 plan 生成后在 `services[].health.http_url` 里逐个填写；
 - 每个 Docker 属性的支持级别（`supported` / `partial` / `unsupported`，与 `ops docker inspect`
   同一张表）。
 
@@ -675,6 +678,7 @@ ops docker apply migration-plan.yaml             # 预检后交互确认执行
 ops docker apply migration-plan.yaml --dry-run   # 只做应用前校验与冲突检查，不执行任何步骤
 ops docker apply migration-plan.yaml --yes       # 跳过交互确认（不绕过 hard blocker）
 ops docker apply migration-plan.yaml --json      # 结构化输出预检与逐服务结果
+ops docker apply migration-plan.yaml --no-health # 只迁移，跳过启动后的健康检查
 ```
 
 执行前会重新检查：源容器是否仍存在且与 plan 一致（镜像、编排方式、Compose 项目/服务、named
@@ -690,12 +694,60 @@ volume、bind mount、数据库策略），目标机连接与 Docker/Compose/res
   上的端口与 bind mount 宿主机路径，并在目标机上重写 Compose 文件（注释与格式会丢失）。
 - 外部挂载、特殊权限、非标准数据库与镜像 registry 依赖会以 warning 或 hard blocker 明确展示。
 - 独立且安全的服务继续执行，最终汇总**成功 / 失败 / 跳过**与人工处理项；只要有服务失败或被跳过，
-  退出码即为非零。`--yes` 只能跳过交互确认，不能绕过硬阻止项。
+  退出码即为非零。启动之后默认还会按 plan 检查服务是否真的可用（见
+  [迁移后健康检查](#迁移后健康检查-ops-docker-health)），健康检查 `failed` 的服务也计入失败；
+  `--yes` 只能跳过交互确认，不能绕过硬阻止项。
 - **不承诺通用自动回滚**：数据库导入、外部 bind mount 与宿主机侧副作用失败后需按汇总说明人工
   处理。
 
 > 迁移前先用 `ops docker list` / `ops docker inspect` 看清现状，用 `ops docker plan` 生成并
 > 审查 plan；本命令只负责按 plan 执行。Docker 支持边界矩阵见专门的文档（由后续工单维护）。
+
+### 迁移后健康检查 (`ops docker health`)
+
+进程在跑不等于服务可用：容器可能反复重启、端口没人监听、数据库还没接受连接、HTTP 端点返回 500。
+`ops docker apply` 在**默认**情况下会在启动后逐项验证每个已成功启动的服务；同一个检查也可以对
+任意已保存的 plan 单独执行、随时复核：
+
+```bash
+ops docker health migration-plan.yaml               # 检查 plan 记录的目标机
+ops docker health migration-plan.yaml --server vps-02  # 覆盖 plan 里的目标机
+ops docker health migration-plan.yaml --json        # 结构化输出，便于脚本与告警
+```
+
+四项检查与状态：
+
+| 检查 | 内容 | 数据来源 |
+|:---|:---|:---|
+| 容器 | 按 Compose 项目/服务标签（普通容器按生成的单服务项目）解析到容器后，确认状态是 `running`、不处于 `restarting`、且 `RestartCount` 为 0 | `docker ps` / `docker inspect` |
+| 端口 | plan 记录的每个**固定宿主端口**是否在监听 | 目标机 `ss -ltn/-lun`，回退 `netstat` |
+| 数据库 | MySQL/MariaDB 走 `mysqladmin ping`、PostgreSQL 走 `pg_isready`，在容器内轮询到就绪（约 30s） | `docker exec` |
+| HTTP | **仅当** plan 的 `services[].health.http_url` 配置了地址时请求该地址，2xx/3xx 视为通过 | 目标机 `curl` |
+
+每一项的状态是 `ok` / `failed` / `manual` / `skipped`：
+
+- `ok`：检查执行并通过。
+- `failed`：检查执行且未通过（容器未运行/在重启/发生过重启、端口未监听、数据库未就绪、HTTP 非 2xx/3xx）。
+  **只要有一个 `failed`，被检查的服务即判定不可用，命令返回非零退出码**；`ops docker apply` 也会
+  把该服务记为失败。
+- `manual`：目标机上缺少 `ss`/`netstat`/`curl`，或探测输出无法解析，**工具无法确认**服务是否可用。
+  这不会被当成成功，也不会让命令退出码变红——它会被明确列为「需人工确认」，并给出人工命令。
+- `skipped`：无事可做或刻意未配置。**未配置 HTTP 检查时明确显示 `skipped`**，不会假装通过。
+
+每个非 `ok` 的检查都带一条「下一步」——要么是可直接执行的目标机命令（如
+`docker logs --tail 200 <容器>`、`ss -ltn | grep <端口>`、`docker exec <容器> pg_isready`），
+要么是人工处理建议。这正是本步骤存在的意义：失败时给出可执行的下一步，而不是只给一个状态词。
+
+命令只读：不启动/重启容器、不改配置、不写文件。`--json` 输出 `kind` 为 `docker_health_result`
+的结构化结果，含每个服务的 `checks` 与顶层 `needs_manual_check`（需人工确认的服务名）。
+
+`ops docker apply` 的对应行为：
+
+- 默认在**实际启动成功**的服务上执行同样的健康检查（未启动/被阻止/被跳过的服务不检查）；
+- 检查发现 `failed` 的服务会被标记为失败，最终汇总与退出码随之反映；
+- 检查项为 `manual` 的服务保持成功状态，但会在结果里带上「需人工确认」与下一步命令；
+- 健康探测本身无法执行（如 SSH 中断）时，不会谎报成功或失败，而是把原因作为下一步写在服务上；
+- 需要跳过检查时用 `ops docker apply <plan-file> --no-health`。
 
 ---
 

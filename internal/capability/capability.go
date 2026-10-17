@@ -112,6 +112,11 @@ type Remote interface {
 	ListContainers(ctx context.Context, target executor.Target, includeStopped bool) ([]docker.ContainerSummary, error)
 	// InspectContainer returns the structured runtime metadata of one container.
 	InspectContainer(ctx context.Context, target executor.Target, name string) (*docker.ContainerInfo, error)
+	// HealthCheck verifies that the services a migration started are actually
+	// usable (container running, ports listening, database ready, optional HTTP
+	// endpoint). It lives on the same seam as the other probes so every caller
+	// mocks one interface, and it is read-only like them.
+	HealthCheck(ctx context.Context, target executor.Target, opts HealthOptions) (*HealthReport, error)
 }
 
 // RemoteProber is the production Remote implementation. It talks to the target

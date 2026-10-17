@@ -32,9 +32,10 @@ import (
 const dockerApplyTimeout = 60 * time.Minute
 
 var (
-	dockerApplyYes    bool
-	dockerApplyDryRun bool
-	dockerApplyJSON   bool
+	dockerApplyYes      bool
+	dockerApplyDryRun   bool
+	dockerApplyJSON     bool
+	dockerApplyNoHealth bool
 )
 
 var dockerApplyCmd = &cobra.Command{
@@ -50,13 +51,17 @@ var dockerApplyCmd = &cobra.Command{
 
 默认保留服务名与项目名，不会为了避开冲突自动改名。plan 中显式改过的 target_ports /
 target_paths 会被执行；独立且安全的服务继续执行，最终汇总成功、失败、跳过与人工处理项。
-退出码非零表示有必需步骤失败或被跳过。本命令不承诺通用自动回滚。
+启动成功后默认按 plan 逐项检查服务是否真的可用（容器 running 与重启异常、端口监听、
+数据库 readiness、以及 plan 中配置的 HTTP），未通过的服务会被标为失败并给出下一步命令，
+` + "`--no-health`" + ` 可跳过。退出码非零表示有必需步骤失败、被跳过或健康检查未通过。
+本命令不承诺通用自动回滚。
 
 示例：
   ops docker apply migration-plan.yaml            # 交互确认后执行
   ops docker apply migration-plan.yaml --dry-run  # 只做应用前校验，不执行
   ops docker apply migration-plan.yaml --yes      # 跳过交互确认（不绕过 hard blocker）
-  ops docker apply migration-plan.yaml --json     # 结构化输出结果`,
+  ops docker apply migration-plan.yaml --json     # 结构化输出结果
+  ops docker apply migration-plan.yaml --no-health # 只迁移不检查`,
 	Args:              cobra.ExactArgs(1),
 	RunE:              runDockerApply,
 	ValidArgsFunction: completeDockerApplyArgs,
@@ -178,6 +183,10 @@ func runDockerApply(cmd *cobra.Command, args []string) error {
 		cmd.InOrStdin(), out, readerIsInteractive(cmd.InOrStdin()), dockerApplyYes))
 	outcomes := runDockerApplyServices(ctx, plan, blockedServices, migrator, out)
 
+	if !dockerApplyNoHealth {
+		outcomes = runDockerApplyHealthCheck(ctx, plan, outcomes, out)
+	}
+
 	writeDockerApplySummary(out, plan, risks, outcomes)
 	writeDockerApplyJSONIfRequested(plan, risks, outcomes, blockedServices)
 
@@ -192,6 +201,115 @@ func runDockerApply(cmd *cobra.Command, args []string) error {
 			failed, len(plan.Services))
 	}
 	return nil
+}
+
+// runDockerApplyHealthCheck is the post-start verification of a migration. The
+// ticket it implements exists because "the container process is up" is not the
+// same claim as "the service is usable": a service that restarts in a loop, a
+// port that nothing listens on, a database that never became ready and an HTTP
+// endpoint that answers 500 are all invisible to the exit code of `compose up`.
+// It runs through the same capability seam as the standalone health command, on
+// the services that were actually started.
+func runDockerApplyHealthCheck(
+	ctx context.Context,
+	plan *migration.Plan,
+	outcomes []dockerApplyOutcome,
+	out io.Writer,
+) []dockerApplyOutcome {
+	started := make(map[string]bool, len(outcomes))
+	for _, outcome := range outcomes {
+		if outcome.Status == dockerApplyStatusSuccess {
+			started[outcome.Service] = true
+		}
+	}
+
+	var targets []capability.HealthTarget
+	for _, service := range plan.Services {
+		if started[service.Name] {
+			targets = append(targets, migration.HealthTargetFor(service))
+		}
+	}
+	if len(targets) == 0 {
+		return outcomes
+	}
+
+	_, _ = fmt.Fprintln(out)
+	report, err := probeServiceHealth(ctx, plan.Target.Server, targets)
+	if err != nil {
+		// A health probe that cannot run is not proof of failure, but it must not
+		// be reported as silence either: the started services stay successful and
+		// the reason becomes a next step on each of them.
+		detail := fmt.Sprintf("健康检查未能执行：%v；请手工确认服务可用后重新执行 `ops docker health <plan-file>`", err)
+		for i := range outcomes {
+			if outcomes[i].Status == dockerApplyStatusSuccess {
+				outcomes[i].Detail = detail
+			}
+		}
+		_, _ = fmt.Fprintf(out, "健康检查未能执行：%v\n", err)
+		return outcomes
+	}
+
+	writeDockerHealthHuman(out, plan, report)
+	return foldHealthIntoOutcomes(outcomes, report)
+}
+
+// foldHealthIntoOutcomes turns the health verdict into the per-service result:
+// a service with a failed check is a failed migration, and a service whose
+// checks all passed but could not be automated keeps its success and carries the
+// manual confirmation it still owes.
+func foldHealthIntoOutcomes(outcomes []dockerApplyOutcome, report *capability.HealthReport) []dockerApplyOutcome {
+	byName := make(map[string]capability.ServiceHealth, len(report.Services))
+	for _, service := range report.Services {
+		byName[service.Service] = service
+	}
+
+	for i := range outcomes {
+		service, ok := byName[outcomes[i].Service]
+		if !ok {
+			continue
+		}
+		if failed := service.FailedChecks(); len(failed) > 0 {
+			outcomes[i].Status = dockerApplyStatusFailed
+			outcomes[i].Detail = healthFailureDetail(failed)
+			continue
+		}
+		if manual := service.ManualChecks(); len(manual) > 0 && outcomes[i].Status == dockerApplyStatusSuccess {
+			if outcomes[i].Detail != "" {
+				outcomes[i].Detail += "；"
+			}
+			outcomes[i].Detail += healthManualDetail(manual)
+		}
+	}
+	return outcomes
+}
+
+// healthFailureDetail renders the failed checks as the operator's next steps.
+func healthFailureDetail(checks []capability.HealthCheckResult) string {
+	parts := make([]string, 0, len(checks))
+	for _, check := range checks {
+		detail := fmt.Sprintf("%s %s", check.Label, check.Status)
+		if check.Detail != "" {
+			detail += "：" + check.Detail
+		}
+		if check.NextStep != "" {
+			detail += "（下一步：" + check.NextStep + "）"
+		}
+		parts = append(parts, detail)
+	}
+	return "迁移后健康检查未通过：" + strings.Join(parts, "；")
+}
+
+// healthManualDetail renders the checks a human still has to confirm.
+func healthManualDetail(checks []capability.HealthCheckResult) string {
+	parts := make([]string, 0, len(checks))
+	for _, check := range checks {
+		part := check.Label + "需人工确认"
+		if check.NextStep != "" {
+			part += "（" + check.NextStep + "）"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "；")
 }
 
 // Service outcome statuses shared by the human and the JSON report.
@@ -631,6 +749,8 @@ func init() {
 		"只做应用前的重新校验与冲突检查，不执行任何备份/恢复/启动")
 	dockerApplyCmd.Flags().BoolVar(&dockerApplyJSON, "json", false,
 		"以 JSON 输出预检结果与逐服务结果（执行日志走 stderr）")
+	dockerApplyCmd.Flags().BoolVar(&dockerApplyNoHealth, "no-health", false,
+		"启动后跳过健康检查（默认会检查容器 running/重启、端口监听、数据库 readiness 与 plan 中配置的 HTTP）")
 
 	dockerCmd.AddCommand(dockerApplyCmd)
 }
