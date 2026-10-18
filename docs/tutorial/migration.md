@@ -4,122 +4,127 @@
 **WSL 环境备份还原**（把 WSL 里的开发配置备份到对象存储，再按路径重映射还原到另一台机器）。
 每一步只给「照着做就能跑通」的最小命令序列，字段规范、参数表与完整 flag 清单都指向对应的参考页。
 
+> **范围**：这里支持的是常见单主机 Docker 服务迁移，**不保证任意 Docker workload 无损迁移**。
+> Compose、普通单容器、named volume、常规 bind mount 与 MySQL/MariaDB/Percona/PostgreSQL
+> 的逻辑导出在支持范围内；任意 runtime 字段、离线镜像、任意数据库、GPU/宿主机资源、
+> DNS/证书/反向代理与完整手写 SSH 配置需要人工处理。完整矩阵与前置条件见
+> [Docker 支持边界矩阵](../reference/backup.md#docker-支持边界矩阵)。
+
 在多 VPS 环境下，Docker 容器的跨机备份与迁移往往繁琐不堪：
 - 野生 `docker run` 容器没有 Compose 文件，迁移时要重新翻找历史参数；
 - 运行中的数据库如果直接拷数据目录，容易因脏页引发崩溃或表损坏；
 - 目标服务器往往缺少统一的启动与编排流程，需要手动编写脚本。
 
-Ops 引入了**智能容器漂移引擎**，无论原服务是普通 Docker 容器还是 Docker Compose 编排，只需两行命令即可完成跨机无缝迁移并自动启动！
+OpsPulse 把这件事拆成可检查的步骤：先发现、再生成只读 plan、复核后执行，最后单独做健康检查。
+plan 不是绕过安全检查的许可；apply 会重新校验源端漂移、目标冲突、端口、目录与权限、镜像和数据库条件。
 
 ## 1. 容器跨机迁移 (Container Migration)
 
 ### 核心能力
 
-1. **零前置配置，一步直接备份**：`ops backup run <server>:<container>`，无需预先手动登记 YAML。
-2. **野生容器自动逆向**：自动抓取端口、挂载卷、环境变量与重启策略，反编译为标准现代化 `compose.yaml`。
-3. **数据库无损热 Dump**：针对 MySQL / MariaDB / PostgreSQL 容器，备份前自动在容器内执行在线热导出与 gzip 实时压缩，杜绝脏页与文件锁冲突。
-4. **两代 Compose 自适应**：底层自动检测并兼容 `docker compose` 与独立式 `docker-compose`。
-5. **跨机还原默认直接跑起来**：`ops restore run <app> --target-server <new-vps>`，解压配置和数据后，只要快照里带着与本任务匹配的容器 manifest，就会自动执行 `$COMPOSE up -d` 并灌入数据，服务直接上线！（普通文件恢复与同机还原默认只写回文件，需要启动时显式加 `--start`。）
-6. **自由改名（转正）**：支持 `--as <new-name>`，在备份或还原时轻松把临时测试名（如 `nginx-test`）换成规范名（如 `nginx`）。
+1. **先发现，再执行**：`ops docker list` / `ops docker inspect` 只读展示容器、挂载、数据库与能力缺口。
+2. **可审查的 plan**：`ops docker plan` 记录源与目标、端口、路径、镜像获取方式、数据库策略和风险。
+3. **执行前重新校验**：`ops docker apply` 不接受过期 plan，目标冲突或源容器漂移会阻止执行。
+4. **受支持数据库使用逻辑导出**：MySQL / MariaDB / Percona 走 `mysqldump`，PostgreSQL 走
+   `pg_dumpall`；其他数据库只能文件级复制，不承诺一致性。
+5. **named volume 与常规 bind mount 分别处理**：named volume 可归档导入；bind mount 依赖目标机
+   预先准备目录与权限。
+6. **启动后健康检查**：`ops docker health` 复核容器、固定端口、数据库 readiness 与可选 HTTP。
+7. **默认保留名称**：Docker plan/apply 默认保留服务名与项目名，避免与反向代理或运维引用失配；
+   `--as <new-name>` 只用于 `ops backup run` / `ops restore run` 的别名流程。
 
-### 实战场景一：野生普通容器跨机迁移并改名
+### 最小可跑流程：发现 → plan → apply → 健康检查
 
-假设你在 `vps-1` 上曾随手运行了一个测试容器：
-```bash
-docker run -d --name nginx-test -p 8080:80 -v /data/html:/usr/share/nginx/html --restart unless-stopped nginx:alpine
-```
-
-#### 第一步：一键备份并转正
-```bash
-# 备份 vps-1 上的 nginx-test 容器，并在生成的 Compose 和任务中重命名为 nginx
-ops backup run vps-1:nginx-test --as nginx
-```
-
-> **Ops 在后台自动完成**：
-> 1. SSH 连接到 `vps-1`，执行 `docker inspect nginx-test` 解析端口 `8080:80` 和挂载目录 `/data/html`。
-> 2. 逆向反编译出标准化 `compose.yaml`，服务名与容器名自动命名为 `nginx`。
-> 3. 将 `compose.yaml` 与 `/data/html` 中的网页数据统一打包进加密的 Restic 快照。
-> 4. 自动在 `backups.yaml` 和 `assets.yaml` 中沉淀该配置。
-
-#### 第二步：一键漂移到新 VPS 并直接启动
-```bash
-ops docker plan vps-1 nginx-test --health-url http://vps-2:8080/   # 生成迁移 plan（可选记录 HTTP 检查地址）
-ops docker apply migration-plan.yaml                               # 按 plan 迁移：备份 → 恢复 → 启动 → 健康检查
-```
-
-> **执行结果**：
-> 1. 数据解压到 `vps-2` 的对应目录中。
-> 2. Ops 自动探测 `vps-2` 上的 Compose 引擎。
-> 3. 自动执行 `docker compose up -d`。
-> 4. 启动后逐项检查容器 running / 端口监听 / 数据库 readiness / 可选 HTTP，确认服务**真的可用**，
->    而不是只看进程有没有起来；未通过的服务给出下一步命令并把迁移标记为失败。
-> 5. 容器 `nginx` 已经在 `vps-2` 上顺利跑起来了！
-
-`--target-server` 之外的还原参数（`--as`、`--start`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）见
-[备份、还原与调度指南](../reference/backup.md#3-还原-restore)。
-
-迁移完成后可以随时复核健康状态（只读，不会动目标机）：
+以下示例使用中性服务器名与保留地址。执行前请确认源机与目标机都已登记在 `servers.yaml`，
+目标机能访问镜像仓库（或已预置镜像），需要 named volume 时两端都有 helper 镜像。
 
 ```bash
+# 1. 发现：列出源机容器，查看目标容器的迁移分析
+ops docker list vps-01
+ops docker inspect vps-01 blog-web
+
+# 2. plan：指定目标机，记录可选的 HTTP 健康检查地址
+ops docker plan vps-01 blog-web \
+  --target vps-02 \
+  --health-url http://vps-02:8080/health \
+  --save migration-plan.yaml
+
+# 3. 复核 plan；--dry-run 只做 apply 预检，不执行迁移
+ops docker plan show migration-plan.yaml
+ops docker apply migration-plan.yaml --dry-run
+
+# 4. 执行：备份 → 恢复 → 启动；交互确认或显式 --yes
+ops docker apply migration-plan.yaml
+
+# 5. 独立复核健康状态（只读）
 ops docker health migration-plan.yaml
 ```
 
-四项检查（容器、端口、数据库、可选 HTTP）的状态词与下一步建议见
-[迁移后健康检查](../reference/backup.md#迁移后健康检查-ops-docker-health)。
+若目标机已有同名容器、同名 Compose 项目、已占用端口或已存在的项目目录，apply 会阻止执行，
+默认不会自动改名。需要调整端口或 bind mount 路径时，编辑 plan 中的 `target_ports` /
+`target_paths` 后重新预检；apply 会重写目标机 Compose 文件，注释与格式会丢失。
 
-### 实战场景二：数据库容器在线安全迁移 (MySQL / Postgres)
+### 关于改名：`--as` 的适用范围
 
-假设你在 `vps-1` 上运行着一个数据库：
+`--as` 是 `ops backup run` / `ops restore run` 的作业与容器别名，不是
+`ops docker apply` 的改名开关。需要直接复用备份链路改名时，可以这样执行：
+
 ```bash
-docker run -d --name blog-db -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=blog mysql:8.0
+ops backup run vps-01:blog-web-test --as blog-web
+ops restore run blog-web --target-server vps-02 --start
 ```
 
-#### 第一步：一键备份（自动热导出）
+`ops docker plan` 记录的服务名来自被检查的容器；`ops docker apply` 按 plan 中的服务名备份、
+恢复和启动，不会继承此前单独执行 `ops backup run --as` 创建的作业别名。若使用 plan 迁移，
+请先确认计划中的服务名和目标冲突；目标机仍需没有同名容器、项目、端口和目录。若容器含疑似敏感
+环境变量，普通容器反向生成 `compose.yaml` 前会要求确认，拒绝或非交互环境未给 `--yes` 时会在
+写盘前中止。
+
+### 实战场景：受支持数据库容器迁移
+
+MySQL / MariaDB / Percona 与 PostgreSQL 容器会使用逻辑导出。迁移前必须确认容器内存在
+`mysqldump` / `pg_dumpall` 及 readiness 工具，且数据库凭据能从容器环境变量读取。
+
 ```bash
-ops backup run vps-1:blog-db
+ops docker inspect vps-01 blog-db
+ops docker plan vps-01 blog-db --target vps-02 --save migration-plan.yaml
+ops docker apply migration-plan.yaml --dry-run
+ops docker apply migration-plan.yaml
+ops docker health migration-plan.yaml
 ```
 
-> **会先要求确认**：`blog-db` 的环境变量里有 `MYSQL_ROOT_PASSWORD`，逆向生成的 `compose.yaml`
-> 会把它的取值原样写进去，因此命令会先列出疑似凭据的变量名（不回显取值）并要求确认。
-> 确认方式、非交互写法与替代方案见
-> [一键容器智能备份](../reference/backup.md#一键容器智能备份-无需前置配置)。
+数据库导入失败时，恢复结果会把 `database` 步骤标为 `failed` 或 `blocked`，Compose 启动也可能
+已完成；这不是“整体成功”，需要按汇总中的下一步命令人工处理。数据库自身的一致性、版本兼容与
+应用层数据修复不在自动保证范围内。
 
-> **Ops 在后台自动完成**：
-> 1. 自动识别该容器镜像属于 MySQL 引擎。
-> 2. 自动在容器内部通过管道执行 `mysqldump --single-transaction --quick -u root $PASS --all-databases | gzip`。
-> 3. 密码直接从容器内部环境变量读取，不会在宿主机 `ps aux` 进程列表中泄露明文。
-> 4. 将 `.sql.gz` 纳入快照，并在备份成功后自动清理远端临时 SQL 文件。
+### 恢复默认启动行为与 `--no-start` / `--start`
 
-#### 第二步：还原到新机器并自动探活灌库
+`ops docker apply` 由 plan 驱动，按 plan 备份、恢复并启动目标服务。若需要单独复用已有快照，
+`ops restore run` 的启动策略如下：
+
+| 场景 | 默认行为 |
+|:---|:---|
+| 普通文件恢复（快照中没有匹配的容器 manifest） | 只写回文件，不启动服务 |
+| 同机恢复（目标服务器 = 源服务器） | 只写回文件，不启动服务 |
+| 跨机恢复且找到与本任务匹配的容器 manifest | 导入 named volume → Compose 启动 → 导入数据库 |
+
+显式覆盖：
+
 ```bash
-ops restore run blog-db --target-server vps-2
+# 只解压文件：不导入 named volume、不灌库、不启动 Compose
+ops restore run blog-web --target-server vps-02 --no-start
+
+# 强制启动：普通文件恢复或同机恢复也执行后续容器步骤
+ops restore run blog-web --start
 ```
 
-> **Ops 在后台自动完成**：
-> 1. 在 `vps-2` 上启动数据库容器。
-> 2. **探活等待（Readiness Probe）**：自动循环检测目标容器内数据库是否就绪（`mysqladmin ping`）。
-> 3. 数据库就绪后，自动将快照中的 `.sql.gz` 实时解压并灌入新容器中，数据无缝恢复！
+`--start` 与 `--no-start` 互斥。恢复结果按 `files` / `volumes` / `database` / `compose`
+四步展示；聚合状态为 `success` / `partial` / `failed` / `dry-run`，`failed` 或 `partial`
+都会以非零退出码结束，并发送 `restore_failed` / `restore_partial` 通知。`partial` 表示文件已
+恢复，但后续步骤失败或被阻止，不能当作完整迁移成功。
 
-### 实战场景三：仅恢复文件，不自动拉起容器 (`--no-start`)
-
-如果你只是想从备份中提取历史配置文件或数据，而不希望在新机器上立刻拉起容器（例如需要先核对网络配置或修改端口）：
-
-只需加上可选的 `--no-start` 标志：
-```bash
-ops restore run nginx --target-server vps-2 --no-start
-```
-
-Ops 将只解压全部配置文件和数据，不会执行 `docker compose up -d`，也不会触发数据库自动灌入。
-
-反过来的情况——普通文件恢复或同机还原却需要把服务拉起来——用 `--start` 显式开启
-（`--start` 与 `--no-start` 互斥，不能同时给）：
-```bash
-ops restore run my-wsl-env --start
-```
-
-每次还原结束都会打印逐步骤结果（文件恢复、volume 恢复、数据库导入、Compose 启动），
-失败或被跳过的步骤会带上下一步命令，完整状态词表见
-[逐步骤结果与场景化启动策略](../reference/backup.md#逐步骤结果与场景化启动策略)。
+`ops restore run` **不会自动执行迁移后健康检查**；健康检查由 `ops docker apply` 默认执行，
+或对保存的 plan 单独运行 `ops docker health`。
 
 ## 2. WSL 环境备份与还原 (WSL Environment Backup and Restore)
 
@@ -204,6 +209,9 @@ ops restore run my-wsl-env --target-server vps-01
 
 场景里用到的两条命令是 `ops backup run` 与 `ops restore run`：
 
+- Docker 发现、plan、apply 与健康检查的入口分别是 `ops docker list`、`ops docker plan`、
+  `ops docker apply` 与 `ops docker health`；支持矩阵见
+  [Docker 支持边界矩阵](../reference/backup.md#docker-支持边界矩阵)。
 - 备份作业的字段规范（`server` / `paths` / `assets` / `backend` / `retention` / `env`）与容器直备的
   行为细节见[备份、还原与调度指南](../reference/backup.md)；
 - 还原的完整参数表（`--target-server`、`--as`、`--start`、`--no-start`、`--snapshot`、`--asset`、`--dry-run`）

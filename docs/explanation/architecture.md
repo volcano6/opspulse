@@ -62,6 +62,10 @@ OpsPulse 是一个单二进制 CLI：它不常驻、不自建服务端，本机�
   因此可以安全地重定向 stdout。
 - 状态机：一次备份从 `running` 到 `success` 或 `failed`；一次还原如果 restic 成功但容器没能
   自动拉起，状态是 `partial` 且命令返回非零——「数据回来了但服务没起来」不能算成功。
+- Docker 迁移不是第二套执行引擎：`ops docker apply` 逐服务复用容器备份与恢复路径，并额外维护
+  plan 预检、目标调整与健康检查。它只承诺常见单主机服务迁移；支持与不支持项以
+  [Docker 支持边界矩阵](../reference/backup.md#docker-支持边界矩阵)为准，不能据此推断任意
+  Docker runtime 字段或宿主机资源都能无损迁移。
 - **没有自动重试**：备份与还原失败不会重试。唯一的重试在告警 webhook（网络错误最多 3 次）
   与 1Password CLI 的 WSL 互操作路径上。
 - 本机写入互斥：每个 YAML 的保存都持一把跨进程文件锁（`<文件>.lock`），并以
@@ -160,6 +164,11 @@ plan/apply 差分。它管的是「已经存在的机器」上的清单与数据
 **不封装 restic 语义。** 不重写仓库格式、加密、快照模型与保留策略，只负责把「在哪台机器、
 备什么路径、用哪个后端、保留多少份」翻译成 restic 命令，并记录执行结果。仓库里的快照如何
 校验、如何 `forget`/`prune`、如何直接从仓库恢复，仍然是 restic 的能力。
+
+**不保证任意 Docker workload 无损迁移。** 支持范围限于常见单主机 Compose 服务、普通单容器、
+named volume、常规 bind mount 与受支持 SQL 数据库的逻辑导出。离线镜像、任意 runtime 字段、
+GPU/宿主机设备、DNS、证书、反向代理、外部网络与完整手写 SSH 配置都不在自动保证范围内；
+这些边界同样适用于 plan、apply 与恢复报告。
 
 ## 5. 核心概念 (Core Concepts)
 

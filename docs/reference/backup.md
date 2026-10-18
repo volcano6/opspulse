@@ -581,9 +581,61 @@ systemctl status ops.service
 
 ## 5. Docker 服务发现与迁移能力 (`docker list` / `docker inspect`)
 
-在真正备份或迁移容器之前，先用这组**只读**命令看清 VPS 上有什么、每个容器能不能迁。
-它们只执行 `docker ps` / `docker inspect` 与一次环境能力探测，**不会**执行数据库 dump、
-volume 归档、restic 备份或 `compose up`，也不会修改远端任何文件。
+在真正备份或迁移容器之前，先用发现与 plan 命令看清 VPS 上有什么、每个容器能不能迁。
+`list` / `inspect` / `plan` / `plan show` / `health` 只执行 `docker ps` / `docker inspect`
+与环境能力探测，**不会**执行数据库 dump、volume 归档、restic 备份或 `compose up`，也不会
+修改远端任何文件；只有 `apply` 会备份、恢复并启动目标服务。
+
+### Docker 支持边界矩阵
+
+本节是 Docker 迁移支持边界的唯一事实源。`ops docker inspect`、`ops docker plan` 与本文其他
+小节都引用这里，不再各自维护一份支持表。
+
+先说结论：**支持的是常见单主机 Docker 服务迁移，不保证任意 Docker workload 无损迁移。**
+支持级别沿用命令输出中的三个词：
+
+- `supported`：支持流程会携带该属性，并把它写入 plan / 生成的 Compose。
+- `partial`：支持流程可以处理，但语义可能变化，或需要目标机人工准备、执行后人工核对。
+- `unsupported`：支持流程不会携带，迁移后可能丢失；plan 会把它列为 warning 或 hard blocker。
+
+| 范围 | 支持级别 | 说明 |
+|:---|:---|:---|
+| Compose 管理的容器 | `supported` | 复用原 Compose 项目文件、工作目录与服务名；同一 plan 选中同一 Compose 项目的多个服务会被阻止 |
+| 普通单容器（`docker run`） | `supported`（生成配置为 `partial`） | 反向生成单 service `compose.yaml`；端口、重启策略、command、working dir、非敏感环境变量、named volume 与常规 bind mount 可写入 |
+| named volume | `supported` | 通过 helper 容器归档 / 导入；源机与目标机都需要可用 helper 镜像 |
+| 常规 bind mount | `partial` | 常规目录会随快照备份；目标机必须预先准备目录、磁盘与权限。系统挂载不归档，由目标运行时提供 |
+| MySQL / MariaDB / Percona | `supported`（逻辑导出） | 使用 `mysqldump --single-transaction --quick --all-databases`；需要容器内数据库工具可用 |
+| PostgreSQL | `supported`（逻辑导出） | 使用 `pg_dumpall`；需要容器内数据库工具可用 |
+| 其他数据库 | `partial` / 不支持 | 只能按文件级复制，不保证一致性；应停写或使用数据库自身的备份工具人工处理 |
+| 端口、重启策略、command、working dir、非敏感环境变量 | `supported` | 普通容器反向生成 Compose 时会写入这些字段 |
+| 敏感环境变量 | `partial` | 可能原样写入生成的 Compose 与快照；写盘前必须确认，不能视为完整的 Docker secrets 支持 |
+| Entrypoint / healthcheck | `supported` / `partial` | 原 Compose 文件可保留；普通容器反向生成时未写入，若覆盖了镜像默认值或依赖 healthcheck，需人工补回 |
+| 自定义网络 | `partial` | 目标机必须已有同名网络；共享另一个容器网络（`container:<name>`）是 hard blocker |
+| privileged / capabilities | `partial` | 会识别并告警；Compose 原文件可保留，普通容器反向生成的 Compose 不自动写入这些字段，需人工补回并在目标机显式授权 |
+| GPU / 宿主机设备 | `unsupported` | 设备本身不会迁移；目标机必须具备相同设备，否则服务无法启动 |
+
+明确**不保证**的范围包括：
+
+- 任意 Docker runtime 字段与未列出的 Compose 高级特性；
+- 离线镜像搬运（不默认执行 `docker save` / `docker load`）；
+- 任意数据库的一致性备份与导入；
+- GPU、宿主机设备、内核参数、资源限制等宿主机能力；
+- DNS、证书、反向代理、防火墙、外部网络与外部存储；
+- 完整手写 SSH 配置恢复（见[服务器与资产 § 新 WSL 的 SSH 环境恢复](server_ops.md#新-wsl-的-ssh-环境恢复-ops-server-setup)）。
+
+迁移前必须满足的前置条件：
+
+- **镜像 registry**：目标机需能访问镜像仓库，或已预先存在所需镜像；plan 会记录
+  `pull_from_registry` / `preload_required` / `unknown`，无法拉取且本地缺失时阻止执行。
+- **helper 镜像**：named volume 归档 / 导入需要 `alpine` 或 `busybox`；可用
+  `OPSPULSE_HELPER_IMAGE` 指定镜像，源机与目标机都要具备。
+- **外部挂载与目标权限**：bind mount 的宿主机目录、磁盘、挂载点和权限由用户在目标机准备；
+  OpsPulse 只检查并提示，不迁移 DNS、证书、反向代理或外部存储。
+- **Docker / Compose / restic**：源机需要 Docker 与 restic；目标机需要 Docker、Compose 与
+  restic，缺失时 plan 与 apply 预检会阻止或标记为需要人工处理。
+
+这些边界来自仓库中的单元测试、CLI mock 与静态检查；当前仓库**没有**真实 VPS、WSL、
+Docker、数据库或跨机恢复的冒烟验证，因此不能把上述支持级别理解为已在所有外部环境验证兼容。
 
 ### 列出容器 (`ops docker list`)
 
@@ -618,7 +670,7 @@ ops docker inspect vps-01 blog-db --json
 
 > 这组命令只负责「看清现状」，不负责备份或迁移；真正执行仍走
 > [一键容器智能备份](#一键容器智能备份-无需前置配置) 与 [还原](#3-还原-restore)。
-> Docker 属性的完整支持边界矩阵由后续文档统一维护，本节只说明命令本身的输出。
+> 支持范围与前置条件见上面的 [Docker 支持边界矩阵](#docker-支持边界矩阵)。
 
 ### 只读迁移 plan (`ops docker plan`)
 
@@ -701,7 +753,8 @@ volume、bind mount、数据库策略），目标机连接与 Docker/Compose/res
   处理。
 
 > 迁移前先用 `ops docker list` / `ops docker inspect` 看清现状，用 `ops docker plan` 生成并
-> 审查 plan；本命令只负责按 plan 执行。Docker 支持边界矩阵见专门的文档（由后续工单维护）。
+> 审查 plan；本命令只负责按 plan 执行。支持范围、前置条件与不保证项见
+> [Docker 支持边界矩阵](#docker-支持边界矩阵)。
 
 ### 迁移后健康检查 (`ops docker health`)
 
@@ -748,6 +801,37 @@ ops docker health migration-plan.yaml --json        # 结构化输出，便于�
 - 检查项为 `manual` 的服务保持成功状态，但会在结果里带上「需人工确认」与下一步命令；
 - 健康探测本身无法执行（如 SSH 中断）时，不会谎报成功或失败，而是把原因作为下一步写在服务上；
 - 需要跳过检查时用 `ops docker apply <plan-file> --no-health`。
+
+### Docker 迁移的审计、通知、退出码与 partial
+
+Docker 迁移没有第二套审计表：`ops docker apply` 逐服务复用容器备份与恢复引擎，因此每次源机
+备份写入 `backup_runs`，每次目标机恢复写入 `restore_runs`。可以用现有命令核对：
+
+```bash
+ops backup status
+ops backup history <job-name> --limit 10
+ops restore history <job-name> --limit 10
+```
+
+需要区分两套结果词：
+
+| 命令 | 结果状态 | 含义 |
+|:---|:---|:---|
+| `ops docker apply` | `success` / `failed` / `skipped` | 每个服务的迁移结果；只要有一个不是 `success`，命令返回非零 |
+| `ops restore run` | `success` / `partial` / `failed` / `dry-run` | 单次恢复的聚合状态；`partial` 表示文件已恢复，但 volume、数据库或 Compose 步骤失败 / 被阻止 |
+| `ops docker health` | 每个检查为 `ok` / `failed` / `manual` / `skipped` | `failed` 会让命令返回非零；`manual` 与 `skipped` 不改变退出码，但会在结果中明确列出 |
+
+`ops restore run` 会先创建审计记录再校验，因此快照、目标、asset 或 secret 的前置失败也会出现在
+`ops restore history` 中；`failure_stage` 区分 `validation`、`execution`、`post_restore`。
+SQLite 只保存聚合状态，逐步骤明细只出现在终端与通知里。
+
+恢复完成（包括 `partial`、`failed` 和 `dry-run`）会发送通知，事件为
+`restore_success` / `restore_partial` / `restore_failed` / `restore_dry-run`；
+`partial` 按失败处理，因此默认只订阅 `failure` 的渠道也会收到。
+
+`ops docker apply` 的退出码：所有服务均为 `success` 时为 `0`；有服务 `failed` / `skipped`
+或健康检查 `failed` 时非零。`ops docker apply` 当前没有独立的迁移通知事件；它内部的备份与
+恢复步骤分别遵循各自引擎的审计行为，迁移汇总本身以终端 / `--json` 输出为准。
 
 ---
 

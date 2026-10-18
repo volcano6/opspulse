@@ -26,8 +26,8 @@ OpsPulse 把这些收拢成一个可执行文件：清单、模板、备份、�
 1. **服务器清单与标签检索**：YAML 管理主机、标签与标签键值对，`ops ls --filter` 即筛即用。见[服务器与资产](docs/reference/server_ops.md)。
 2. **无 Agent 的探测与直连**：`ops server info` 一次 SSH 采回系统、硬件与 Docker 概览；`ops ssh` 免记 IP / 端口 / 密钥，支持跳板机。见[服务器与资产](docs/reference/server_ops.md)。
 3. **模板化初始化**：内置 19 个官方模板（`base`、`docker`、`security`、`restic` 等），模板是带 YAML frontmatter 的 Shell 脚本，可用同名文件覆盖。见[配置与模板](docs/reference/configuration.md#6-模板与-frontmatter-templates)。
-4. **结构化备份**：`backups.yaml` 声明任务，并发可调，支持 Dry-Run 与按保留策略自动修剪；容器可免配置一键备份（自动转译 Compose、数据库在途热导）。见[备份、还原与调度指南](docs/reference/backup.md)。
-5. **精准还原与跨机迁移**：按任务、快照或单个资产还原；跨机默认自动拉起容器并灌库，路径可按 `remap` 重映射。见[备份、还原与调度指南](docs/reference/backup.md#3-还原-restore)。
+4. **结构化备份**：`backups.yaml` 声明任务，并发可调，支持 Dry-Run 与按保留策略自动修剪；常见单主机容器可免配置备份（Compose 原文件或反向生成配置、受支持数据库逻辑导出）。见[备份、还原与调度指南](docs/reference/backup.md)。
+5. **精准还原与常见容器迁移**：按任务、快照或单个资产还原；跨机恢复在找到匹配的容器 manifest 时默认启动，普通文件与同机恢复默认只写文件，路径可按 `remap` 重映射。Docker 支持边界见[支持矩阵](docs/reference/backup.md#docker-支持边界矩阵)。
 6. **定时调度与告警**：标准 Cron 表达式、防重叠、优雅退出；任务结束按 `failure` / `success` / `always` 推送 Webhook（Slack、Discord、飞书、钉钉、企业微信）。见[备份、还原与调度指南](docs/reference/backup.md#4-调度与守护进程-scheduler)与[配置与模板](docs/reference/configuration.md#4-通知渠道-notificationsyaml)。
 7. **资产模型**：Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态数据以稳定 ID 登记，备份与还原按 ID 引用。见[业务资产模型](docs/reference/server_ops.md#8-业务资产与引用保护-assets)。
 8. **本地优先的凭据**：SSH 凭据只存在本机（`0600`），`ops ssh` / `ops exec` / `ops cp` 全程不碰 1Password；1Password 只作为**备份与跨机同步的目标**，`ops 1p backup` 把整机凭据写进一个 Secure Note，`ops 1p restore` 在新机器上一条命令还原。见[1Password 备份与跨机同步指南](docs/reference/onepassword.md)。
@@ -90,6 +90,9 @@ ops completion --install  # 注入 shell 补全（Bash / Zsh / Fish / PowerShell
 - 不替代 Terraform 类 IaC：管理已经存在的机器，不创建云资源。
 - 不替代监控与告警平台：只在作业结束时推一条事件，不做指标采集与值班。
 - 不封装 restic 的语义：仓库、快照与保留策略仍是 restic 的模型，OpsPulse 只负责编排。
+- 不保证任意 Docker workload 无损迁移：支持常见单主机 Compose / 单容器、named volume、
+  常规 bind mount 与受支持 SQL 数据库；任意 runtime 字段、离线镜像、GPU/宿主机资源、
+  DNS/证书/反向代理与完整手写 SSH 配置需要人工处理。
 
 **安全边界**：信任根是本机磁盘（`servers.yaml` 权限 `0600`）；主机密钥默认 fail-closed，只有显式
 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 才写入未知主机；私钥永不外传；交互式密码经 `0600` 受限临时文件

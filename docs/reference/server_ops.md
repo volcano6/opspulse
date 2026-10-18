@@ -263,6 +263,16 @@ ops server setup --write-config
 不会猜测用户意图。`--config <path>` 可以指定另一个 SSH config，但必须同时给
 `--write-config`。
 
+`ops server setup` 的恢复范围是 **OpsPulse 自己管理的那部分 SSH 工作环境**：
+
+- 从 1Password 恢复 `servers.yaml` 与 OpsPulse 管理的私钥；
+- 重新生成 `~/.ssh/config` 中由 managed marker 包围的 Host 区块；
+- 检查并选择性登记当前主机返回的 `known_hosts` 指纹。
+
+它**不保证恢复完整手写 SSH 配置**。任意 `Include`、`Match`、`ProxyCommand`、`Host *`、
+证书、跳板机脚本或其它手工维护内容不会被重建，也不会被自动迁移；备份中的旧 `known_hosts`
+不会被当作无条件信任源。需要完整还原自定义 SSH 配置时，请自行版本化并人工恢复。
+
 ### known_hosts：只登记你确认过的指纹
 
 主机密钥缺失时，可以按服务器选择性登记：

@@ -15,7 +15,7 @@
 |---|---|
 | 第一次上手：编译、加机器、初始化 | [新手入门教程](tutorial/getting_started.md) |
 | 备份目录、数据库或容器 | [备份、还原与调度指南 § 备份](reference/backup.md#2-备份命令与实战-backup-commands) |
-| 还原、跨机迁移、路径重映射 | [备份、还原与调度指南 § 还原](reference/backup.md#3-还原-restore)、[跨机迁移与环境备份教程](tutorial/migration.md) |
+| 还原、跨机迁移、路径重映射 | [备份、还原与调度指南 § 还原](reference/backup.md#3-还原-restore)、[Docker 支持边界矩阵](reference/backup.md#docker-支持边界矩阵)、[跨机迁移与环境备份教程](tutorial/migration.md) |
 | 定时自动备份、失败时收到告警 | [备份、还原与调度指南 § 调度](reference/backup.md#4-调度与守护进程-scheduler)、[配置与模板 § 通知渠道](reference/configuration.md#4-通知渠道-notificationsyaml) |
 | 管理服务器清单、资产、模板与目录 | [服务器与资产](reference/server_ops.md)、[配置与模板](reference/configuration.md) |
 | 用 1Password 保存凭据、换机同步 | [1Password 备份与跨机同步指南](reference/onepassword.md)、[离线验证教程](tutorial/onepassword_offline_verify.md) |
@@ -29,7 +29,7 @@
 | 文档 | 解决什么问题 |
 |---|---|
 | [新手入门教程](tutorial/getting_started.md) | 从源码编译、装 shell 补全、添加第一台服务器、跑 bootstrap。 |
-| [跨机迁移与环境备份](tutorial/migration.md) | 容器跨机迁移（含改名、热导出与自动探活灌库），以及 WSL 环境备份与按路径重映射还原。 |
+| [跨机迁移与环境备份](tutorial/migration.md) | 常见单主机 Docker 服务的发现、plan、apply 与健康检查，以及 WSL 环境备份与按路径重映射还原。 |
 | [1Password 离线验证教程](tutorial/onepassword_offline_verify.md) | 没有 1Password 账号也能把 1P 备份/还原链路跑一遍并看懂调用序列。 |
 
 ### 参考 (Reference)
@@ -39,7 +39,7 @@
 | [命令行参考](reference/cli.md) | 全部命令与 flag 的机械清单（由 `make docs-gen` 生成）。 |
 | [配置与模板](reference/configuration.md) | 配置与数据目录、`servers.yaml` / `assets.yaml` 字段、`notifications.yaml` 渠道与 payload、模板 frontmatter、SQLite 落盘位置。 |
 | [服务器与资产](reference/server_ops.md) | 服务器清单与标签检索、`server info`、`ssh` / `exec` / `cp` / `sftp`、远端容器 `ps` / `logs`、业务资产模型与引用保护。 |
-| [备份、还原与调度指南](reference/backup.md) | `backups.yaml` 字段规范、备份命令、容器智能备份、还原参数与场景、Cron 调度与 systemd 部署。 |
+| [备份、还原与调度指南](reference/backup.md) | `backups.yaml` 字段规范、备份命令、Docker 支持边界矩阵、还原参数与场景、Cron 调度与 systemd 部署。 |
 | [1Password 备份与跨机同步指南](reference/onepassword.md) | `ops 1p` 的备份、还原、状态、配置与自检，以及已知边界与常见问题。 |
 
 ### 解释 (Explanation)

@@ -34,7 +34,7 @@
 | `ops completion [bash\|zsh\|fish\|powershell]` | 生成 Shell 补全脚本或自动安装 |
 | `ops cp [flags] <source> <destination>` | 经 SFTP 在本地与远端服务器之间拷贝文件或目录 |
 | `ops daemon` | 运行后台调度器守护进程，自动执行定时备份 |
-| `ops docker` | 发现远端 Docker 服务并报告迁移能力 |
+| `ops docker` | 发现、规划并迁移常见 Docker 服务 |
 | `ops docker apply <plan-file>` | 按迁移 plan 安全执行 Docker 服务迁移 |
 | `ops docker health <plan-file>` | 迁移后检查容器、端口、数据库与可选 HTTP 是否可用 |
 | `ops docker inspect <server> <container>` | 查看单个容器的迁移分析与远端能力 |
@@ -523,10 +523,19 @@ cron 表达式执行备份作业。
 
 ### `ops docker`
 
-只读地发现远端服务器上的 Docker 服务，并报告每个容器的迁移能力与风险。
+发现远端服务器上的 Docker 服务，生成可审查的迁移 plan，并按 plan 执行迁移。
 
-本组命令只做只读探测（docker ps / docker inspect / 环境能力检查），不会执行数据库
-dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何文件。
+list / inspect / plan / plan show / health 只做只读探测（docker ps / docker inspect /
+环境能力检查），不会执行数据库 dump、volume 归档、restic 备份或 Compose up，也不会修改
+远端任何文件。apply 会执行备份、恢复与启动；执行前会按当前环境重新检查源容器漂移、
+目标冲突、端口、路径、权限、Docker / Compose、restic、helper 镜像、镜像获取方式和数据库
+条件，发现 hard blocker 时停止。
+
+支持范围是常见单主机 Docker 服务：Compose、普通单容器、named volume、常规 bind mount，
+以及 MySQL/MariaDB/Percona/PostgreSQL 的逻辑导出。这不等于任意 Docker workload 都能无损
+迁移：任意 Docker runtime 字段、离线镜像、任意数据库、GPU/宿主机资源、DNS/证书/反向代理
+和完整手写 SSH 配置不在保证范围内。完整支持边界见 docs/reference/backup.md 的
+「Docker 支持边界矩阵」。
 
 子命令：
 ```
@@ -535,6 +544,7 @@ dump、volume 归档、restic 备份或 Compose up，也不会修改远端任何
   plan     为一个或多个容器生成只读、可保存的迁移 plan
   plan show 读取并显示已保存的 plan
   apply    按 plan 重新校验源/目标后安全执行迁移
+  health   按 plan 只读检查容器、端口、数据库与可选 HTTP
 ```
 
 该命令没有自己的 flag。
