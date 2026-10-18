@@ -230,6 +230,98 @@ ops export ssh-config --write --filter env=prod
 > - **密码模式及 Windows**：桥接标准终端，并通过受限临时文件（0700 临时目录 + 0600 文件，连接退出后自动写零并删除）向 OpenSSH `SSH_ASKPASS` 传递密码；密码不出现在命令参数、环境变量或进程列表中。凭据必须是本地明文——`servers.yaml` 中残留的 `op://` 引用会在连接前被拒绝，并提示运行 `ops 1p restore` 迁移。
 > - **老旧主机兼容（`legacy-ssh`）**：针对仅提供 `ssh-rsa` / `ssh-dss` 的老旧主机，在 `servers.yaml` 中为其添加 `legacy-ssh` / `legacy_ssh` / `legacy-rsa` 标签或 `legacy-ssh: "true"` label 即可受控开启算法向下兼容（现代主机不受影响）。对于 `ops exec` / `ops cp` 等基于 Go `x/crypto/ssh` 的底层非交互调用，已默认支持 `ssh-rsa` 主机密钥协商；若主机仅提供 `ssh-dss`（DSA 算法已被 Go 官方库废弃），建议使用系统 OpenSSH 交互命令 `ops ssh` 登录维护。
 
+### 新 WSL 的 SSH 环境恢复 (`ops server setup`)
+
+换电脑、重装 WSL 或切换到新的发行版后，先跑一次只读体检：
+
+```bash
+ops server setup
+```
+
+它会检查三件事，不联系 1Password、不写 SSH config、也不写 `known_hosts`：
+
+1. `servers.yaml` 是否已有服务器清单；
+2. 清单中由 OpsPulse 管理的私钥是否存在，权限是否保持 `0600`；
+3. 每台服务器的主机密钥是否已在 `known_hosts` 中，缺失时显示算法、SHA256 指纹和
+   探测来源（默认来自 `ssh-keyscan <host>`）。
+
+从 1Password 恢复清单与凭据时，复用现有的 `ops 1p restore`：
+
+```bash
+ops server setup --restore
+```
+
+恢复后默认仍只做检查。要重建系统 `ssh` 使用的配置，再加 `--write-config`：
+
+```bash
+ops server setup --write-config
+```
+
+它**只替换** `~/.ssh/config` 中 `# >>> BEGIN OpsPulse Managed Hosts >>>` 与
+`# <<< END OpsPulse Managed Hosts <<<` 之间的区块。手写的 `Host`、`Include`、`Match`、
+`ProxyCommand`、`Host *` 等内容原样保留；managed marker 重复、缺失或顺序颠倒时直接拒绝写入，
+不会猜测用户意图。`--config <path>` 可以指定另一个 SSH config，但必须同时给
+`--write-config`。
+
+### known_hosts：只登记你确认过的指纹
+
+主机密钥缺失时，可以按服务器选择性登记：
+
+```bash
+# 只检查并登记 web-01；交互式展示指纹后询问确认
+ops server setup --trust web-01
+
+# 登记本次检查中所有缺失的主机；仍然逐项展示指纹并要求确认
+ops server setup --trust-all
+
+# 非交互脚本中显式接受；没有 --yes 会直接拒绝
+ops server setup --trust-all --yes
+
+# 无人值守恢复清单与凭据（包括明文密码写入）
+ops server setup --restore --yes
+```
+
+`known_hosts` 的备份内容**不会**被当作无条件信任源。OpsPulse 不读取备份里的旧
+`known_hosts` 自动覆盖本机；它只根据当前主机实际返回的公钥展示指纹，用户明确确认后
+才追加。已经记录了同一主机的**同算法但不同密钥**时，命令 fail-closed 并拒绝写入，
+需要先通过可信渠道核对指纹，再执行提示的
+`ssh-keygen -R <host> -f <known_hosts>` 清除旧条目。已有条目不会被静默替换。
+
+`--skip-probe` 只用于离线检查清单和私钥；它不会展示指纹，也不能与 `--trust-all` 同时使用。
+`--yes` 同时作为既有 `ops 1p restore` 的无人值守确认；它只跳过交互询问，不会绕过
+已知主机密钥冲突等硬阻止项。
+
+### setup 后的批量连通性检查
+
+setup 默认会在结尾给出批量入口建议：
+
+```bash
+ops doctor -f all
+```
+
+也可以在 setup 当次逐台验证：
+
+```bash
+ops server setup --connect
+ops server setup --trust web-01 --connect
+```
+
+任一台连接失败都会逐台报告，并让 setup 以非零状态结束。`ops doctor -f all` 还会额外检查
+磁盘与 Docker 状态；只想检查 SSH 时用 `ops server test <name>` 或 `ops test <name>`。
+
+### WSL 下的两个边界
+
+- **1Password CLI 必须是 Windows 版 `op.exe`**：WSL 里的 Linux 版 `op` 连不上 Windows
+  桌面端授权。OpsPulse 会自动探测，也可用 `OPSPULSE_OP_PATH` 强制指定。
+- **私钥与 GUI 客户端镜像不是同一个路径**：OpsPulse 的私钥落在当前 WSL 的
+  `~/.ssh/opspulse_<server>`；Windows GUI 客户端需要的是 Windows 用户目录下的
+  `.ssh/opspulse` 镜像。不要在 WSL 里把两者当成同一个文件，也不要把私钥随意复制到
+  `/mnt/c` 后认为 POSIX `0600` 仍然有效——该处权限由 Windows ACL 决定。
+
+> 安全默认值：`ops server setup` 的只读体检不调用 `op`、不改配置；`--restore` 走既有
+> 1Password 恢复路径；主机密钥导入必须显式 `--trust` / `--trust-all`，非交互环境还必须
+> 显式 `--yes`。
+
 ---
 
 ## 4. 远程单命令快速执行 (`exec`)

@@ -127,6 +127,68 @@ func TestMergeSSHConfigContent_AppendAndReplace(t *testing.T) {
 	}
 }
 
+func TestMergeSSHConfigContentPreservesIncludeMatchAndHandwrittenBlocks(t *testing.T) {
+	existing := `Include ~/.ssh/config.d/*.conf
+
+Host handwritten
+    HostName handwritten.example
+    ProxyCommand ssh -W %h:%p bastion
+
+Match host internal-* exec "test -f ~/.ssh/internal"
+    User deploy
+    IdentityFile ~/.ssh/internal_key
+
+Host *
+    ServerAliveInterval 30
+`
+	block := RenderSSHConfig([]Server{{Name: "managed", Host: "203.0.113.20", User: "ops"}})
+	merged := MergeSSHConfigContent(existing, block)
+
+	for _, want := range []string{
+		"Include ~/.ssh/config.d/*.conf",
+		"Host handwritten",
+		"ProxyCommand ssh -W %h:%p bastion",
+		"Match host internal-* exec \"test -f ~/.ssh/internal\"",
+		"Host *",
+		"ServerAliveInterval 30",
+		MarkerBegin,
+		"Host managed",
+		MarkerEnd,
+	} {
+		if !strings.Contains(merged, want) {
+			t.Errorf("merged config lost %q:\n%s", want, merged)
+		}
+	}
+	if strings.Index(merged, "Include") > strings.Index(merged, MarkerBegin) {
+		t.Error("the managed block should be appended after hand-written directives")
+	}
+}
+
+func TestValidateSSHConfigUpdateRejectsAmbiguousMarkers(t *testing.T) {
+	block := RenderSSHConfig([]Server{{Name: "web", Host: "203.0.113.1"}})
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "duplicate begin", content: MarkerBegin + "\n" + block + "\n" + MarkerBegin + "\n"},
+		{name: "end without begin", content: "Host x\n" + MarkerEnd + "\n"},
+		{name: "markers out of order", content: MarkerEnd + "\n" + MarkerBegin + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateSSHConfigUpdate(tt.content); err == nil {
+				t.Fatal("expected an inconsistent marker error")
+			}
+		})
+	}
+	if err := ValidateSSHConfigUpdate("Host handwritten\n"); err != nil {
+		t.Errorf("a file without markers must be valid: %v", err)
+	}
+	if err := ValidateSSHConfigUpdate(block); err != nil {
+		t.Errorf("a single managed block must be valid: %v", err)
+	}
+}
+
 func TestUpdateSSHConfigFile(t *testing.T) {
 	tempDir := t.TempDir()
 	configPath := filepath.Join(tempDir, "config")

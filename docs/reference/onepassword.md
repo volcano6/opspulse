@@ -15,6 +15,18 @@ ops 1p backup     # 把本机凭据与整份 servers.yaml 上传到 1Password
 ops 1p restore    # 把 1Password 里的凭据写回本机磁盘
 ```
 
+换到新的 WSL、重装发行版，或想一次完成“恢复清单与私钥、检查 known_hosts、重建 managed
+SSH config”时，先看 [服务器与资产 § 新 WSL 的 SSH 环境恢复](server_ops.md#新-wsl-的-ssh-环境恢复-ops-server-setup)：
+
+```bash
+ops server setup --restore                 # 复用 ops 1p restore，只恢复清单与凭据
+ops server setup --write-config            # 只更新 ~/.ssh/config 的 managed 区块
+ops server setup --trust web-01            # 展示指纹并选择性登记一台主机
+```
+
+`ops server setup` 不会把 1Password 里的 `known_hosts` 备份当成无条件信任源；主机密钥
+导入必须显式确认，非交互环境还必须加 `--yes`。只读体检本身不联系 1Password。
+
 > 如果你在 `servers.yaml` 里看到 `op://` 引用，说明那是旧版本留下的残留。
 > 现在的运行时**不会再解析它**，`ops ssh` 会直接报错并让你跑 `ops 1p restore` 迁移到本地凭据。
 
@@ -460,6 +472,7 @@ backups:
 | `ops 1p status` | **离线**，只读 `servers.yaml`，从不弹授权框 |
 | `ops 1p status --remote` | 额外查询保险库并读取各机器的备份文档，需授权 |
 | `ops 1p config --offline` | 只读写本地记忆的默认值，不联系 CLI |
+| `ops server setup` | 只读检查清单、managed 私钥与 known_hosts；`--restore` 复用 `ops 1p restore`，主机密钥导入需显式确认 |
 | `ops export ssh-config` | 系统 `ssh` 读不了 `op://`；若某主机仍是引用，则不写 `IdentityFile`，只留注释指引 |
 | `backups.yaml` 的 `env: op://` | **仍然支持**：任务执行时按需解析注入，属独立的运行时特性 |
 

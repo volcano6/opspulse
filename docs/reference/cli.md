@@ -62,6 +62,7 @@
 | `ops server list` | 列出所有已配置的服务器 |
 | `ops server remove <name>` | 从服务器清单中删除服务器 |
 | `ops server set <name>` | 增量更新已有服务器的指定字段 |
+| `ops server setup [server...]` | 在新 WSL 中安全重建服务器清单、私钥、SSH config 与 known_hosts |
 | `ops server setup-key <name>` | 用已配置的密码生成并安装 SSH 密钥 |
 | `ops server test <name>` | 测试服务器的 SSH 连通性 |
 | `ops sftp [server] [flags]` | 唤起 GUI SFTP 客户端（WinSCP/Xftp/FileZilla）或 CLI 管理远端文件 |
@@ -1070,6 +1071,50 @@ success / partial / failed / dry-run。
 | `--no-skip-batch` | - | `false` | 解除该服务器的 skip-batch 限制 |
 | `--port` | `-p` | `0` | 新的 SSH 端口 |
 | `--skip-batch` | - | `false` | 将该服务器排除在隐式批量操作之外（如 ops exec -f all、ops doctor） |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops server setup [server...]`
+
+检查并恢复新 WSL 上的 SSH 工作环境，不覆盖手写 SSH 配置。
+
+默认只做只读检查：服务器清单、OpsPulse 管理的私钥、known_hosts 中已有与
+缺失的主机，以及每条缺失主机密钥的算法、SHA256 指纹和来源。检查不会联系
+1Password、不会修改 ~/.ssh/config，也不会写入 known_hosts。
+
+按需写入：
+```
+  --restore        复用 'ops 1p restore' 恢复 inventory 与全部凭据
+  --write-config   只更新 ~/.ssh/config 中的 OpsPulse managed 区块
+  --trust <name>   只登记点名服务器的主机密钥（可重复）
+  --trust-all      登记本次检查中所有缺失主机（仍需交互确认；非交互需 --yes）
+  --yes            无人值守确认 --restore 的明文密码写入与主机密钥导入
+```
+
+known_hosts 的备份内容不会被无条件信任。每台主机先展示算法与 SHA256 指纹，
+用户明确确认后才写入；已记录但指纹不同的主机会被拒绝，需先用
+'ssh-keygen -R <host>' 显式移除旧条目。非交互 shell 中没有 --yes 的
+--trust-all 会直接失败。--yes 不会绕过硬阻止项（如 known_hosts 指纹冲突）。
+
+示例：
+```
+  ops server setup                          # 只读体检
+  ops server setup --restore                # 恢复清单与私钥
+  ops server setup --write-config           # 更新 managed SSH config
+  ops server setup --trust web-01 --connect # 登记一台并做连通性检查
+  ops server setup --trust-all --yes        # 明确接受全部缺失主机
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--config` | - | (空) | SSH config 路径（默认 ~/.ssh/config；需配合 --write-config） |
+| `--connect` | - | `false` | setup 结束后逐台验证 SSH 连通性 |
+| `--restore` | - | `false` | 复用 'ops 1p restore' 恢复服务器清单与全部凭据 |
+| `--skip-probe` | - | `false` | 跳过 ssh-keyscan 探测（只检查清单与私钥） |
+| `--trust` | - | `[]` | 登记指定服务器的主机密钥（可重复） |
+| `--trust-all` | - | `false` | 登记本次检查中所有缺失的主机密钥 |
+| `--write-config` | - | `false` | 只更新 ~/.ssh/config 中的 OpsPulse managed 区块 |
+| `--yes` | `-y` | `false` | 无人值守确认 --restore 的明文密码写入与主机密钥导入 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 

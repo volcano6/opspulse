@@ -165,7 +165,7 @@ servers:
     host: 10.0.0.10
     user: ubuntu
     key_path: $WORK_NATIVE/id_web
-  - name: vps_01
+  - name: vps-01
     host: 10.0.0.11
     user: root
     password: $LOCAL_PW
@@ -212,7 +212,7 @@ check "no payload targets the SSH_KEY category" 0 "$(grep -c 'category=SSH_KEY' 
 check "every payload written is a SECURE_NOTE document" 2 "$(grep -c 'category=SECURE_NOTE' "$STUB_OP_LOG")"
 check "the document is versioned" 1 "$(grep -c '^version: 1$' "$NOTE_STORE")"
 check "the document names the machine" 1 "$(grep -c '^machine: ' "$NOTE_STORE")"
-check "the document carries the whole server list" 1 "$(grep -c 'name: vps_01' "$NOTE_STORE")"
+check "the document carries the whole server list" 1 "$(grep -c 'name: vps-01' "$NOTE_STORE")"
 check "a credential-less server travels too" 1 "$(grep -c 'name: bare' "$NOTE_STORE")"
 check "the document carries the private key" 1 "$(grep -c 'BEGIN OPENSSH PRIVATE KEY' "$NOTE_STORE")"
 
@@ -262,7 +262,7 @@ servers:
     host: 10.0.0.10
     user: ubuntu
     key_path: $WORK_NATIVE/no-such-key
-  - name: vps_01
+  - name: vps-01
     host: 10.0.0.11
     user: root
     password: $LOCAL_PW
@@ -390,7 +390,7 @@ servers:
     host: 10.0.0.10
     user: ubuntu
     key_path: $WORK_NATIVE/id_web
-  - name: vps_01
+  - name: vps-01
     host: 10.0.0.11
     user: root
     password: $LOCAL_PW
@@ -434,26 +434,26 @@ check "the missing key file is named" 1 "$(grep -c 'point at a private key file 
 check "the all-local reassurance is withheld" 0 "$(grep -c 'resolve their credentials from local disk' "$WORK_NATIVE/status-missing.out")"
 
 # The restore scenarios read the backup document seeded above, which carries
-# web's key and vps_01's password. They rewrite servers.yaml to the state a new
+# web's key and vps-01's password. They rewrite servers.yaml to the state a new
 # machine would be in, so the credentials really do come from the document.
 echo
 echo "==> a restore that would write a password refuses in a pipe"
 cat > "$YAML" <<YAML
 servers:
-  - name: vps_01
+  - name: vps-01
     host: 10.0.0.11
     user: root
 YAML
 # stdin is a pipe on purpose. Redirecting from /dev/null would not do: /dev/null
 # is a character device, so stdinIsInteractive() would report a terminal and the
 # confirmation prompt would block a non-interactive run.
-PIPED="$(printf '' | STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p restore vps_01 2>&1 || true)"
+PIPED="$(printf '' | STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p restore vps-01 2>&1 || true)"
 check "the piped restore points at --yes" 1 "$(printf '%s' "$PIPED" | grep -c -- '--yes')"
 check "the piped restore wrote nothing" 0 "$(grep -c "$LOCAL_PW" "$YAML")"
 
 echo
 echo "==> restore writes a password back into servers.yaml (--yes)"
-STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p restore vps_01 --yes > "$WORK_NATIVE/restore-pw.out" 2>&1
+STUB_OP_EXISTING="$BLOB_TITLE" "$OPS" 1p restore vps-01 --yes > "$WORK_NATIVE/restore-pw.out" 2>&1
 check "the password came out of the backup document" 1 "$(grep -c 'from the 1Password backup document' "$WORK_NATIVE/restore-pw.out")"
 check "the plaintext password is restored" 1 "$(grep -c "password: $LOCAL_PW" "$YAML")"
 check "the restore warns what it wrote" 1 "$(grep -c 'Wrote 1 plaintext password' "$WORK_NATIVE/restore-pw.out")"
@@ -505,13 +505,13 @@ servers:
     host: 10.0.0.10
     user: ubuntu
     key_path: op://Personal/opspulse_web_key/opspulse_private_key
-  - name: vps_01
+  - name: vps-01
     host: 10.0.0.11
     user: root
-    password: op://Personal/opspulse_vps_01_password/password
+    password: op://Personal/opspulse_vps-01_password/password
 YAML
 rm -f "$KEY" "$KEY.pub"
-MIGRATE="$(STUB_OP_EXISTING=opspulse_web_key,opspulse_vps_01_password "$OPS" 1p restore --yes 2>&1)"
+MIGRATE="$(STUB_OP_EXISTING=opspulse_web_key,opspulse_vps-01_password "$OPS" 1p restore --yes 2>&1)"
 check "the key was migrated to disk" 1 "$([ -f "$KEY" ] && echo 1 || echo 0)"
 check "the password was migrated to plaintext" 1 "$(grep -c "password: stub-vault-pw" "$YAML")"
 check "no op:// reference is stranded" 0 "$(grep -c 'op://' "$YAML")"
@@ -649,6 +649,57 @@ OFFLINE_RC=0
 check "the offline pass succeeds" 0 "$OFFLINE_RC"
 check "it says the round trips were skipped" 1 "$(grep -c '1Password round trips: skipped by --offline' "$WORK_NATIVE/doctor-offline.out")"
 check "it invoked op zero times" 0 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
+
+echo
+echo "==> server setup restores a key-only inventory, then stays read-only"
+# The setup path is an orchestration seam over the existing restore code, not a
+# second 1Password implementation. A fresh OPSPULSE_HOME proves the inventory
+# came back from the backup document; a key-only fixture avoids the plaintext
+# password gate, which has its own scenarios above.
+# Use a POSIX filesystem for this scenario. The repository lives on DrvFs
+# under WSL, where chmod is a no-op and the restored key would always look
+# 0777; setup must be able to report a genuinely 0600 managed key here.
+SETUP_TMP="$(mktemp -d)"
+SETUP_HOME="$SETUP_TMP/setup-home"
+SETUP_FAKEHOME="$SETUP_TMP/fakehome"
+SETUP_KEY="$SETUP_FAKEHOME/.ssh/opspulse_setupkey"
+mkdir -p "$SETUP_HOME" "$SETUP_FAKEHOME/.ssh"
+rm -rf "$SETUP_HOME" "$SETUP_KEY" "$SETUP_KEY.pub"
+mkdir -p "$SETUP_HOME" "$SETUP_FAKEHOME/.ssh"
+cat > "$YAML" <<YAML
+servers:
+  - name: setupkey
+    host: 10.0.0.41
+    user: root
+    key_path: $WORK_NATIVE/id_web
+YAML
+seed_blob
+SETUP_RC=0
+STUB_OP_EXISTING="$BLOB_TITLE" OPSPULSE_HOME="$SETUP_HOME" HOME="$SETUP_FAKEHOME" USERPROFILE="$SETUP_FAKEHOME" \
+	"$OPS" server setup --restore --skip-probe > "$WORK_NATIVE/setup.out" 2>&1 || SETUP_RC=$?
+check "setup --restore succeeds" 0 "$SETUP_RC"
+check "the inventory was restored from the backup document" 1 "$(grep -c 'name: setupkey' "$SETUP_HOME/servers.yaml")"
+check "the managed private key was restored" 1 "$([ -f "$SETUP_KEY" ] && echo 1 || echo 0)"
+check "the restored key is the backed-up copy" "$KEY_WANT" "$(key_fpr "$SETUP_KEY")"
+check "setup reports its read-only checks" 1 "$(grep -c 'managed private key present' "$WORK_NATIVE/setup.out")"
+check "setup reports the probe was skipped" 1 "$(grep -c 'host key check skipped' "$WORK_NATIVE/setup.out")"
+check "setup offers a batch connectivity entry" 1 "$(grep -c 'ops doctor -f all' "$WORK_NATIVE/setup.out")"
+check "setup never prints key material" 0 "$(grep -c 'OPENSSH PRIVATE KEY' "$WORK_NATIVE/setup.out")"
+check "setup --skip-probe writes no known_hosts" 0 "$([ -e "$SETUP_FAKEHOME/.ssh/known_hosts" ] && echo 1 || echo 0)"
+
+# A second run without --restore must not contact 1Password or change anything.
+SETUP_BEFORE="$(mktemp)"
+cp "$SETUP_HOME/servers.yaml" "$SETUP_BEFORE"
+: > "$STUB_OP_LOG"
+SETUP_READONLY_RC=0
+OPSPULSE_HOME="$SETUP_HOME" HOME="$SETUP_FAKEHOME" USERPROFILE="$SETUP_FAKEHOME" \
+	"$OPS" server setup --skip-probe > "$WORK_NATIVE/setup-readonly.out" 2>&1 || SETUP_READONLY_RC=$?
+check "a read-only setup succeeds" 0 "$SETUP_READONLY_RC"
+check "a read-only setup contacts no 1Password" 0 "$(wc -l < "$STUB_OP_LOG" | tr -d ' ')"
+check "a read-only setup leaves servers.yaml byte for byte unchanged" 1 "$(cmp -s "$SETUP_BEFORE" "$SETUP_HOME/servers.yaml" && echo 1 || echo 0)"
+check "a read-only setup leaves the key untouched" "$KEY_WANT" "$(key_fpr "$SETUP_KEY")"
+rm -f "$SETUP_BEFORE"
+rm -rf "$SETUP_TMP"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

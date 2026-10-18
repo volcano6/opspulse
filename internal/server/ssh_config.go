@@ -144,6 +144,9 @@ func UpdateSSHConfigFile(filePath string, servers []Server) (string, int, error)
 	} else if !os.IsNotExist(readErr) {
 		return "", 0, fmt.Errorf("read existing ssh config %s: %w", filePath, readErr)
 	}
+	if err := ValidateSSHConfigUpdate(existingContent); err != nil {
+		return "", 0, fmt.Errorf("refusing to update %s: %w", filePath, err)
+	}
 
 	newContent := MergeSSHConfigContent(existingContent, block)
 
@@ -210,4 +213,35 @@ func MergeSSHConfigContent(existing, block string) string {
 		return normBlock
 	}
 	return trimmed + "\n\n" + normBlock
+}
+
+// ValidateSSHConfigUpdate checks the one structural failure MergeSSHConfigContent
+// cannot recover from: a managed marker that appears more than once, or an end
+// marker without a matching begin marker.
+//
+// Replacing only the first block in a file with duplicated markers would leave
+// stale managed Host entries behind, which is precisely the kind of partial
+// rewrite this command must not do.
+func ValidateSSHConfigUpdate(existing string) error {
+	norm := strings.ReplaceAll(existing, "\r\n", "\n")
+	begins := strings.Count(norm, MarkerBegin)
+	ends := strings.Count(norm, MarkerEnd)
+	switch {
+	case begins == 0 && ends == 0:
+		return nil
+	case begins == 1 && ends == 1:
+		if strings.Index(norm, MarkerBegin) > strings.Index(norm, MarkerEnd) {
+			return fmt.Errorf("managed SSH config markers are out of order; refusing to rewrite %s", "the file")
+		}
+		return nil
+	default:
+		return fmt.Errorf("managed SSH config markers are inconsistent (begin=%d, end=%d); fix the markers by hand before running setup", begins, ends)
+	}
+}
+
+// HasManagedSSHBlock reports whether content carries exactly one complete
+// managed block.
+func HasManagedSSHBlock(content string) bool {
+	return ValidateSSHConfigUpdate(content) == nil &&
+		strings.Count(strings.ReplaceAll(content, "\r\n", "\n"), MarkerBegin) == 1
 }
