@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 func TestSSHRejectsBareArgumentsInTheSSHOptionSlot(t *testing.T) {
@@ -146,7 +148,7 @@ func TestBuildSSHArgs(t *testing.T) {
 				JumpHost: "bastion",
 			},
 			want: []string{"ssh",
-				"-o", "ProxyCommand=ssh -W %h:%p root@1.1.1.1",
+				"-o", "ProxyCommand=ssh -W %h:%p " + shellquote.Quote("root@1.1.1.1"),
 				"ubuntu@vps2",
 			},
 		},
@@ -160,7 +162,9 @@ func TestBuildSSHArgs(t *testing.T) {
 				JumpHost: "bastion-key",
 			},
 			want: []string{"ssh",
-				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o IdentitiesOnly=yes -i %s -p 2222 root@1.1.1.2", filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
+				"-o", fmt.Sprintf("ProxyCommand=ssh -W %%h:%%p -o IdentitiesOnly=yes -i %s -p 2222 %s",
+					shellquote.Quote(filepath.ToSlash(filepath.Join(home, ".ssh/jump.pem"))),
+					shellquote.Quote("root@1.1.1.2")),
 				"ubuntu@vps2",
 			},
 		},
@@ -189,7 +193,7 @@ func TestBuildSSHArgs(t *testing.T) {
 				JumpHost: "bastion-legacy",
 			},
 			want: []string{"ssh",
-				"-o", "ProxyCommand=ssh -W %h:%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa root@1.1.1.3",
+				"-o", "ProxyCommand=ssh -W %h:%p -o HostKeyAlgorithms=+ssh-rsa,ssh-dss -o PubkeyAcceptedKeyTypes=+ssh-rsa " + shellquote.Quote("root@1.1.1.3"),
 				"ubuntu@vps3",
 			},
 		},
@@ -197,11 +201,141 @@ func TestBuildSSHArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildSSHArgs("ssh", tt.srv, tt.extraArgs, tt.remoteCmd, testStore)
+			got, err := buildSSHArgs("ssh", tt.srv, tt.extraArgs, tt.remoteCmd, testStore)
+			if err != nil {
+				t.Fatalf("buildSSHArgs() error = %v", err)
+			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("buildSSHArgs() =\n%v\nwant:\n%v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildSSHArgsQuotesJumpHostFields(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	testStore := server.NewDefaultStore()
+	_ = testStore.Save(server.Server{
+		Name:    "bastion",
+		Host:    "bastion.example; touch pwned",
+		User:    "root$(touch pwned)",
+		Port:    2222,
+		KeyPath: "~/.ssh/my key's `touch pwned`.pem",
+	})
+
+	srv := server.Server{
+		Name:     "internal",
+		Host:     "10.0.0.5",
+		User:     "deploy",
+		JumpHost: "bastion",
+	}
+	got, err := buildSSHArgs("ssh", srv, nil, "", testStore)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
+
+	var proxy string
+	for i, arg := range got {
+		if strings.HasPrefix(arg, "ProxyCommand=") {
+			proxy = arg
+			if i+1 >= len(got) {
+				t.Fatal("ProxyCommand unexpectedly occupies the destination slot")
+			}
+		}
+	}
+	if proxy == "" {
+		t.Fatalf("buildSSHArgs() = %v, want a ProxyCommand", got)
+	}
+
+	keyPath := filepath.ToSlash(filepath.Join(home, ".ssh/my key's `touch pwned`.pem"))
+	jumpTarget := "root$(touch pwned)@bastion.example; touch pwned"
+	for _, want := range []string{
+		"-i " + shellquote.Quote(keyPath),
+		shellquote.Quote(jumpTarget),
+		"-W %h:%p",
+	} {
+		if !strings.Contains(proxy, want) {
+			t.Errorf("ProxyCommand = %q, missing %q", proxy, want)
+		}
+	}
+	if strings.Contains(proxy, "-i "+keyPath) {
+		t.Errorf("key path leaked into the shell unquoted: %q", proxy)
+	}
+	if strings.Contains(proxy, " "+jumpTarget) {
+		t.Errorf("jump destination leaked into the shell unquoted: %q", proxy)
+	}
+
+	// Prove the quoting rather than matching text: let /bin/sh tokenise the
+	// generated command and print each argument. The injected substitutions
+	// must remain data, and the command must never run.
+	command := strings.TrimPrefix(proxy, "ProxyCommand=")
+	command = strings.Replace(command, "ssh", "printf '%s\\n'", 1)
+	command = strings.ReplaceAll(command, "%h:%p", "HOST:PORT")
+	cmd := exec.Command("sh", "-c", command)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("sh -c generated ProxyCommand: %v", err)
+	}
+	argv := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	wantArgv := []string{
+		"-W",
+		"HOST:PORT",
+		"-o",
+		"IdentitiesOnly=yes",
+		"-i",
+		keyPath,
+		"-p",
+		"2222",
+		jumpTarget,
+	}
+	if !reflect.DeepEqual(argv, wantArgv) {
+		t.Errorf("tokenised ProxyCommand =\n%q\nwant:\n%q", argv, wantArgv)
+	}
+}
+
+func TestBuildSSHArgsRejectsUnresolvedJumpHost(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	testStore := server.NewDefaultStore()
+	srv := server.Server{
+		Name:     "internal",
+		Host:     "10.0.0.5",
+		User:     "deploy",
+		JumpHost: "ghost; touch pwned",
+	}
+
+	got, err := buildSSHArgs("ssh", srv, nil, "", testStore)
+	if err == nil {
+		t.Fatalf("buildSSHArgs() = %v, want an unresolved jump host error", got)
+	}
+	for _, want := range []string{"failed to resolve jump host", srv.JumpHost, srv.Name} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestBuildSSHArgsPreservesSlashInJumpKeyPath(t *testing.T) {
+	setTestHome(t, t.TempDir())
+	testStore := server.NewDefaultStore()
+	_ = testStore.Save(server.Server{
+		Name:    "bastion",
+		Host:    "1.1.1.1",
+		User:    "root",
+		KeyPath: "/tmp/jump keys/id_ed25519",
+	})
+
+	srv := server.Server{Name: "internal", Host: "10.0.0.5", JumpHost: "bastion"}
+	got, err := buildSSHArgs("ssh", srv, nil, "", testStore)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "-i "+shellquote.Quote("/tmp/jump keys/id_ed25519")) {
+		t.Errorf("buildSSHArgs() = %v, want a slash-preserving quoted jump key path", got)
+	}
+	if strings.Contains(joined, `\tmp\jump keys\id_ed25519`) {
+		t.Errorf("buildSSHArgs() = %v, jump key path contains Windows separators", got)
 	}
 }
 
@@ -215,7 +349,11 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 
 	// The socket directory does not exist yet. ssh exits 255 rather than
 	// degrading when it cannot bind a ControlPath, so the flags must be absent.
-	if got := buildSSHArgs("ssh", srv, nil, "", nil); strings.Contains(strings.Join(got, " "), "ControlMaster") {
+	got, err := buildSSHArgs("ssh", srv, nil, "", nil)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
+	if strings.Contains(strings.Join(got, " "), "ControlMaster") {
 		t.Fatalf("buildSSHArgs() = %v, want no multiplexing before the directory exists", got)
 	}
 
@@ -223,7 +361,10 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 		t.Fatalf("EnsureControlMasterDir() error: %v", err)
 	}
 
-	got := buildSSHArgs("ssh", srv, nil, "", nil)
+	got, err = buildSSHArgs("ssh", srv, nil, "", nil)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
 	joined := strings.Join(got, " ")
 	for _, want := range []string{"-o ControlMaster=auto", "-o ControlPath=", "-o ControlPersist=10m"} {
 		if !strings.Contains(joined, want) {
@@ -236,7 +377,10 @@ func TestBuildSSHArgsInjectsControlMaster(t *testing.T) {
 
 	// A user who passes their own ControlMaster option must win, which means
 	// ours has to appear earlier in argv.
-	overridden := buildSSHArgs("ssh", srv, []string{"-o", "ControlMaster=no"}, "", nil)
+	overridden, err := buildSSHArgs("ssh", srv, []string{"-o", "ControlMaster=no"}, "", nil)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
 	mine, theirs := -1, -1
 	for i, a := range overridden {
 		if a == "ControlMaster=auto" {
@@ -263,7 +407,10 @@ func TestBuildSSHArgsRespectsNoCMFlag(t *testing.T) {
 	sshNoControlMaster = true
 	defer func() { sshNoControlMaster = false }()
 
-	got := buildSSHArgs("ssh", srv, nil, "", nil)
+	got, err := buildSSHArgs("ssh", srv, nil, "", nil)
+	if err != nil {
+		t.Fatalf("buildSSHArgs() error = %v", err)
+	}
 	if strings.Contains(strings.Join(got, " "), "ControlMaster") {
 		t.Errorf("buildSSHArgs() = %v, want no ControlMaster when sshNoControlMaster is true", got)
 	}

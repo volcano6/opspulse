@@ -402,7 +402,7 @@ func TestJumpProxyCommandQuotesMetacharacters(t *testing.T) {
 		KeyPath: "/tmp/my keys/$(touch pwned).pem",
 	}
 
-	got := jumpProxyCommand(jump)
+	got := server.BuildJumpProxyCommand(jump)
 
 	// ssh(1) runs the string through /bin/sh -c, so an unquoted '$(' or space
 	// would be interpreted by the shell instead of reaching ssh as one path.

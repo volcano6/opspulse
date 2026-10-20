@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,115 @@ func TestServer_ValidatePort(t *testing.T) {
 			}
 			if s.Port != tc.want {
 				t.Errorf("Port = %d, want %d", s.Port, tc.want)
+			}
+		})
+	}
+}
+
+func TestServer_ValidateRejectsControlCharacters(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Server)
+		field  string
+	}{
+		{
+			name: "host newline",
+			mutate: func(s *Server) {
+				s.Host = "example.com\nProxyCommand touch pwned"
+			},
+			field: "host",
+		},
+		{
+			name: "host carriage return",
+			mutate: func(s *Server) {
+				s.Host = "example.com\rHost evil"
+			},
+			field: "host",
+		},
+		{
+			name: "host NUL",
+			mutate: func(s *Server) {
+				s.Host = "example.com\x00evil"
+			},
+			field: "host",
+		},
+		{
+			name: "user tab",
+			mutate: func(s *Server) {
+				s.User = "root\troot"
+			},
+			field: "user",
+		},
+		{
+			name: "key path newline",
+			mutate: func(s *Server) {
+				s.KeyPath = "/tmp/key\nIdentityFile /tmp/evil"
+			},
+			field: "key_path",
+		},
+		{
+			name: "jump host carriage return",
+			mutate: func(s *Server) {
+				s.JumpHost = "bastion\rProxyJump evil"
+			},
+			field: "jump_host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Server{Name: "srv", Host: "example.com"}
+			tt.mutate(&s)
+			err := s.Validate()
+			if err == nil {
+				t.Fatal("Validate() = nil, want a control-character error")
+			}
+			if !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "control character") {
+				t.Fatalf("Validate() error = %q, want it to identify %q", err, tt.field)
+			}
+		})
+	}
+}
+
+func TestServer_ValidateRejectsHostSurroundingWhitespace(t *testing.T) {
+	for _, host := range []string{" example.com", "example.com ", "\texample.com"} {
+		t.Run(host, func(t *testing.T) {
+			s := Server{Name: "srv", Host: host}
+			if err := s.Validate(); !errors.Is(err, ErrInvalidHost) {
+				t.Fatalf("Validate() error = %v, want ErrInvalidHost", err)
+			}
+		})
+	}
+}
+
+func TestServer_ValidateRejectsRoutingFieldSurroundingWhitespace(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Server)
+		field  string
+	}{
+		{
+			name: "user",
+			mutate: func(s *Server) {
+				s.User = " root"
+			},
+			field: "user",
+		},
+		{
+			name: "jump host",
+			mutate: func(s *Server) {
+				s.JumpHost = "bastion "
+			},
+			field: "jump_host",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Server{Name: "srv", Host: "example.com"}
+			tt.mutate(&s)
+			err := s.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "whitespace") {
+				t.Fatalf("Validate() error = %v, want a %s whitespace error", err, tt.field)
 			}
 		})
 	}

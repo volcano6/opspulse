@@ -99,7 +99,10 @@ var sshCmd = &cobra.Command{
 			}
 		}
 
-		sshArgs := buildSSHArgs(sshPath, *srv, extraArgs, sshExec, store)
+		sshArgs, err := buildSSHArgs(sshPath, *srv, extraArgs, sshExec, store)
+		if err != nil {
+			return err
+		}
 
 		// A remote command is not an interactive session for ops: no
 		// terminal-title rewriting and no output filtering, and the banner goes to
@@ -281,7 +284,7 @@ func preflightControlMaster(sshPath string, srv server.Server, reconnect bool) {
 // buildSSHArgs builds the argv for the system ssh client.
 //
 // remoteCmd, when non-empty, is the command ssh(1) runs on the far side.
-func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCmd string, store *server.Store) []string {
+func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCmd string, store *server.Store) ([]string, error) {
 	args := []string{binary}
 
 	// Session reuse comes first so a user-supplied '-o ControlMaster=...' in
@@ -312,41 +315,11 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCm
 			jumpStore := server.NewDefaultStore()
 			jumpSrv, err = jumpStore.Get(srv.JumpHost)
 		}
-
-		var proxyParts []string
-		proxyParts = append(proxyParts,
-			"ssh",
-			"-W", "%h:%p",
-		)
-
-		if err == nil {
-			if jumpSrv.IsLegacySSH() {
-				proxyParts = append(proxyParts,
-					"-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss",
-					"-o", "PubkeyAcceptedKeyTypes=+ssh-rsa",
-				)
-			}
-			identity := jumpSrv.KeyPath
-			if identity != "" {
-				expandedJumpKey := filepath.ToSlash(expandHome(identity))
-				if strings.Contains(expandedJumpKey, " ") {
-					expandedJumpKey = fmt.Sprintf(`"%s"`, expandedJumpKey)
-				}
-				proxyParts = append(proxyParts, "-o", "IdentitiesOnly=yes", "-i", expandedJumpKey)
-			}
-			if jumpSrv.Port > 0 && jumpSrv.Port != 22 {
-				proxyParts = append(proxyParts, "-p", strconv.Itoa(jumpSrv.Port))
-			}
-			user := jumpSrv.User
-			if user == "" {
-				user = "root"
-			}
-			proxyParts = append(proxyParts, fmt.Sprintf("%s@%s", user, jumpSrv.Host))
-		} else {
-			proxyParts = append(proxyParts, srv.JumpHost)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve jump host %q for server %q: %w", srv.JumpHost, srv.Name, err)
 		}
 
-		args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", strings.Join(proxyParts, " ")))
+		args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", server.BuildJumpProxyCommand(jumpSrv)))
 	}
 
 	// Port
@@ -383,7 +356,7 @@ func buildSSHArgs(binary string, srv server.Server, extraArgs []string, remoteCm
 		args = append(args, remoteCmd)
 	}
 
-	return args
+	return args, nil
 }
 
 func expandHome(path string) string {

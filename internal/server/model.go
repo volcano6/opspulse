@@ -120,6 +120,12 @@ func (s *Server) Validate() error {
 	if strings.TrimSpace(s.Host) == "" {
 		return ErrInvalidHost
 	}
+	if strings.TrimSpace(s.Host) != s.Host {
+		return fmt.Errorf("%w: host cannot have leading or trailing whitespace", ErrInvalidHost)
+	}
+	if err := rejectControlCharacters("host", s.Host); err != nil {
+		return err
+	}
 	if s.Port < 0 || s.Port > 65535 {
 		return fmt.Errorf("%w: %d is outside the valid range 1-65535", ErrInvalidPort, s.Port)
 	}
@@ -129,8 +135,32 @@ func (s *Server) Validate() error {
 	if strings.TrimSpace(s.User) == "" {
 		s.User = "root"
 	}
+	if strings.TrimSpace(s.User) != s.User {
+		return fmt.Errorf("invalid user: cannot have leading or trailing whitespace")
+	}
+	if err := rejectControlCharacters("user", s.User); err != nil {
+		return err
+	}
+	if err := rejectControlCharacters("key_path", s.KeyPath); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.JumpHost) != s.JumpHost {
+		return fmt.Errorf("invalid jump_host: cannot have leading or trailing whitespace")
+	}
+	if err := rejectControlCharacters("jump_host", s.JumpHost); err != nil {
+		return err
+	}
 	if s.JumpHost != "" && strings.EqualFold(strings.TrimSpace(s.JumpHost), strings.TrimSpace(s.Name)) {
 		return ErrSelfReferencingJumpHost
+	}
+	return nil
+}
+
+func rejectControlCharacters(field, value string) error {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid %s: contains ASCII control character %U", field, r)
+		}
 	}
 	return nil
 }

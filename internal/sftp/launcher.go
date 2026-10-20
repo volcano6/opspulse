@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/volcano6/opspulse/internal/server"
-	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 // Materialized1PKeyDir returns the directory where temporary private keys are stored
@@ -565,7 +564,7 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 		// sftp would dial the target's address directly and either time out on
 		// an unroutable private address or silently bypass the jump host.
 		if jumpSrv != nil {
-			args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", jumpProxyCommand(jumpSrv)))
+			args = append(args, "-o", fmt.Sprintf("ProxyCommand=%s", server.BuildJumpProxyCommand(jumpSrv)))
 		}
 
 		// Legacy hosts offer only ssh-rsa/ssh-dss, which modern OpenSSH refuses
@@ -598,34 +597,6 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, true)
 		return exec.Command(client.Path, targetURL), nil
 	}
-}
-
-// jumpProxyCommand renders the ssh(1) ProxyCommand that reaches the target
-// through jumpSrv.
-//
-// Every token the shell sees is single-quoted: ssh(1) hands the string to
-// /bin/sh -c, so a key path or user@host containing a space, quote or '$' must
-// not be able to smuggle extra arguments into the proxy ssh. '%h' and '%p'
-// stay unquoted because ssh(1) substitutes them after the shell has tokenised
-// the string.
-func jumpProxyCommand(jumpSrv *server.Server) string {
-	user := jumpSrv.User
-	if user == "" {
-		user = "root"
-	}
-
-	parts := []string{"ssh", "-W", "%h:%p"}
-	if jumpSrv.IsLegacySSH() {
-		parts = append(parts, "-o", "HostKeyAlgorithms=+ssh-rsa,ssh-dss", "-o", "PubkeyAcceptedKeyTypes=+ssh-rsa")
-	}
-	if jumpSrv.KeyPath != "" {
-		parts = append(parts, "-o", "IdentitiesOnly=yes", "-i", shellquote.Quote(expandKeyPath(jumpSrv.KeyPath)))
-	}
-	if jumpSrv.Port > 0 && jumpSrv.Port != 22 {
-		parts = append(parts, "-p", strconv.Itoa(jumpSrv.Port))
-	}
-	parts = append(parts, shellquote.Quote(fmt.Sprintf("%s@%s", user, jumpSrv.Host)))
-	return strings.Join(parts, " ")
 }
 
 // expandKeyPath resolves a leading ~ in an identity path the way ssh(1) would
