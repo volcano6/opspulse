@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -63,16 +64,24 @@ type RestoreRunner struct {
 	executor      executor.Executor
 	localExecutor *executor.LocalExecutor
 	serverStore   *server.Store
-	restoreRepo   *storage.RestoreRepo
+	restoreRepo   RestoreRecorder
 	backupStore   *Store
 	assetStore    *asset.Store
+}
+
+// RestoreRecorder persists restore audit records. *storage.RestoreRepo is the
+// production implementation; the interface lets tests exercise persistence
+// failures deterministically.
+type RestoreRecorder interface {
+	CreateRun(ctx context.Context, run *storage.RestoreRun) (int64, error)
+	UpdateRun(ctx context.Context, run *storage.RestoreRun) error
 }
 
 // NewRestoreRunner creates a new RestoreRunner with the required dependencies.
 func NewRestoreRunner(
 	exec executor.Executor,
 	serverStore *server.Store,
-	restoreRepo *storage.RestoreRepo,
+	restoreRepo RestoreRecorder,
 	backupStore *Store,
 	assetStore *asset.Store,
 ) *RestoreRunner {
@@ -128,7 +137,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	}
 	if r.restoreRepo != nil {
 		if _, err := r.restoreRepo.CreateRun(ctx, runRecord); err != nil {
-			_, _ = fmt.Fprintf(consoleOut, "Warning: failed to record initial restore run in database: %v\n", err)
+			return nil, fmt.Errorf("refusing to run restore %q: its audit record could not be created in SQLite: %w", job.Name, err)
 		}
 	}
 
@@ -251,8 +260,24 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		}
 
 		writeRestoreResult(consoleOut, result, runRecord.DurationSeconds)
-		r.updateRunRecord(ctx, runRecord)
-		return result, execErr
+		auditErr := r.updateRunRecord(ctx, runRecord, consoleOut)
+		if execErr != nil {
+			if auditErr != nil {
+				return result, errors.Join(
+					execErr,
+					fmt.Errorf("%w: %v", ErrRestoreAuditFailed, auditErr),
+				)
+			}
+			return result, execErr
+		}
+		if auditErr != nil {
+			return result, fmt.Errorf(
+				"restore dry-run for %q completed but its audit record could not be persisted: %w",
+				runRecord.JobName,
+				errors.Join(ErrRestoreUntracked, auditErr),
+			)
+		}
+		return result, nil
 	}
 
 	// 7. Execute actual restore
@@ -317,11 +342,30 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 	}
 
 	writeRestoreResult(consoleOut, result, runRecord.DurationSeconds)
-	r.updateRunRecord(ctx, runRecord)
+	auditErr := r.updateRunRecord(ctx, runRecord, consoleOut)
 
 	if logFile != nil {
 		_, _ = fmt.Fprintf(logFile, "\n=== Finished Restore Job at %s (Status: %s) ===\n",
 			finishedAt.Format(time.RFC3339), runRecord.Status)
+	}
+
+	if auditErr != nil {
+		if execErr == nil {
+			return result, fmt.Errorf(
+				"restore run %q completed but its audit record could not be persisted: %w",
+				runRecord.JobName,
+				errors.Join(ErrRestoreUntracked, auditErr),
+			)
+		}
+		return result, errors.Join(
+			execErr,
+			fmt.Errorf(
+				"restore run %q failed and its audit record could not be persisted: %w: %v",
+				runRecord.JobName,
+				ErrRestoreAuditFailed,
+				auditErr,
+			),
+		)
 	}
 
 	return result, execErr
@@ -348,14 +392,25 @@ func (r *RestoreRunner) failRun(
 	runRecord.DurationSeconds = finishedAt.Sub(runRecord.StartedAt).Seconds()
 	result.setStep(RestoreStepFiles, RestoreStepFailed, err.Error(), restoreStageHint(stage))
 	result.blockSteps("未执行：前置校验失败", RestoreStepVolumes, RestoreStepDatabase, RestoreStepCompose)
-	r.updateRunRecord(ctx, runRecord)
+	auditErr := r.updateRunRecord(ctx, runRecord, consoleOut)
 
 	_, _ = fmt.Fprintf(consoleOut, "❌ Restore failed during %s: %s\n", stage, err)
 	if hint := restoreStageHint(stage); hint != "" {
 		_, _ = fmt.Fprintf(consoleOut, "   Next: %s\n", hint)
 	}
 
-	return result, fmt.Errorf("restore failed during %s: %w", stage, err)
+	if auditErr != nil {
+		_, _ = fmt.Fprintf(consoleOut, "Warning: restore audit record could not be persisted: %v\n", auditErr)
+	}
+
+	runErr := fmt.Errorf("restore failed during %s: %w", stage, err)
+	if auditErr != nil {
+		return result, errors.Join(
+			runErr,
+			fmt.Errorf("%w: %v", ErrRestoreAuditFailed, auditErr),
+		)
+	}
+	return result, runErr
 }
 
 // restoreStageHint returns the next step to suggest for a failed restore stage.
@@ -422,12 +477,16 @@ func (r *RestoreRunner) resolveTarget(serverName string) (executor.Target, error
 	return executor.ResolveTarget(r.serverStore, serverName)
 }
 
-func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.RestoreRun) {
+func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.RestoreRun, consoleOut io.Writer) error {
 	if r.restoreRepo != nil && runRecord.ID > 0 {
 		if err := r.restoreRepo.UpdateRun(ctx, runRecord); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "Warning: failed to update restore run record in database: %v\n", err)
+			if consoleOut != nil {
+				_, _ = fmt.Fprintf(consoleOut, "Warning: failed to update restore run record in database: %v\n", err)
+			}
+			return err
 		}
 	}
+	return nil
 }
 
 // RestoredPath maps an original absolute path to its location under targetRoot when restic restores with --target.

@@ -26,7 +26,7 @@ OpsPulse 是一个单二进制 CLI：它不常驻、不自建服务端，本机�
 发起的出站 HTTP 是告警 webhook。
 
 外部程序都复用你机器上既有的工具链，OpsPulse 不自带：远端是 `restic`、`docker`、
-`mysqldump` / `pg_dumpall`、`gzip`、`tar`、`base64`、`sh` / `bash`；本机是 `ssh`、`sftp`、
+`mysqldump` / `pg_dumpall`、`gzip`、`tar`、`base64`、`bash`；本机是 `ssh`、`sftp`、
 `ssh-keygen`、`op`、`$EDITOR`，以及可选的 GUI SFTP 客户端。
 
 ## 2. 执行模型 (Execution Model)
@@ -45,6 +45,8 @@ OpsPulse 是一个单二进制 CLI：它不常驻、不自建服务端，本机�
 
 - **脚本一律经 stdin 下发**，绝不内联进命令行参数：内联会让脚本里携带的凭据出现在远端
   `ps(1)` 的进程列表中。
+- **必须使用 bash**：所有生成的脚本都依赖 bash 语义（`pipefail`、`[[` 等），本地或远端缺少
+  `bash` 时直接报错，绝不回退到 `sh`。
 - **提权不交互**：远端不是 root 且 `sudo -n true` 成功时以 `sudo -E bash -s` 执行，否则以
   当前登录用户执行。`sudo -n` 不会等待密码输入，因此不会挂住自动化。
 - **跳板只有一跳**：库内路径用 `direct-tcpip` 建隧道，交互式路径用 `ProxyCommand=ssh -W`。
@@ -120,9 +122,9 @@ OpsPulse 是一个单二进制 CLI：它不常驻、不自建服务端，本机�
 - **还原**：`ops 1p restore` 反向操作——私钥写回 `~/.ssh`（`0600`），明文密码写回
   `servers.yaml`（`0600`）。要写明文密码时**先**确认；非交互环境不给 `--yes` 就拒绝，且不碰
   `servers.yaml`。
-- **运行时**：`servers.yaml` 里的 `op://` 引用**不支持**。残留引用会快速失败并提示先跑
+- **运行时**：`servers.yaml` 里的 `op://<vault>/...` 引用**不支持**。残留引用会快速失败并提示先跑
   `ops 1p restore` 迁移为本地凭据。唯一的例外是 `backups.yaml` 作业的 `env` 字段：那里的
-  `op://` 在运行时按需解析并注入进程环境，不落盘。
+    `op://<vault>/...` 在运行时按需解析并注入进程环境，不落盘。
 - **验证**：这条链路可以在没有 1Password 账号的机器上完整跑通，见
   [1Password 离线验证教程](../tutorial/onepassword_offline_verify.md)；`ops 1p` 各子命令的用法、
   已知边界与排障见[1Password 备份与跨机同步指南](../reference/onepassword.md)。

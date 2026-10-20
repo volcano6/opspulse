@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -23,9 +24,11 @@ const auditSnapshotID = "snap-abcdef1234567890"
 // be told to fail every task whose name starts with failPrefix.
 type restoreAuditExecutor struct {
 	failPrefix string
+	calls      int
 }
 
 func (m *restoreAuditExecutor) Execute(_ context.Context, target executor.Target, taskName, _ string, output io.Writer) (*executor.Result, error) {
+	m.calls++
 	if strings.HasPrefix(taskName, "snapshots-") {
 		_, _ = io.WriteString(output, `[{"id":"`+auditSnapshotID+`","short_id":"snap-abc1","time":"2026-09-01T10:00:00Z"}]`)
 	}
@@ -51,6 +54,29 @@ func (m *restoreAuditExecutor) Test(_ context.Context, _ executor.Target) (time.
 	return time.Millisecond, "Linux", nil
 }
 
+// restoreAuditRecorder makes audit persistence failures deterministic without
+// racing a real SQLite database.
+type restoreAuditRecorder struct {
+	createErr error
+	updateErr error
+	creates   []*storage.RestoreRun
+	updates   []*storage.RestoreRun
+}
+
+func (r *restoreAuditRecorder) CreateRun(_ context.Context, run *storage.RestoreRun) (int64, error) {
+	r.creates = append(r.creates, run)
+	if r.createErr != nil {
+		return 0, r.createErr
+	}
+	run.ID = int64(len(r.creates))
+	return run.ID, nil
+}
+
+func (r *restoreAuditRecorder) UpdateRun(_ context.Context, run *storage.RestoreRun) error {
+	r.updates = append(r.updates, run)
+	return r.updateErr
+}
+
 type restoreAuditFixture struct {
 	runner *RestoreRunner
 	repo   *storage.RestoreRepo
@@ -60,12 +86,39 @@ type restoreAuditFixture struct {
 func newRestoreAuditFixture(t *testing.T, exec executor.Executor) restoreAuditFixture {
 	t.Helper()
 
-	tmpDir := t.TempDir()
-	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	serverStore, backupStore, job := newRestoreAuditStores(t)
+	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("storage.Open() error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+
+	repo := storage.NewRestoreRepo(db)
+	return restoreAuditFixture{
+		runner: NewRestoreRunner(exec, serverStore, repo, backupStore, asset.NewStore(filepath.Join(t.TempDir(), "assets.yaml"))),
+		repo:   repo,
+		job:    job,
+	}
+}
+
+func newRestoreAuditFixtureWithRecorder(
+	t *testing.T,
+	exec executor.Executor,
+	recorder RestoreRecorder,
+) restoreAuditFixture {
+	t.Helper()
+
+	serverStore, backupStore, job := newRestoreAuditStores(t)
+	return restoreAuditFixture{
+		runner: NewRestoreRunner(exec, serverStore, recorder, backupStore, asset.NewStore(filepath.Join(t.TempDir(), "assets.yaml"))),
+		job:    job,
+	}
+}
+
+func newRestoreAuditStores(t *testing.T) (*server.Store, *Store, Job) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
 
 	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
 	if err := serverStore.Save(server.Server{Name: "vps-01", Host: "203.0.113.10", User: "root"}); err != nil {
@@ -81,13 +134,7 @@ func newRestoreAuditFixture(t *testing.T, exec executor.Executor) restoreAuditFi
 	if err := backupStore.Save(job); err != nil {
 		t.Fatalf("backupStore.Save() error: %v", err)
 	}
-
-	repo := storage.NewRestoreRepo(db)
-	return restoreAuditFixture{
-		runner: NewRestoreRunner(exec, serverStore, repo, backupStore, asset.NewStore(filepath.Join(tmpDir, "assets.yaml"))),
-		repo:   repo,
-		job:    job,
-	}
+	return serverStore, backupStore, job
 }
 
 // onlyRun asserts exactly one attempt was recorded and returns it.
@@ -341,5 +388,129 @@ func TestRestoreRunner_DryRunKeepsFailureStageEmpty(t *testing.T) {
 	}
 	if record.Status != "dry-run" || record.FailureStage != "" {
 		t.Errorf("record status/stage = %q/%q, want dry-run/empty", record.Status, record.FailureStage)
+	}
+}
+
+func TestRestoreRunner_RefusesWhenAuditRecordCannotBeCreated(t *testing.T) {
+	cause := errors.New("database is locked (5) (SQLITE_BUSY)")
+	recorder := &restoreAuditRecorder{createErr: cause}
+	exec := &restoreAuditExecutor{}
+	f := newRestoreAuditFixtureWithRecorder(t, exec, recorder)
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(context.Background(), f.job, RestoreOptions{SnapshotID: auditSnapshotID}, &buf)
+	if err == nil {
+		t.Fatal("Run() succeeded; want a fail-closed refusal")
+	}
+	if result != nil {
+		t.Errorf("Run() result = %+v; want nil on refusal", result)
+	}
+	if !strings.Contains(err.Error(), "refusing to run restore") {
+		t.Errorf("Run() error = %v; want a fail-closed refusal", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("Run() error = %v; want it to preserve the persistence cause", err)
+	}
+	if len(recorder.creates) != 1 || len(recorder.updates) != 0 {
+		t.Errorf("audit calls = %d create / %d update; want 1/0", len(recorder.creates), len(recorder.updates))
+	}
+	if exec.calls != 0 {
+		t.Errorf("executor ran %d time(s); want 0 - no restore may start without an audit record", exec.calls)
+	}
+}
+
+func TestRestoreRunner_UntrackedWhenFinalAuditCannotPersist(t *testing.T) {
+	cause := errors.New("attempt to write a readonly database (8)")
+	recorder := &restoreAuditRecorder{updateErr: cause}
+	exec := &restoreAuditExecutor{}
+	f := newRestoreAuditFixtureWithRecorder(t, exec, recorder)
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyNoStart,
+	}, &buf)
+	if err == nil {
+		t.Fatal("Run() returned nil error; an unaudited success must be reported")
+	}
+	if !errors.Is(err, ErrRestoreUntracked) {
+		t.Errorf("Run() error = %v; want it to wrap ErrRestoreUntracked", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("Run() error = %v; want it to preserve the persistence cause", err)
+	}
+	if result == nil {
+		t.Fatal("Run() returned nil result")
+	}
+	if result.Status != "success" {
+		t.Errorf("result.Status = %q; want success - the restore itself worked", result.Status)
+	}
+	if exec.calls == 0 {
+		t.Error("executor did not run; want the restore to have completed")
+	}
+	if len(recorder.updates) != 1 {
+		t.Errorf("UpdateRun calls = %d; want 1", len(recorder.updates))
+	}
+	if !strings.Contains(buf.String(), "failed to update restore run record") {
+		t.Errorf("console output = %q; want an audit persistence warning", buf.String())
+	}
+}
+
+func TestRestoreRunner_DryRunAuditFailureIsNotSilentSuccess(t *testing.T) {
+	cause := errors.New("disk I/O error (10)")
+	recorder := &restoreAuditRecorder{updateErr: cause}
+	exec := &restoreAuditExecutor{}
+	f := newRestoreAuditFixtureWithRecorder(t, exec, recorder)
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
+		SnapshotID: auditSnapshotID,
+		DryRun:     true,
+	}, &buf)
+	if err == nil {
+		t.Fatal("Run() returned nil error; a dry-run with an audit gap is not a normal success")
+	}
+	if !errors.Is(err, ErrRestoreUntracked) {
+		t.Errorf("Run() error = %v; want it to wrap ErrRestoreUntracked", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("Run() error = %v; want it to preserve the persistence cause", err)
+	}
+	if result == nil || result.Status != "dry-run" {
+		t.Errorf("result = %+v; want a completed dry-run result", result)
+	}
+	if len(recorder.updates) != 1 {
+		t.Errorf("UpdateRun calls = %d; want 1", len(recorder.updates))
+	}
+}
+
+func TestRestoreRunner_FailureKeepsPrimaryErrorWhenAuditAlsoFails(t *testing.T) {
+	auditCause := errors.New("database is locked (5)")
+	recorder := &restoreAuditRecorder{updateErr: auditCause}
+	exec := &restoreAuditExecutor{failPrefix: "restore-"}
+	f := newRestoreAuditFixtureWithRecorder(t, exec, recorder)
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyNoStart,
+	}, &buf)
+	if err == nil {
+		t.Fatal("Run() returned nil error; want the restore failure")
+	}
+	if errors.Is(err, ErrRestoreUntracked) {
+		t.Errorf("Run() error = %v; a failed restore must not be reported as an untracked success", err)
+	}
+	if !errors.Is(err, ErrRestoreAuditFailed) {
+		t.Errorf("Run() error = %v; want it to report that the failed restore was also not audited", err)
+	}
+	if !strings.Contains(err.Error(), auditCause.Error()) {
+		t.Errorf("Run() error = %v; want it to preserve the audit failure too", err)
+	}
+	if !strings.Contains(err.Error(), "restore-") {
+		t.Errorf("Run() error = %v; want the primary restore failure to remain visible", err)
+	}
+	if result == nil || result.Status != "failed" {
+		t.Errorf("result = %+v; want failed status", result)
 	}
 }

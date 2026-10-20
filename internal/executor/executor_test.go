@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +106,37 @@ func TestLocalExecutor_Test(t *testing.T) {
 	}
 }
 
+func TestLocalExecutor_RejectsMissingBash(t *testing.T) {
+	home := t.TempDir()
+	shPath, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not available")
+	}
+	if err := os.Symlink(shPath, filepath.Join(home, "sh")); err != nil {
+		t.Skipf("cannot create PATH fixture: %v", err)
+	}
+
+	t.Setenv("PATH", home)
+	exec := NewLocalExecutor()
+	res, err := exec.Execute(context.Background(), NewLocalTarget(), "bash-test", "echo should-not-run", nil)
+	if err == nil {
+		t.Fatalf("Execute() = %+v, want ErrBashUnavailable", res)
+	}
+	if !errors.Is(err, ErrBashUnavailable) {
+		t.Fatalf("Execute() error = %v, want ErrBashUnavailable", err)
+	}
+	var bashErr *BashUnavailableError
+	if !errors.As(err, &bashErr) {
+		t.Fatalf("Execute() error = %T, want *BashUnavailableError", err)
+	}
+	if bashErr.Target != "local" {
+		t.Errorf("BashUnavailableError.Target = %q, want local", bashErr.Target)
+	}
+	if res.Success {
+		t.Error("Result.Success = true, want false")
+	}
+}
+
 func TestSSHExecutor_InvalidTarget(t *testing.T) {
 	exec := NewSSHExecutor()
 	ctx := context.Background()
@@ -158,5 +191,64 @@ func TestRemoteShellCommandStreamsScript(t *testing.T) {
 	}
 	if exitErr.ExitCode() != 42 {
 		t.Fatalf("remote shell command exit code = %d, want 42", exitErr.ExitCode())
+	}
+}
+
+func TestRemoteShellCommandRejectsMissingBash(t *testing.T) {
+	const script = "echo should-not-run\n"
+	command, stdin := remoteShellCommand(script)
+
+	// Simulate a target where bash is absent while the POSIX utilities needed by
+	// the preflight are available. The script must not reach sh.
+	home := t.TempDir()
+	for _, name := range []string{"sh", "id", "sudo"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("%s not available: %v", name, err)
+		}
+		if err := os.Symlink(path, filepath.Join(home, name)); err != nil {
+			t.Skipf("cannot create PATH fixture: %v", err)
+		}
+	}
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = append(os.Environ(), "PATH="+home)
+	cmd.Stdin = stdin
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("remote shell command error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != remoteBashUnavailableExitCode {
+		t.Fatalf("remote shell command exit code = %d, want %d", exitErr.ExitCode(), remoteBashUnavailableExitCode)
+	}
+	if strings.Contains(stderr.String(), "should-not-run") {
+		t.Fatalf("script reached the fallback shell: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), remoteBashUnavailableMarker) {
+		t.Fatalf("stderr = %q, want the bash preflight marker", stderr.String())
+	}
+}
+
+func TestRemoteBashUnavailableRequiresPreflightMarker(t *testing.T) {
+	const script = "echo ordinary failure >&2\nexit 126\n"
+	command, stdin := remoteShellCommand(script)
+
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Stdin = stdin
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("remote shell command error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != remoteBashUnavailableExitCode {
+		t.Fatalf("remote shell command exit code = %d, want %d", exitErr.ExitCode(), remoteBashUnavailableExitCode)
+	}
+	if strings.Contains(stderr.String(), remoteBashUnavailableMarker) {
+		t.Fatalf("ordinary script output unexpectedly contains the bash preflight marker: %q", stderr.String())
 	}
 }

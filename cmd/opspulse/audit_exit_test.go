@@ -15,9 +15,33 @@ func TestCommandExitCodeUntracked(t *testing.T) {
 		t.Fatalf("backup.ExitUntracked = %d; must differ from success (0) and generic failure (1)", backup.ExitUntracked)
 	}
 
-	err := fmt.Errorf("container backup %q completed but was not audited: %w", "web-data", backup.ErrUntracked)
-	if got := commandExitCode(err); got != backup.ExitUntracked {
-		t.Errorf("commandExitCode(untracked success) = %d; want %d", got, backup.ExitUntracked)
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "backup",
+			err:  fmt.Errorf("container backup %q completed but was not audited: %w", "web-data", backup.ErrUntracked),
+		},
+		{
+			name: "restore",
+			err:  fmt.Errorf("restore run %q completed but was not audited: %w", "web-data", backup.ErrRestoreUntracked),
+		},
+		{
+			name: "restore audit failure",
+			err:  fmt.Errorf("restore failed: %w", backup.ErrRestoreAuditFailed),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := backup.ExitUntracked
+			if tc.name == "restore audit failure" {
+				want = 1
+			}
+			if got := commandExitCode(tc.err); got != want {
+				t.Errorf("commandExitCode(%v) = %d; want %d", tc.err, got, want)
+			}
+		})
 	}
 }
 

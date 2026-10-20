@@ -167,7 +167,7 @@ func handleRootError(err error, stderr io.Writer) int {
 func commandExitCode(err error) int {
 	// An untracked backup success is not a normal success: give it a dedicated
 	// code so scripts can branch on the audit gap instead of parsing output.
-	if errors.Is(err, backup.ErrUntracked) {
+	if errors.Is(err, backup.ErrUntracked) || errors.Is(err, backup.ErrRestoreUntracked) {
 		return backup.ExitUntracked
 	}
 

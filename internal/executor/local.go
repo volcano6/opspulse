@@ -57,13 +57,18 @@ func (e *LocalExecutor) Execute(ctx context.Context, target Target, taskName str
 	// Normalize script line endings to standard LF
 	scriptContent = normalizeScriptLineEndings(scriptContent)
 
-	// Use bash if available, fallback to sh
-	shell := "bash"
-	if _, err := exec.LookPath("bash"); err != nil {
-		shell = "sh"
+	// Generated scripts use bash-only features such as pipefail. Running them
+	// under sh can fail halfway through or, worse, report success for a script
+	// that never executed as intended.
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		bashErr := &BashUnavailableError{Target: name}
+		res.Error = bashErr
+		res.finish(startTime)
+		return res, bashErr
 	}
 
-	cmd := exec.CommandContext(ctx, shell, "-s") //nolint:gosec // G204: Subprocess launched to execute script on local machine
+	cmd := exec.CommandContext(ctx, bashPath, "-s") //nolint:gosec // G204: Subprocess launched to execute script on local machine
 	if outputWriter != nil {
 		safeWriter := NewSyncWriter(outputWriter)
 		cmd.Stdout = safeWriter

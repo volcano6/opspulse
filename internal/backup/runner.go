@@ -20,6 +20,17 @@ import (
 // SQLite run row could not be written in --allow-untracked emergency mode.
 var ErrUntracked = errors.New("backup completed but was not audited")
 
+// ErrRestoreUntracked reports that a restore ran but its SQLite audit row could
+// not be persisted. It is separate from ErrUntracked so callers can distinguish
+// a backup audit gap from a restore audit gap.
+var ErrRestoreUntracked = errors.New("restore completed but was not audited")
+
+// ErrRestoreAuditFailed reports that a restore failed and its failure could not
+// be persisted to SQLite. It is intentionally distinct from
+// ErrRestoreUntracked: the restore did not complete successfully, so callers
+// must not map it to the "unaudited success" exit code.
+var ErrRestoreAuditFailed = errors.New("restore failed and its audit record could not be persisted")
+
 // ExitUntracked is the process exit code the CLI returns for ErrUntracked, so
 // scripts can tell an unaudited success apart from a normal one.
 const ExitUntracked = 3

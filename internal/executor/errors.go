@@ -2,8 +2,27 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
 )
+
+// ErrBashUnavailable indicates that an execution target has no bash binary.
+// OpsPulse-generated scripts use bash-only syntax, so falling back to sh would
+// either fail halfway through or mis-execute the script.
+var ErrBashUnavailable = errors.New("bash is required but not available")
+
+// BashUnavailableError identifies the target whose bash preflight failed.
+type BashUnavailableError struct {
+	Target string
+}
+
+func (e *BashUnavailableError) Error() string {
+	return fmt.Sprintf("bash is required on %s, but it is not installed or not in PATH", e.Target)
+}
+
+func (e *BashUnavailableError) Unwrap() error {
+	return ErrBashUnavailable
+}
 
 // AuthError indicates an SSH authentication failure.
 type AuthError struct {

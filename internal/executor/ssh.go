@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -272,11 +273,16 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 	}
 	defer func() { _ = session.Close() }()
 
-	// Stream stdout and stderr thread-safely (prevent data race on shared bytes.Buffer)
+	// Stream stdout and stderr thread-safely (prevent data race on shared bytes.Buffer).
+	// Keep a private copy of stderr so the bash preflight can be distinguished
+	// from a user script that happens to exit with the same status.
+	var remoteStderr bytes.Buffer
 	if outputWriter != nil {
 		safeOutWriter := NewSyncWriter(outputWriter)
 		session.Stdout = safeOutWriter
-		session.Stderr = safeOutWriter
+		session.Stderr = io.MultiWriter(safeOutWriter, &remoteStderr)
+	} else {
+		session.Stderr = &remoteStderr
 	}
 
 	// Normalize script line endings to standard LF before executing remotely
@@ -305,15 +311,23 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 			var exitErr *ssh.ExitError
 			if errors.As(runErr, &exitErr) {
 				res.ExitCode = exitErr.ExitStatus()
+				if res.ExitCode == remoteBashUnavailableExitCode && strings.Contains(remoteStderr.String(), remoteBashUnavailableMarker) {
+					bashErr := &BashUnavailableError{Target: srv.Name}
+					res.Error = bashErr
+					res.finish(startTime)
+					return res, bashErr
+				}
 				execError := &ExecutionError{
 					ExitCode: res.ExitCode,
 					Server:   srv.Name,
 					Message:  fmt.Sprintf("script '%s' exited with code %d", taskName, res.ExitCode),
 				}
 				res.Error = execError
+				res.finish(startTime)
 				return res, execError
 			}
 			res.Error = runErr
+			res.finish(startTime)
 			return res, runErr
 		}
 
@@ -324,12 +338,18 @@ func (e *SSHExecutor) Execute(ctx context.Context, target Target, taskName strin
 }
 
 func remoteShellCommand(scriptContent string) (string, io.Reader) {
-	// Select one available shell before execution and automatically elevate
-	// with passwordless sudo if the remote session user is non-root.
+	// Require bash before execution and automatically elevate with
+	// passwordless sudo if the remote session user is non-root. Never fall back
+	// to sh: every generated script relies on bash-only semantics.
 	//
 	// The script always travels over stdin. Inlining it into the command line
 	// (base64 or otherwise) would publish its contents - backup scripts carry
 	// resolved credentials in their env block - to every process on the target
 	// host via ps(1).
-	return "if command -v bash >/dev/null 2>&1; then shell=bash; else shell=sh; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then sudo -E \"$shell\" -s; else \"$shell\" -s; fi", strings.NewReader(scriptContent)
+	return fmt.Sprintf("if ! command -v bash >/dev/null 2>&1; then echo '%s' >&2; exit %d; fi; if [ \"$(id -u)\" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then sudo -E bash -s; else bash -s; fi", remoteBashUnavailableMarker, remoteBashUnavailableExitCode), strings.NewReader(scriptContent)
 }
+
+const (
+	remoteBashUnavailableExitCode = 126
+	remoteBashUnavailableMarker   = "OpsPulse: bash is required on the target but was not found in PATH"
+)
