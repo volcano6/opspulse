@@ -136,10 +136,6 @@ func buildClientConfig(srv server.Server, timeout time.Duration, warnWriter io.W
 
 var knownHostsMu sync.Mutex
 
-func tofuHostKeyCallbackWithWriter(warnWriter io.Writer) (ssh.HostKeyCallback, error) {
-	return tofuHostKeyCallbackWithWriterAndHandler(warnWriter, nil)
-}
-
 func tofuHostKeyCallbackWithWriterAndHandler(warnWriter io.Writer, unknownHostKeyHandler UnknownHostKeyHandler) (ssh.HostKeyCallback, error) {
 	if custom := os.Getenv("OPSPULSE_KNOWN_HOSTS"); custom != "" {
 		return tofuHostKeyCallbackForWithWriterAndHandler(custom, warnWriter, unknownHostKeyHandler), nil
