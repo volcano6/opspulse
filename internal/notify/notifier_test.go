@@ -475,6 +475,29 @@ func TestDispatcher_Filtering(t *testing.T) {
 	if atomic.LoadInt32(&alwaysCount) != 3 {
 		t.Errorf("alw-ch count after partial event = %d, want 3", alwaysCount)
 	}
+
+	// 4. Dispatch a CANCELED event. It did not complete, so only the failure and
+	// always channels may hear about it.
+	canceledEvent := Event{
+		JobName:   "db-backup",
+		Status:    "canceled",
+		Server:    "vps-01",
+		Error:     "context canceled",
+		Timestamp: time.Now(),
+	}
+	errs = dispatcher.Dispatch(ctx, canceledEvent)
+	if len(errs) > 0 {
+		t.Fatalf("Dispatch(canceled) errors: %v", errs)
+	}
+	if atomic.LoadInt32(&failureCount) != 3 {
+		t.Errorf("fail-ch count after canceled event = %d, want 3", failureCount)
+	}
+	if atomic.LoadInt32(&successCount) != 1 {
+		t.Errorf("succ-ch count after canceled event = %d, want 1", successCount)
+	}
+	if atomic.LoadInt32(&alwaysCount) != 4 {
+		t.Errorf("alw-ch count after canceled event = %d, want 4", alwaysCount)
+	}
 }
 
 func TestDispatcher_SendTest(t *testing.T) {

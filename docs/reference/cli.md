@@ -906,8 +906,8 @@ Webhook URL 的 path 通常就是鉴权 token，因此默认只显示 scheme://h
 将 restic 备份快照中的文件还原到原始服务器或另一台服务器。
 
 还原结束后会逐步骤报告结果（文件恢复、volume 恢复、数据库导入、Compose 启动），
-每一步各自是 success / failed / skipped / blocked / manual，总状态仍是
-success / partial / failed / dry-run。
+每一步各自是 success / failed / skipped / blocked / manual，总状态是
+success / partial / failed / canceled / dry-run。
 
 是否启动服务按场景决定：普通文件恢复与同机恢复默认只写回文件、不启动服务；
 跨机恢复在找到与本任务匹配的容器 manifest 时才会自动启动。需要强制启动用

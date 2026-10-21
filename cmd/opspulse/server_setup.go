@@ -208,7 +208,7 @@ func runServerSetup(ctx context.Context, in io.Reader, out io.Writer, opts setup
 			report.missing = append(report.missing, srv.Name)
 		}
 	}
-	printSetupReport(out, deps, report)
+	printSetupReport(out, report)
 
 	if opts.writeConfig {
 		path := opts.configPath
@@ -299,7 +299,7 @@ func checkSetupServer(ctx context.Context, deps setupDeps, srv server.Server, sk
 	return server.CheckKnownHost(srv, deps.knownHosts, keys)
 }
 
-func printSetupReport(out io.Writer, deps setupDeps, report setupReport) {
+func printSetupReport(out io.Writer, report setupReport) {
 	fmt.Fprintln(out)
 	for _, check := range report.checks {
 		switch check.Status {

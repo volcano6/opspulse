@@ -80,6 +80,42 @@ func TestRenderSSHConfig_Empty(t *testing.T) {
 	}
 }
 
+func TestRenderSSHConfigNeutralizesControlCharacters(t *testing.T) {
+	rendered := RenderSSHConfig([]Server{{
+		Name:        "web",
+		Host:        "203.0.113.10",
+		User:        "root",
+		Description: "prod\nProxyCommand touch /tmp/pwned",
+		Tags:        []string{"web\rProxyJump evil"},
+		Labels:      map[string]string{"env": "prod\x00ProxyCommand evil"},
+		KeyPath:     "/tmp/key\nIdentityFile /tmp/evil",
+		JumpHost:    "bastion\nProxyJump evil",
+	}})
+
+	for _, forbidden := range []string{
+		"\nProxyCommand touch",
+		"\rProxyJump evil",
+		"\x00ProxyCommand evil",
+		"\nIdentityFile /tmp/evil",
+	} {
+		if strings.Contains(rendered, forbidden) {
+			t.Errorf("rendered config contains an injected line %q:\n%s", forbidden, rendered)
+		}
+	}
+
+	for _, want := range []string{
+		"Host web",
+		"HostName 203.0.113.10",
+		"# prod ProxyCommand touch /tmp/pwned | tags: web ProxyJump evil | labels: env=prod ProxyCommand evil",
+		"    IdentityFile /tmp/key IdentityFile /tmp/evil",
+		"    ProxyJump bastion ProxyJump evil",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered config is missing neutralized field %q:\n%s", want, rendered)
+		}
+	}
+}
+
 func TestMergeSSHConfigContent_AppendAndReplace(t *testing.T) {
 	initialCustom := `Host github.com
     HostName github.com

@@ -55,19 +55,25 @@ func RenderSSHConfig(servers []Server) string {
 
 		var descParts []string
 		if s.Description != "" {
-			descParts = append(descParts, s.Description)
+			descParts = append(descParts, safeSSHConfigField(s.Description))
 		}
 		if len(s.Tags) > 0 {
-			descParts = append(descParts, fmt.Sprintf("tags: %s", strings.Join(s.Tags, ",")))
+			tags := make([]string, len(s.Tags))
+			for i, tag := range s.Tags {
+				tags[i] = safeSSHConfigField(tag)
+			}
+			descParts = append(descParts, fmt.Sprintf("tags: %s", strings.Join(tags, ",")))
 		}
 		if len(s.Labels) > 0 && s.FormatLabels() != "-" {
-			descParts = append(descParts, fmt.Sprintf("labels: %s", s.FormatLabels()))
+			descParts = append(descParts, fmt.Sprintf("labels: %s", safeSSHConfigField(s.FormatLabels())))
 		}
 		if len(descParts) > 0 {
-			buf.WriteString(fmt.Sprintf("# %s\n", strings.Join(descParts, " | ")))
+			buf.WriteString(fmt.Sprintf("# %s\n", safeSSHConfigField(strings.Join(descParts, " | "))))
 		}
 
-		user := s.User
+		name := safeSSHConfigField(s.Name)
+		host := safeSSHConfigField(s.Host)
+		user := safeSSHConfigField(s.User)
 		if user == "" {
 			user = "root"
 		}
@@ -76,8 +82,8 @@ func RenderSSHConfig(servers []Server) string {
 			port = 22
 		}
 
-		buf.WriteString(fmt.Sprintf("Host %s\n", s.Name))
-		buf.WriteString(fmt.Sprintf("    HostName %s\n", s.Host))
+		buf.WriteString(fmt.Sprintf("Host %s\n", name))
+		buf.WriteString(fmt.Sprintf("    HostName %s\n", host))
 		buf.WriteString(fmt.Sprintf("    User %s\n", user))
 		if port != 22 {
 			buf.WriteString(fmt.Sprintf("    Port %d\n", port))
@@ -97,7 +103,7 @@ func RenderSSHConfig(servers []Server) string {
 			// silently fails to authenticate.
 			buf.WriteString("# no local key configured; run 'ops 1p restore " + s.Name + "' if it is backed up\n")
 		case s.KeyPath != "":
-			buf.WriteString(fmt.Sprintf("    IdentityFile %s\n", s.KeyPath))
+			buf.WriteString(fmt.Sprintf("    IdentityFile %s\n", safeSSHConfigField(s.KeyPath)))
 			buf.WriteString("    IdentitiesOnly yes\n")
 		case s.Password != "":
 			buf.WriteString("    PubkeyAuthentication no\n")
@@ -105,12 +111,25 @@ func RenderSSHConfig(servers []Server) string {
 		}
 
 		if s.JumpHost != "" {
-			buf.WriteString(fmt.Sprintf("    ProxyJump %s\n", s.JumpHost))
+			buf.WriteString(fmt.Sprintf("    ProxyJump %s\n", safeSSHConfigField(s.JumpHost)))
 		}
 	}
 
 	buf.WriteString(MarkerEnd + "\n")
 	return buf.String()
+}
+
+// safeSSHConfigField is a defense-in-depth guard for callers that render
+// inventory entries without first calling Server.Validate. Replacing line
+// terminators prevents a metadata field from becoming a new ssh_config
+// directive; validation remains the primary boundary and rejects these values.
+func safeSSHConfigField(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, value)
 }
 
 // UpdateSSHConfigFile idempotently inserts or updates the OpsPulse managed block in the given SSH config file.

@@ -153,3 +153,15 @@ func TestRestoreNotificationEvent_KeepsBackupPayloadShape(t *testing.T) {
 		t.Errorf("event.Steps = %+v, want the file step carried over", event.Steps)
 	}
 }
+
+func TestRestoreNotificationEvent_CarriesUntrackedAuditGap(t *testing.T) {
+	result := &backup.RestoreResult{
+		RestoreRun: &storage.RestoreRun{JobName: "blog", Status: "success", TargetServer: "vps-02"},
+		Untracked:  true,
+	}
+
+	event := restoreNotificationEvent(result)
+	if !event.Untracked {
+		t.Fatal("restore notification dropped the untracked audit gap")
+	}
+}

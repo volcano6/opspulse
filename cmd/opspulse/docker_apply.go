@@ -187,7 +187,7 @@ func runDockerApply(cmd *cobra.Command, args []string) error {
 		outcomes = runDockerApplyHealthCheck(ctx, plan, outcomes, out)
 	}
 
-	writeDockerApplySummary(out, plan, risks, outcomes)
+	writeDockerApplySummary(out, risks, outcomes)
 	writeDockerApplyJSONIfRequested(plan, risks, outcomes, blockedServices)
 
 	failed := 0
@@ -409,7 +409,7 @@ func writeDockerApplyPreflight(w io.Writer, plan *migration.Plan, risks migratio
 
 // writeDockerApplySummary prints the per-service results and the manual
 // follow-ups. It never claims a generic rollback happened.
-func writeDockerApplySummary(w io.Writer, plan *migration.Plan, risks migration.RiskSummary, outcomes []dockerApplyOutcome) {
+func writeDockerApplySummary(w io.Writer, risks migration.RiskSummary, outcomes []dockerApplyOutcome) {
 	_, _ = fmt.Fprintln(w)
 	_, _ = fmt.Fprintln(w, "迁移汇总:")
 	counts := map[string]int{}

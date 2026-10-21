@@ -1,9 +1,9 @@
 # OpsPulse Makefile —— 构建与校验的唯一入口。
 #
 # 这里每个目标都是「可被 CI 直接调用的原子闸门」：.github/workflows/ci.yaml 的
-# 每个 job 只调用一个目标，scripts/ci.sh 只是 `make ci` 的薄包装。所以
-# 「本地 `make ci` 通过 ⇔ CI 通过」成立——历史上 CI 与 ci.sh 各写一套命令，
-# 已经漂移过（govet enable-all vs 默认、_test.go 的 errcheck/gosec 豁免不对称）。
+# 每个 job 只调用一个目标，scripts/ci.sh 只是 `make ci` 的薄包装。CI 的 job
+# 集合与 `make ci` 的依赖集合一一对应；两者都从本文件读取具体命令，避免历史上
+# CI 与 ci.sh 各写一套命令后发生漂移。
 #
 # 工具版本只在本文件出现一次：golangci-lint 与 govulncheck 都用
 # `go run <pkg>@<pin>` 按需取用，不依赖 PATH 上已安装的二进制——否则同一份代码

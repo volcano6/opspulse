@@ -65,6 +65,13 @@ opspulse version
 
 Windows 下载 `.zip`，解压后把 `opspulse.exe` 放进 `PATH` 即可；压缩包内已含 `LICENSE` 与 `README.md`。
 
+每个 release 还附带 SPDX JSON SBOM（`*-sbom.spdx.json`），并通过 GitHub 构建来源证明
+（build provenance）签名。可用 GitHub CLI 核验下载文件的来源：
+
+```bash
+gh attestation verify opspulse-v0.4.0-linux-amd64.tar.gz --repo volcano6/opspulse
+```
+
 **从源码编译**（需 Go 1.26+）：
 
 ```bash

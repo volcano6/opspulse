@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -67,19 +70,22 @@ var cpCmd = &cobra.Command{
 			return errors.New("one of source or destination must be a remote server path formatted as <server>:<path>")
 		}
 
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		store := server.NewDefaultStore()
 
 		if dstIsRemote {
 			// Upload mode: local -> remote
-			return executeUpload(store, dstServer, srcPath, dstPath)
+			return executeUpload(ctx, store, dstServer, srcPath, dstPath)
 		}
 
 		// Download mode: remote -> local
-		return executeDownload(store, srcServer, srcPath, dstPath)
+		return executeDownload(ctx, store, srcServer, srcPath, dstPath)
 	},
 }
 
-func executeUpload(store *server.Store, serverName, localPath, remotePath string) error {
+func executeUpload(ctx context.Context, store *server.Store, serverName, localPath, remotePath string) error {
 	srv, err := store.Get(serverName)
 	if err != nil {
 		return err
@@ -108,7 +114,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 	startTime := time.Now()
 	if lStat.IsDir() {
 		fmt.Printf("--> Uploading directory %q ──> %s:%q ...\n", localPath, serverName, remotePath)
-		filesCount, totalBytes, uploadErr := client.UploadDir(localPath, remotePath)
+		filesCount, totalBytes, uploadErr := client.UploadDirContext(ctx, localPath, remotePath)
 		if uploadErr != nil {
 			return fmt.Errorf("upload failed: %w", uploadErr)
 		}
@@ -117,7 +123,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 			filesCount, format.Bytes(totalBytes), serverName, remotePath, elapsed.Seconds())
 	} else {
 		fmt.Printf("--> Uploading file %q ──> %s:%q ...\n", localPath, serverName, remotePath)
-		bytesCopied, uploadErr := client.UploadFile(localPath, remotePath)
+		bytesCopied, uploadErr := client.UploadFileContext(ctx, localPath, remotePath)
 		if uploadErr != nil {
 			return fmt.Errorf("upload failed: %w", uploadErr)
 		}
@@ -129,7 +135,7 @@ func executeUpload(store *server.Store, serverName, localPath, remotePath string
 	return nil
 }
 
-func executeDownload(store *server.Store, serverName, remotePath, localPath string) error {
+func executeDownload(ctx context.Context, store *server.Store, serverName, remotePath, localPath string) error {
 	srv, err := store.Get(serverName)
 	if err != nil {
 		return err
@@ -149,7 +155,7 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 	startTime := time.Now()
 	if cpRecursive {
 		fmt.Printf("--> Downloading directory %s:%q ──> %q ...\n", serverName, remotePath, localPath)
-		filesCount, totalBytes, downloadErr := client.DownloadDir(remotePath, localPath)
+		filesCount, totalBytes, downloadErr := client.DownloadDirContext(ctx, remotePath, localPath)
 		if downloadErr != nil {
 			return fmt.Errorf("download failed: %w", downloadErr)
 		}
@@ -158,7 +164,7 @@ func executeDownload(store *server.Store, serverName, remotePath, localPath stri
 			filesCount, format.Bytes(totalBytes), serverName, remotePath, localPath, elapsed.Seconds())
 	} else {
 		fmt.Printf("--> Downloading file %s:%q ──> %q ...\n", serverName, remotePath, localPath)
-		bytesCopied, downloadErr := client.DownloadFile(remotePath, localPath)
+		bytesCopied, downloadErr := client.DownloadFileContext(ctx, remotePath, localPath)
 		if downloadErr != nil {
 			return fmt.Errorf("download failed: %w", downloadErr)
 		}

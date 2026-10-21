@@ -35,6 +35,12 @@ var ErrRestoreAuditFailed = errors.New("restore failed and its audit record coul
 // scripts can tell an unaudited success apart from a normal one.
 const ExitUntracked = 3
 
+// auditWriteTimeout bounds the final audit write after the operation context
+// has been canceled. The write must not inherit cancellation, otherwise an
+// interrupted backup/restore could never persist its terminal status, but it
+// still needs a ceiling so a wedged database cannot block process shutdown.
+const auditWriteTimeout = 5 * time.Second
+
 // RunRecorder persists backup run audit records. *storage.BackupRepo is the
 // production implementation; the interface exists so the fail-closed and
 // untracked contracts can be exercised against deterministic persistence
@@ -54,6 +60,14 @@ type Runner struct {
 	backupStore    *Store
 	assetStore     *asset.Store
 	allowUntracked bool
+}
+
+// auditWriteContext detaches an audit write from the operation cancellation
+// while preserving context values. It is used only for terminal status writes:
+// the work itself must stop when the caller cancels, but recording that stop
+// must still succeed.
+func auditWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
 }
 
 // NewRunner creates a new backup Runner.
@@ -289,6 +303,11 @@ func (r *Runner) finalizeRun(
 	if success {
 		runRecord.Status = "success"
 		runRecord.ErrorMessage = ""
+	} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		runRecord.Status = "canceled"
+		if err != nil {
+			runRecord.ErrorMessage = err.Error()
+		}
 	} else {
 		runRecord.Status = "failed"
 		if err != nil {
@@ -307,12 +326,14 @@ func (r *Runner) finalizeRun(
 	// ErrUntracked when the backup itself succeeded - that is the case where the
 	// caller would otherwise exit 0 on an unaudited success.
 	var persistErr error
+	persistCtx, cancelPersist := auditWriteContext(ctx)
+	defer cancelPersist()
 	switch {
 	case r.backupRepo == nil:
 	case runRecord.ID > 0:
-		persistErr = r.backupRepo.UpdateRun(ctx, runRecord)
+		persistErr = r.backupRepo.UpdateRun(persistCtx, runRecord)
 	default:
-		_, persistErr = r.backupRepo.CreateRun(ctx, runRecord)
+		_, persistErr = r.backupRepo.CreateRun(persistCtx, runRecord)
 	}
 	if persistErr != nil {
 		// In --allow-untracked mode the caller already accepted that this run
@@ -321,7 +342,7 @@ func (r *Runner) finalizeRun(
 		newlyUntracked := !runRecord.Untracked
 		runRecord.Untracked = true
 		_, _ = fmt.Fprintf(os.Stderr, "Warning: backup run %q could not be recorded in SQLite: %v\n", runRecord.JobName, persistErr)
-		if newlyUntracked && err == nil {
+		if newlyUntracked && (err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			err = fmt.Errorf("backup run %q completed but its audit record could not be persisted: %w", runRecord.JobName, ErrUntracked)
 		}
 	}

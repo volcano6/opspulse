@@ -153,8 +153,8 @@ channels:
 
 ### 触发条件 (`on`) 行为说明
 
-- `failure`（默认）：备份任务状态为 `failed` 或 `partial` 时触发通知。`partial` 指主体工作已完成、但后续步骤失败（例如还原后容器自动启动失败），对失败告警渠道而言同样算失败；未审计（`untracked`）的运行也按失败处理，即使它的 `status` 是 `success`。**推荐日常使用，避免正常任务消息刷屏**。
-- `success`：仅当备份任务成功完成时触发通知。
+- `failure`（默认）：备份或恢复状态为 `failed`、`partial`、`canceled` 时触发通知。`partial` 指主体工作已完成、但后续步骤失败（例如还原后容器自动启动失败）；`canceled` 指操作被中断或超时。两者对失败告警渠道而言同样算失败；未审计（`untracked`）的运行也按失败处理，即使它的 `status` 是 `success`。**推荐日常使用，避免正常任务消息刷屏**。
+- `success`：仅当运行成功完成且已审计时触发通知；`untracked` 的成功不会进入这个渠道。
 - `always`：无论成功还是失败均触发通知。
 
 通知由备份任务的结束事件驱动：`ops daemon` 调度执行的任务在跑完后自动收集状态与快照信息并分发，
@@ -245,7 +245,7 @@ OpsPulse 发送标准 HTTP POST 请求，Header 包含：
 ### 还原结果消息体
 
 `ops restore run` 结束后同样会推送通知，`event` 为 `restore_success` / `restore_partial` /
-`restore_failed` / `restore_dry-run`，并额外带三个字段描述逐步骤结果：
+`restore_failed` / `restore_canceled` / `restore_dry-run`，并额外带三个字段描述逐步骤结果：
 
 ```json
 {
@@ -276,8 +276,8 @@ OpsPulse 发送标准 HTTP POST 请求，Header 包含：
 - `warnings`：非致命提示（例如目标机缺少外部宿主机挂载）。
 - `pending`：尚未完成、需要人工处理的事项。
 
-`status` 仍是聚合状态（`success` / `partial` / `failed` / `dry-run`），因此老的消费方按
-`status` 路由不受影响；`partial` 与 `failed` 都会触发只订阅 `failure` 的渠道。启动策略
+`status` 仍是聚合状态（`success` / `partial` / `failed` / `canceled` / `dry-run`），因此老的消费方按
+`status` 路由不受影响；`partial`、`failed` 与 `canceled` 都会触发只订阅 `failure` 的渠道。启动策略
 （普通文件恢复与同机还原默认不启动、`--start` / `--no-start`）见
 [逐步骤结果与场景化启动策略](backup.md#逐步骤结果与场景化启动策略)。
 

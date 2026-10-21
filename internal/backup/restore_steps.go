@@ -65,6 +65,10 @@ type RestoreResult struct {
 	Steps    []RestoreStep `json:"steps"`
 	Warnings []string      `json:"warnings,omitempty"`
 	Pending  []string      `json:"pending,omitempty"`
+	// Untracked marks a completed restore whose final audit record could not be
+	// persisted. The embedded run may be absent from SQLite, so the notification
+	// path must carry this flag explicitly.
+	Untracked bool `json:"untracked,omitempty"`
 }
 
 // newRestoreReport seeds every step as skipped, so a step the run never reached
@@ -148,9 +152,11 @@ func (res *RestoreResult) blockSteps(reason string, kinds ...string) {
 }
 
 // aggregateStatus derives the backward-compatible single status from the steps.
-// It keeps the historical vocabulary (success / partial / failed / dry-run):
-// a failed file restore is a failure, anything else that failed or was blocked
-// is a partial recovery, and a deliberately skipped step is not a degradation.
+// It keeps the historical vocabulary (success / partial / failed / dry-run)
+// for completed steps; execution cancellation is mapped to "canceled" by the
+// runner before this helper is called. A failed file restore is a failure,
+// anything else that failed or was blocked is a partial recovery, and a
+// deliberately skipped step is not a degradation.
 func (res *RestoreResult) aggregateStatus(dryRun bool) string {
 	if dryRun {
 		return "dry-run"

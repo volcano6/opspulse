@@ -87,6 +87,34 @@ func TestServer_ValidateRejectsControlCharacters(t *testing.T) {
 			},
 			field: "jump_host",
 		},
+		{
+			name: "description newline",
+			mutate: func(s *Server) {
+				s.Description = "production\nProxyCommand touch pwned"
+			},
+			field: "description",
+		},
+		{
+			name: "tag carriage return",
+			mutate: func(s *Server) {
+				s.Tags = []string{"prod\rProxyJump evil"}
+			},
+			field: "tags[0]",
+		},
+		{
+			name: "label key NUL",
+			mutate: func(s *Server) {
+				s.Labels = map[string]string{"env\x00prod": "production"}
+			},
+			field: "label key",
+		},
+		{
+			name: "label value newline",
+			mutate: func(s *Server) {
+				s.Labels = map[string]string{"env": "production\nProxyCommand touch pwned"}
+			},
+			field: `label "env"`,
+		},
 	}
 
 	for _, tt := range tests {

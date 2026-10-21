@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/volcano6/opspulse/internal/config"
+	"github.com/volcano6/opspulse/internal/filelock"
 	"github.com/volcano6/opspulse/internal/storage/migrations"
 	_ "modernc.org/sqlite" // Pure Go SQLite driver
 )
@@ -85,6 +86,21 @@ func (d *DB) Close() error {
 func (d *DB) Migrate(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+
+	// A process-local mutex only serializes goroutines in this process. Two
+	// OpsPulse commands can open the same database concurrently (for example a
+	// daemon and a CLI), and SQLite's busy timeout is not a substitute for
+	// making the "check version, apply migration, record version" sequence one
+	// cross-process critical section.
+	var unlock func()
+	if d.path != ":memory:" && d.path != "" {
+		var err error
+		unlock, err = filelock.Lock(d.path + ".migrate")
+		if err != nil {
+			return fmt.Errorf("failed to acquire migration lock: %w", err)
+		}
+		defer unlock()
+	}
 
 	// 1. Ensure schema_migrations table exists
 	createMigrationTableSQL := `

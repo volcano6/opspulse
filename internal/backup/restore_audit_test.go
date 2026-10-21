@@ -54,6 +54,36 @@ func (m *restoreAuditExecutor) Test(_ context.Context, _ executor.Target) (time.
 	return time.Millisecond, "Linux", nil
 }
 
+// cancelingRestoreExecutor lets snapshot validation complete, then cancels the
+// operation when the actual restore starts.
+type cancelingRestoreExecutor struct {
+	cancel context.CancelFunc
+}
+
+func (m *cancelingRestoreExecutor) Execute(_ context.Context, target executor.Target, taskName, _ string, output io.Writer) (*executor.Result, error) {
+	if strings.HasPrefix(taskName, "snapshots-") {
+		_, _ = io.WriteString(output, `[{"id":"`+auditSnapshotID+`","short_id":"snap-abc1","time":"2026-09-01T10:00:00Z"}]`)
+		return &executor.Result{
+			ServerName: target.Name,
+			Template:   taskName,
+			Success:    true,
+			Duration:   time.Millisecond,
+		}, nil
+	}
+	m.cancel()
+	return &executor.Result{
+		ServerName: target.Name,
+		Template:   taskName,
+		Success:    false,
+		ExitCode:   130,
+		Duration:   time.Millisecond,
+	}, context.Canceled
+}
+
+func (m *cancelingRestoreExecutor) Test(_ context.Context, _ executor.Target) (time.Duration, string, error) {
+	return time.Millisecond, "Linux", nil
+}
+
 // restoreAuditRecorder makes audit persistence failures deterministic without
 // racing a real SQLite database.
 type restoreAuditRecorder struct {
@@ -202,6 +232,31 @@ func TestRestoreRunner_RecordsValidationFailure(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Next:") {
 		t.Errorf("console output should suggest a next step, got:\n%s", buf.String())
+	}
+}
+
+// TestRestoreRunner_CanceledStatusPersistsAfterContextCancellation verifies
+// that a canceled restore is recorded as canceled rather than failed, even
+// though the operation context is already canceled at audit time.
+func TestRestoreRunner_CanceledStatusPersistsAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := newRestoreAuditFixture(t, &cancelingRestoreExecutor{cancel: cancel})
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(ctx, f.job, RestoreOptions{
+		SnapshotID:  auditSnapshotID,
+		StartPolicy: StartPolicyNoStart,
+	}, &buf)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v; want context.Canceled", err)
+	}
+	if result == nil || result.Status != "canceled" {
+		t.Fatalf("Run() result = %+v; want status canceled", result)
+	}
+
+	got := f.onlyRun(t)
+	if got.Status != "canceled" {
+		t.Errorf("history status = %q; want canceled", got.Status)
 	}
 }
 
@@ -445,6 +500,9 @@ func TestRestoreRunner_UntrackedWhenFinalAuditCannotPersist(t *testing.T) {
 	if result.Status != "success" {
 		t.Errorf("result.Status = %q; want success - the restore itself worked", result.Status)
 	}
+	if !result.Untracked {
+		t.Error("result.Untracked = false; want true when the final audit write failed")
+	}
 	if exec.calls == 0 {
 		t.Error("executor did not run; want the restore to have completed")
 	}
@@ -478,6 +536,9 @@ func TestRestoreRunner_DryRunAuditFailureIsNotSilentSuccess(t *testing.T) {
 	}
 	if result == nil || result.Status != "dry-run" {
 		t.Errorf("result = %+v; want a completed dry-run result", result)
+	}
+	if result != nil && !result.Untracked {
+		t.Error("result.Untracked = false; want true when the dry-run audit write failed")
 	}
 	if len(recorder.updates) != 1 {
 		t.Errorf("UpdateRun calls = %d; want 1", len(recorder.updates))

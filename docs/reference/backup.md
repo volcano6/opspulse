@@ -324,8 +324,8 @@ daemon、Compose 引擎、Compose 文件、全部卷归档和数据库 dump 是�
 条件后重新执行。同机 `--start` 允许重启已有项目，不会因为目标机本来就有同名容器而误阻断。
 
 还原结果同样会经已配置的通知渠道发出（`event` 为 `restore_success` / `restore_partial` /
-`restore_failed` / `restore_dry-run`），请求体带 `steps`、`warnings`、`pending` 三个字段，
-结构见[告警请求体结构](configuration.md#5-告警请求体结构-webhook-payload)。
+`restore_failed` / `restore_canceled` / `restore_dry-run`），请求体带 `steps`、`warnings`、
+`pending` 三个字段，结构见[告警请求体结构](configuration.md#5-告警请求体结构-webhook-payload)。
 
 #### 查看还原历史
 
@@ -349,6 +349,7 @@ ops restore history web-data --limit 5
 | `validation` | 前置校验失败：任务配置、容器别名、secret 解析、快照不存在或不属于该任务、目标服务器不在清单、asset 不存在。**没有触碰任何文件** | `FAILED (VALIDATION)` |
 | `execution` | restic 还原命令本身失败（含 `--dry-run` 预览失败） | `FAILED (EXECUTION)` |
 | `post_restore` | 文件已还原，但还原后的容器自动启动 / 灌库失败 | `PARTIAL (POST_RESTORE)` |
+| 任意阶段 | 操作被 Ctrl-C / SIGTERM 中断，或操作 context 超时 | `CANCELED`（仍保留失败阶段） |
 | （空） | 未失败：`running` / `success` / `dry-run` | `SUCCESS` / `DRY-RUN` |
 
 失败时终端同时打印失败阶段与下一步建议：
@@ -843,16 +844,18 @@ ops restore history <job-name> --limit 10
 | 命令 | 结果状态 | 含义 |
 |:---|:---|:---|
 | `ops docker apply` | `success` / `failed` / `skipped` | 每个服务的迁移结果；只要有一个不是 `success`，命令返回非零 |
-| `ops restore run` | `success` / `partial` / `failed` / `dry-run` | 单次恢复的聚合状态；`partial` 表示文件已恢复，但 volume、数据库或 Compose 步骤失败 / 被阻止 |
+| `ops restore run` | `success` / `partial` / `failed` / `canceled` / `dry-run` | 单次恢复的聚合状态；`partial` 表示文件已恢复，但 volume、数据库或 Compose 步骤失败 / 被阻止；`canceled` 表示操作被中断或超时，不代表数据失败 |
 | `ops docker health` | 每个检查为 `ok` / `failed` / `manual` / `skipped` | `failed` 会让命令返回非零；`manual` 与 `skipped` 不改变退出码，但会在结果中明确列出 |
 
 `ops restore run` 会先创建审计记录再校验，因此快照、目标、asset 或 secret 的前置失败也会出现在
 `ops restore history` 中；`failure_stage` 区分 `validation`、`execution`、`post_restore`。
 SQLite 只保存聚合状态，逐步骤明细只出现在终端与通知里。
 
-恢复完成（包括 `partial`、`failed` 和 `dry-run`）会发送通知，事件为
-`restore_success` / `restore_partial` / `restore_failed` / `restore_dry-run`；
-`partial` 按失败处理，因此默认只订阅 `failure` 的渠道也会收到。
+恢复结束（包括 `partial`、`failed`、`canceled` 和 `dry-run`）会发送通知，事件为
+`restore_success` / `restore_partial` / `restore_failed` / `restore_canceled` /
+`restore_dry-run`；`partial`、`canceled` 按失败处理，因此默认只订阅 `failure`
+的渠道也会收到。备份与恢复的最终状态写入会脱离已取消的操作 context，并受 5 秒上限约束，
+因此中断后仍能记录 `canceled`；若这次终态写入本身失败，结果会标记为 `UNTRACKED`。
 
 `ops docker apply` 的退出码：所有服务均为 `success` 时为 `0`；有服务 `failed` / `skipped`
 或健康检查 `failed` 时非零。`ops docker apply` 当前没有独立的迁移通知事件；它内部的备份与

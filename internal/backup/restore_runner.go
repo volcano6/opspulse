@@ -244,7 +244,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		runRecord.DurationSeconds = time.Since(startTime).Seconds()
 
 		if execErr != nil {
-			runRecord.Status = "failed"
+			runRecord.Status = restoreFailureStatus(execErr)
 			runRecord.FailureStage = storage.RestoreStageExecution
 			runRecord.ErrorMessage = execErr.Error()
 			result.setStep(RestoreStepFiles, RestoreStepFailed, execErr.Error(), "")
@@ -271,6 +271,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 			return result, execErr
 		}
 		if auditErr != nil {
+			result.Untracked = true
 			return result, fmt.Errorf(
 				"restore dry-run for %q completed but its audit record could not be persisted: %w",
 				runRecord.JobName,
@@ -328,7 +329,7 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		}
 		runRecord.Status = result.aggregateStatus(false)
 	} else {
-		runRecord.Status = "failed"
+		runRecord.Status = restoreFailureStatus(execErr)
 		runRecord.FailureStage = storage.RestoreStageExecution
 		if execErr != nil {
 			runRecord.ErrorMessage = execErr.Error()
@@ -355,10 +356,20 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 
 	if auditErr != nil {
 		if execErr == nil {
+			result.Untracked = true
 			return result, fmt.Errorf(
 				"restore run %q completed but its audit record could not be persisted: %w",
 				runRecord.JobName,
 				errors.Join(ErrRestoreUntracked, auditErr),
+			)
+		}
+		if runRecord.Status == "canceled" {
+			// The run's only durable outcome is cancellation; a missing audit
+			// record is still a gap, but it must not be labeled as a data failure.
+			result.Untracked = true
+			return result, errors.Join(
+				execErr,
+				fmt.Errorf("%w: %v", ErrRestoreUntracked, auditErr),
 			)
 		}
 		return result, errors.Join(
@@ -390,6 +401,9 @@ func (r *RestoreRunner) failRun(
 	runRecord := result.RestoreRun
 	finishedAt := time.Now()
 	runRecord.Status = "failed"
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		runRecord.Status = "canceled"
+	}
 	runRecord.FailureStage = stage
 	runRecord.ErrorMessage = err.Error()
 	runRecord.FinishedAt = &finishedAt
@@ -415,6 +429,16 @@ func (r *RestoreRunner) failRun(
 		)
 	}
 	return result, runErr
+}
+
+// restoreFailureStatus distinguishes an operator/system cancellation from a
+// restore that actually failed. Both are non-success outcomes, but history and
+// notifications must not report an interrupted run as a data failure.
+func restoreFailureStatus(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "canceled"
+	}
+	return "failed"
 }
 
 // restoreStageHint returns the next step to suggest for a failed restore stage.
@@ -483,7 +507,9 @@ func (r *RestoreRunner) resolveTarget(serverName string) (executor.Target, error
 
 func (r *RestoreRunner) updateRunRecord(ctx context.Context, runRecord *storage.RestoreRun, consoleOut io.Writer) error {
 	if r.restoreRepo != nil && runRecord.ID > 0 {
-		if err := r.restoreRepo.UpdateRun(ctx, runRecord); err != nil {
+		auditCtx, cancel := auditWriteContext(ctx)
+		defer cancel()
+		if err := r.restoreRepo.UpdateRun(auditCtx, runRecord); err != nil {
 			if consoleOut != nil {
 				_, _ = fmt.Fprintf(consoleOut, "Warning: failed to update restore run record in database: %v\n", err)
 			}

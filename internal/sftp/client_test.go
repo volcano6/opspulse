@@ -2,6 +2,7 @@ package sftp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -209,6 +210,72 @@ func TestUploadFile_ReplacesExistingRemoteFile(t *testing.T) {
 		if e.Name() != remoteName {
 			t.Errorf("upload left %q behind, want only %q", e.Name(), remoteName)
 		}
+	}
+}
+
+func TestUploadFileContext_CanceledBeforeStartLeavesNoFiles(t *testing.T) {
+	client, root := newTestClient(t)
+
+	localPath := filepath.Join(t.TempDir(), "canceled.txt")
+	if err := os.WriteFile(localPath, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := client.UploadFileContext(ctx, localPath, "canceled.txt"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("UploadFileContext() error = %v, want context.Canceled", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read remote directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("canceled upload left files behind: %v", entries)
+	}
+}
+
+func TestDownloadFileContext_CanceledBeforeStartLeavesNoFiles(t *testing.T) {
+	client, root := newTestClient(t)
+
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), []byte("payload"), 0o600); err != nil {
+		t.Fatalf("write remote file: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	localDir := t.TempDir()
+	localPath := filepath.Join(localDir, "source.txt")
+	if _, err := client.DownloadFileContext(ctx, "source.txt", localPath); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DownloadFileContext() error = %v, want context.Canceled", err)
+	}
+	if _, err := os.Stat(localPath); !os.IsNotExist(err) {
+		t.Fatalf("canceled download created %q (stat error: %v)", localPath, err)
+	}
+}
+
+func TestUploadFile_RemoteTemporaryFileIsPrivate(t *testing.T) {
+	client, root := newTestClient(t)
+
+	localPath := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(localPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write local file: %v", err)
+	}
+
+	// The in-process test server has no SSH session, so this exercises the
+	// fallback's create-and-secure sequence. Production uses the remote
+	// umask-077 command path before any bytes are written.
+	if _, err := client.UploadFile(localPath, "secret.txt"); err != nil {
+		t.Fatalf("UploadFile() error: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(root, "secret.txt"))
+	if err != nil {
+		t.Fatalf("stat uploaded file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("uploaded file mode = %o, want 600", got)
 	}
 }
 

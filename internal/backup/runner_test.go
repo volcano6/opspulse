@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -145,6 +146,27 @@ func (m *mockExecutor) Test(_ context.Context, _ executor.Target) (time.Duration
 	return 10 * time.Millisecond, "Linux mock", nil
 }
 
+// cancelingExecutor cancels the operation while it is running, then reports the
+// cancellation like a real executor whose subprocess was interrupted.
+type cancelingExecutor struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancelingExecutor) Execute(_ context.Context, target executor.Target, taskName string, _ string, _ io.Writer) (*executor.Result, error) {
+	c.cancel()
+	return &executor.Result{
+		ServerName: target.Name,
+		Template:   taskName,
+		Success:    false,
+		ExitCode:   130,
+		Duration:   time.Millisecond,
+	}, context.Canceled
+}
+
+func (c *cancelingExecutor) Test(_ context.Context, _ executor.Target) (time.Duration, string, error) {
+	return time.Millisecond, "Linux mock", nil
+}
+
 func TestRunner_Run_Success(t *testing.T) {
 	tmpDir := t.TempDir()
 	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
@@ -241,6 +263,50 @@ func TestRunner_Run_Failure(t *testing.T) {
 	}
 	if latest == nil || latest.Status != "failed" {
 		t.Errorf("expected persisted status 'failed', got %+v", latest)
+	}
+}
+
+// TestRunner_Run_CanceledStatusPersistsAfterContextCancellation pins the
+// terminal-audit contract: canceling the work must stop the backup, but the
+// cancellation status still has to be written to SQLite after the operation
+// context is already canceled.
+func TestRunner_Run_CanceledStatusPersistsAfterContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := storage.Open(filepath.Join(tmpDir, "test.db"))
+	if err != nil {
+		t.Fatalf("storage.Open() error: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	backupRepo := storage.NewBackupRepo(db)
+	serverStore := server.NewStore(filepath.Join(tmpDir, "servers.yaml"))
+	if err := serverStore.Save(server.Server{Name: "vps-01", Host: "192.168.1.1", User: "root"}); err != nil {
+		t.Fatalf("serverStore.Save() error: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := NewRunner(&cancelingExecutor{cancel: cancel}, serverStore, backupRepo)
+	job := Job{
+		Name:    "canceled-backup",
+		Server:  "vps-01",
+		Paths:   []string{"/tmp/data"},
+		Backend: "/tmp/backup",
+	}
+
+	runRecord, err := runner.Run(ctx, job, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v; want context.Canceled", err)
+	}
+	if runRecord == nil || runRecord.Status != "canceled" {
+		t.Fatalf("Run() record = %+v; want status canceled", runRecord)
+	}
+
+	latest, err := backupRepo.GetLatestRun(context.Background(), job.Name)
+	if err != nil {
+		t.Fatalf("GetLatestRun() error: %v", err)
+	}
+	if latest == nil || latest.Status != "canceled" {
+		t.Errorf("persisted record = %+v; want status canceled", latest)
 	}
 }
 

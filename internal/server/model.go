@@ -144,6 +144,22 @@ func (s *Server) Validate() error {
 	if err := rejectControlCharacters("key_path", s.KeyPath); err != nil {
 		return err
 	}
+	if err := rejectControlCharacters("description", s.Description); err != nil {
+		return err
+	}
+	for i, tag := range s.Tags {
+		if err := rejectControlCharacters(fmt.Sprintf("tags[%d]", i), tag); err != nil {
+			return err
+		}
+	}
+	for key, value := range s.Labels {
+		if err := rejectControlCharacters("label key", key); err != nil {
+			return err
+		}
+		if err := rejectControlCharacters(fmt.Sprintf("label %q", key), value); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(s.JumpHost) != s.JumpHost {
 		return fmt.Errorf("invalid jump_host: cannot have leading or trailing whitespace")
 	}

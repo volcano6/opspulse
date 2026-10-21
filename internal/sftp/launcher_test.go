@@ -155,7 +155,7 @@ func TestBuildLaunchCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("Xftp with password", func(t *testing.T) {
+	t.Run("Xftp with password is refused", func(t *testing.T) {
 		srvPass := server.Server{
 			Name:     "web-pass",
 			Host:     "10.0.0.2",
@@ -163,16 +163,15 @@ func TestBuildLaunchCommand(t *testing.T) {
 			User:     "root",
 			Password: "mysecret",
 		}
-		client := ClientInfo{Type: ClientXftp, Name: "Xftp", Path: "xftp.exe"}
-		cmd, err := BuildLaunchCommand(client, srvPass, nil, "/root")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		client := ClientInfo{Type: ClientXftp, Name: "Xftp", Path: "xftp.exe", IsGUI: true}
+		_, err := BuildLaunchCommand(client, srvPass, nil, "/root")
+		if err == nil {
+			t.Fatal("expected password-only GUI launch to be refused")
 		}
-		if len(cmd.Args) < 2 {
-			t.Fatalf("expected at least 2 args, got %v", cmd.Args)
-		}
-		if cmd.Args[1] != "sftp://root:mysecret@10.0.0.2:22/root" {
-			t.Errorf("unexpected URL arg: %s", cmd.Args[1])
+		for _, want := range []string{"--cli", "ops cp", "command line"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err, want)
+			}
 		}
 	})
 
@@ -226,6 +225,36 @@ func TestBuildLaunchCommand(t *testing.T) {
 			t.Errorf("destination precedes options in args: %s", argsStr)
 		}
 	})
+}
+
+func TestBuildLaunchCommandGUIOmitsPasswordWhenKeyIsConfigured(t *testing.T) {
+	srv := server.Server{
+		Name:     "web-prod",
+		Host:     "10.0.0.1",
+		Port:     2200,
+		User:     "deploy",
+		Password: "secret-password",
+		KeyPath:  filepath.Join(t.TempDir(), "id_ed25519"),
+	}
+	if err := os.WriteFile(srv.KeyPath, []byte("test key"), 0o600); err != nil {
+		t.Fatalf("write test key: %v", err)
+	}
+
+	for _, client := range []ClientInfo{
+		{Type: ClientWinSCP, Name: "WinSCP", Path: "winscp.exe", IsGUI: true},
+		{Type: ClientXftp, Name: "Xftp", Path: "xftp.exe", IsGUI: true},
+		{Type: ClientFileZilla, Name: "FileZilla", Path: "filezilla", IsGUI: true},
+	} {
+		t.Run(client.Name, func(t *testing.T) {
+			cmd, err := BuildLaunchCommand(client, srv, nil, "/var/log")
+			if err != nil {
+				t.Fatalf("BuildLaunchCommand() error: %v", err)
+			}
+			if args := strings.Join(cmd.Args, " "); strings.Contains(args, srv.Password) {
+				t.Errorf("GUI args expose the inventory password: %s", args)
+			}
+		})
+	}
 }
 
 func TestBuildLaunchCommandRejectsLegacy1PRefs(t *testing.T) {
@@ -463,6 +492,46 @@ func TestBuildLaunchCommandRejectsUnresolvedJumpHost(t *testing.T) {
 	// A server without a jump host is unaffected by the missing entry.
 	if _, err := BuildLaunchCommand(client, server.Server{Name: "direct", Host: "10.0.0.6"}, nil, "/"); err != nil {
 		t.Fatalf("direct server should not require a jump host: %v", err)
+	}
+}
+
+func TestBuildLaunchCommandRejectsInvalidServerFields(t *testing.T) {
+	client := ClientInfo{Type: ClientOpenSSH, Name: "OpenSSH sftp", Path: "sftp"}
+
+	tests := []struct {
+		name  string
+		srv   server.Server
+		field string
+		jump  *server.Server
+	}{
+		{
+			name:  "target host injection",
+			srv:   server.Server{Name: "web", Host: "10.0.0.1\nProxyCommand evil"},
+			field: "host",
+		},
+		{
+			name:  "target user injection",
+			srv:   server.Server{Name: "web", Host: "10.0.0.1", User: "root\rroot"},
+			field: "user",
+		},
+		{
+			name:  "jump host injection",
+			srv:   server.Server{Name: "web", Host: "10.0.0.1", JumpHost: "bastion"},
+			jump:  &server.Server{Name: "bastion", Host: "10.0.0.2\nProxyCommand evil"},
+			field: "host",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := BuildLaunchCommand(client, tt.srv, tt.jump, "/")
+			if err == nil {
+				t.Fatal("expected invalid inventory fields to be rejected")
+			}
+			if !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "control character") {
+				t.Errorf("error = %q, want a %s control-character error", err, tt.field)
+			}
+		})
 	}
 }
 

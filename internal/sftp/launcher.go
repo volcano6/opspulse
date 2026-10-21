@@ -474,6 +474,19 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 		remotePath = "/" + remotePath
 	}
 
+	// This function receives inventory entries from several callers and builds
+	// commands for external binaries directly, so it cannot rely on Store.Save
+	// having validated the fields. In particular, a newline in Host or User
+	// would otherwise become an argument or URL separator.
+	if err := srv.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid server %q: %w", srv.Name, err)
+	}
+	if jumpSrv != nil {
+		if err := jumpSrv.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid jump host %q: %w", jumpSrv.Name, err)
+		}
+	}
+
 	port := srv.Port
 	if port <= 0 {
 		port = 22
@@ -489,6 +502,14 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 	// a key path.
 	if err := srv.RejectLegacy1PRefs(); err != nil {
 		return nil, err
+	}
+
+	// A GUI client URL becomes process argv, which is visible through ps(1).
+	// Only OpenSSH has an askpass mechanism that keeps the password out of the
+	// command line; for every GUI client a password-only server is refused
+	// instead of silently publishing the credential.
+	if client.IsGUI && srv.Password != "" && srv.KeyPath == "" {
+		return nil, fmt.Errorf("server %q uses password authentication without a private key; refusing to place the password in a GUI client command line: use 'ops sftp %s --cli' for an askpass-protected terminal session, or 'ops cp' to transfer files", srv.Name, srv.Name)
 	}
 
 	// A configured jump host is never silently dropped: only the terminal
@@ -516,7 +537,7 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 	switch client.Type {
 	case ClientWinSCP:
 		// WinSCP supports: WinSCP.exe "sftp://user@host:port/path" [/privatekey="..."]
-		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, srv.KeyPath == "")
+		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, false)
 		args := []string{targetURL}
 		if keyPathForClient != "" {
 			args = append(args, fmt.Sprintf("/privatekey=%s", filepath.Clean(keyPathForClient)))
@@ -524,13 +545,13 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 		return exec.Command(client.Path, args...), nil
 
 	case ClientXftp:
-		// Xftp supports: Xftp.exe sftp://user[:password]@host:port/path
-		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, true)
+		// Xftp supports: Xftp.exe sftp://user@host:port/path
+		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, false)
 		return exec.Command(client.Path, targetURL), nil
 
 	case ClientFileZilla:
-		// FileZilla supports: filezilla "sftp://user[:password]@host:port/path"
-		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, true)
+		// FileZilla supports: filezilla "sftp://user@host:port/path"
+		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, false)
 		if runtime.GOOS == "darwin" && strings.HasSuffix(client.Path, ".app") {
 			return exec.Command("open", "-a", client.Path, targetURL), nil
 		}
@@ -594,7 +615,7 @@ func BuildLaunchCommand(client ClientInfo, srv server.Server, jumpSrv *server.Se
 		return exec.Command(client.Path, args...), nil
 
 	default:
-		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, true)
+		targetURL := formatSFTPURL(user, srv.Password, srv.Host, port, remotePath, false)
 		return exec.Command(client.Path, targetURL), nil
 	}
 }

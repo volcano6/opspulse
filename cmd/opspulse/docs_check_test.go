@@ -24,7 +24,24 @@ import (
 const docsCheckIgnore = "docs-check: ignore"
 
 // docsCheckSkip 列出不扫描的生成物：docs/reference/cli.md 按构造与命令树一致，扫它没有信息量。
-var docsCheckSkip = map[string]bool{"docs/reference/cli.md": true}
+// docsCheckSkipSuffixes 排除 review/handoff 一类本地交接材料：它们可以记录历史命令，
+// 但不是面向用户的当前 CLI 契约，不能让一份被忽略的临时文档阻断全仓测试。
+var (
+	docsCheckSkip         = map[string]bool{"docs/reference/cli.md": true}
+	docsCheckSkipSuffixes = []string{"_handoff.md"}
+)
+
+func skipDocsFile(rel string) bool {
+	if docsCheckSkip[rel] {
+		return true
+	}
+	for _, suffix := range docsCheckSkipSuffixes {
+		if strings.HasSuffix(rel, suffix) {
+			return true
+		}
+	}
+	return false
+}
 
 // docsCheckEntryFiles 是 docs/ 之外同样纳入扫描的手写文档。
 var docsCheckEntryFiles = []string{"README.md"}
@@ -65,7 +82,7 @@ func loadDocsCorpus(t *testing.T) []docsFile {
 		if relErr != nil {
 			return relErr
 		}
-		if rel = filepath.ToSlash(rel); docsCheckSkip[rel] {
+		if rel = filepath.ToSlash(rel); skipDocsFile(rel) {
 			return nil
 		}
 		read(rel)
@@ -76,6 +93,38 @@ func loadDocsCorpus(t *testing.T) []docsFile {
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
 	return files
+}
+
+// TestLoadDocsCorpusSkipsHandoffButKeepsCurrentDocs proves the skip rule is
+// narrow: a stale local handoff document cannot fail the gate, while an
+// ordinary current document in the same directory is still scanned.
+func TestLoadDocsCorpusSkipsHandoffButKeepsCurrentDocs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Test\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(README) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "handoff_handoff.md"), []byte("`ops old --stale`\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(handoff) error: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "current.md"), []byte("`ops server list`\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(current) error: %v", err)
+	}
+	t.Setenv("OPSPULSE_DOCS_CORPUS", root)
+
+	corpus := loadDocsCorpus(t)
+	seen := make(map[string]bool, len(corpus))
+	for _, file := range corpus {
+		seen[file.rel] = true
+	}
+	if seen["docs/handoff_handoff.md"] {
+		t.Error("loadDocsCorpus() included a *_handoff.md file")
+	}
+	if !seen["docs/current.md"] {
+		t.Error("loadDocsCorpus() skipped an ordinary current document")
+	}
 }
 
 // ── 断言二：相对链接与页内锚点 ────────────────────────────────────────────────

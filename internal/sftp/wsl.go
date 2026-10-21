@@ -61,8 +61,8 @@ func BridgeKeyContentToWindows(baseName string, content []byte) (string, error) 
 	winMirrorWSLDir := filepath.Join(winHomeWSL, ".ssh", "opspulse")
 	winMirrorWSLPath := filepath.Join(winMirrorWSLDir, filepath.Base(baseName))
 
-	if err := os.MkdirAll(winMirrorWSLDir, 0o750); err != nil {
-		return "", fmt.Errorf("failed to create Windows mirror directory: %w", err)
+	if err := ensurePrivateDir(winMirrorWSLDir); err != nil {
+		return "", err
 	}
 
 	if dstContent, err := os.ReadFile(winMirrorWSLPath); err != nil || !bytes.Equal(content, dstContent) { // #nosec G304
@@ -74,4 +74,16 @@ func BridgeKeyContentToWindows(baseName string, content []byte) (string, error) 
 	}
 
 	return platform.ToWindowsPath(winMirrorWSLPath), nil
+}
+
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to create private directory %s: %w", dir, err)
+	}
+	// MkdirAll does not tighten a directory left by an older release, and this
+	// directory holds private keys.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("failed to secure private directory %s: %w", dir, err)
+	}
+	return nil
 }

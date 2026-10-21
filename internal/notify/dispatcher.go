@@ -121,16 +121,17 @@ func (d *Dispatcher) SendTest(ctx context.Context, channelName string) error {
 // shouldNotify reports whether a channel with the given trigger wants an event
 // with the given status. A "partial" run - the work finished but a follow-up
 // step failed, e.g. a restore whose container auto-start failed - is a failure,
-// so failure-triggered channels must hear about it. An untracked run is treated
-// the same way: its status may still read "success", but a run with no audit
-// record is exactly the gap a failure-triggered channel exists to surface.
+// so failure-triggered channels must hear about it. A canceled run is also a
+// failure for routing purposes: it did not complete. An untracked run is
+// treated the same way, but it must not leak into success-only channels merely
+// because its work happened to finish before the audit gap was discovered.
 func shouldNotify(trigger, status string, untracked bool) bool {
-	failed := status == "failed" || status == "partial" || untracked
+	failed := status == "failed" || status == "partial" || status == "canceled" || untracked
 	switch trigger {
 	case TriggerAlways:
 		return true
 	case TriggerSuccess:
-		return status == "success"
+		return status == "success" && !untracked
 	case TriggerFailure:
 		return failed
 	default:

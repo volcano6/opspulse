@@ -39,9 +39,9 @@ type restorePreflightInput struct {
 	CrossMachine       bool
 }
 
-// restorePreflightReport is the parsed result of the read-only preflight
+// RestorePreflightReport is the parsed result of the read-only preflight
 // script. Container summaries are present only for a cross-machine restore.
-type restorePreflightReport struct {
+type RestorePreflightReport struct {
 	Errors     []string
 	Containers []docker.ContainerSummary
 }
@@ -134,8 +134,8 @@ fi
 // ParseRestorePreflightOutput parses the marker and docker ps output from the
 // preflight script. A missing end marker is treated as a broken probe, never
 // as an empty success.
-func ParseRestorePreflightOutput(raw string) (*restorePreflightReport, error) {
-	report := &restorePreflightReport{}
+func ParseRestorePreflightOutput(raw string) (*RestorePreflightReport, error) {
+	report := &RestorePreflightReport{}
 	sawEnd := false
 
 	for _, line := range strings.Split(raw, "\n") {

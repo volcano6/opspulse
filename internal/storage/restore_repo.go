@@ -32,7 +32,7 @@ type RestoreRun struct {
 	SourceServer       string     `json:"source_server"`
 	TargetServer       string     `json:"target_server"`
 	TargetPath         string     `json:"target_path,omitempty"`
-	Status             string     `json:"status"` // 'running', 'success', 'partial', 'failed', 'dry-run'
+	Status             string     `json:"status"` // 'running', 'success', 'partial', 'failed', 'canceled', 'dry-run'
 	FailureStage       string     `json:"failure_stage,omitempty"`
 	FilesRestored      int64      `json:"files_restored"`
 	TotalBytesRestored int64      `json:"total_bytes_restored"`

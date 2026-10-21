@@ -1,10 +1,11 @@
 # OpsPulse GolangCI-Lint Configuration
-# Aligns GitHub Actions linting with local verification standards
-
+# Keep this schema on v1 while Makefile pins golangci-lint v1.64.x. The v2
+# config format is intentionally not used here: v2 also enables a different
+# default analyzer set, which must be reviewed as its own migration.
 run:
   timeout: 5m
-  tests: true
   modules-download-mode: readonly
+  tests: true
 
 linters:
   disable-all: true
@@ -12,12 +13,12 @@ linters:
     - errcheck
     - gofmt
     - gosimple
+    - gosec
     - govet
     - ineffassign
+    - revive
     - staticcheck
     - unused
-    - gosec
-    - revive
 
 linters-settings:
   govet:
@@ -48,7 +49,7 @@ issues:
     - .workbuddy-ai
     - .trellis
   exclude-rules:
-    # Relax error checking and security checks in test files
+    # Relax error checking and security checks in test files.
     - path: _test\.go
       linters:
         - errcheck

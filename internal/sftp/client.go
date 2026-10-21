@@ -3,6 +3,7 @@ package sftp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
+	"github.com/volcano6/opspulse/internal/shellquote"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -81,6 +83,16 @@ func (c *Client) Close() error {
 
 // UploadFile uploads a single local file to the destination remote path.
 func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
+	return c.UploadFileContext(context.Background(), localPath, remotePath)
+}
+
+// UploadFileContext uploads a single local file and aborts on context
+// cancellation. The remote temporary file is removed before returning.
+func (c *Client) UploadFileContext(ctx context.Context, localPath, remotePath string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	srcFile, err := os.Open(localPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open local file %q: %w", localPath, err)
@@ -98,7 +110,7 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 	// If remotePath is a directory or ends in '/', append local filename
 	if strings.HasSuffix(remotePath, "/") {
 		remotePath = path.Join(remotePath, filepath.Base(localPath))
-	} else if rStat, err := c.sftpClient.Stat(remotePath); err == nil && rStat.IsDir() {
+	} else if rStat, statErr := c.sftpClient.Stat(remotePath); statErr == nil && rStat.IsDir() {
 		remotePath = path.Join(remotePath, filepath.Base(localPath))
 	}
 
@@ -108,33 +120,180 @@ func (c *Client) UploadFile(localPath, remotePath string) (int64, error) {
 		return 0, fmt.Errorf("failed to create remote directory %q: %w", remoteDir, err)
 	}
 
-	tmpRemote := fmt.Sprintf("%s.tmp.%d", remotePath, time.Now().UnixNano())
-	dstFile, err := c.sftpClient.Create(tmpRemote)
+	tmpDir, tmpRemote, err := c.createPrivateRemoteTemp(remotePath)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create remote temporary file %q: %w", tmpRemote, err)
+		return 0, err
 	}
 
 	progressReader := newProgressReader(srcFile, srcStat.Size(), "Uploading", localPath, remotePath)
-	n, copyErr := io.Copy(dstFile, progressReader)
-	closeErr := dstFile.Close()
+	n, copyErr := c.copyToRemoteFile(ctx, tmpRemote, progressReader)
 	if copyErr != nil {
-		_ = c.sftpClient.Remove(tmpRemote)
+		_ = c.removeRemoteTemp(tmpDir, tmpRemote)
 		return 0, fmt.Errorf("failed to upload data to %q: %w", remotePath, copyErr)
-	}
-	if closeErr != nil {
-		_ = c.sftpClient.Remove(tmpRemote)
-		return 0, fmt.Errorf("failed to close remote temporary file %q: %w", tmpRemote, closeErr)
 	}
 
 	if err := c.sftpClient.Chmod(tmpRemote, srcStat.Mode().Perm()); err != nil {
-		_ = c.sftpClient.Remove(tmpRemote)
+		_ = c.removeRemoteTemp(tmpDir, tmpRemote)
 		return n, fmt.Errorf("failed to set remote file permissions on %q: %w", tmpRemote, err)
 	}
 
 	if err := installRemoteFile(c.sftpClient, tmpRemote, remotePath); err != nil {
+		_ = c.removeRemoteTemp(tmpDir, tmpRemote)
 		return n, err
 	}
+	if tmpDir != "" {
+		_ = c.sftpClient.RemoveDirectory(tmpDir)
+	}
 	return n, nil
+}
+
+// createPrivateRemoteTemp creates a directory that only the remote account can
+// enter, then creates the file through an SSH command under umask 077. SFTP's
+// Open/Create packets do not carry a creation mode in this client, so creating
+// the file with SFTP and chmod-ing it afterwards would expose the temporary
+// upload (and the final file's content) to group/other readers for a window.
+func (c *Client) createPrivateRemoteTemp(destPath string) (dir, file string, err error) {
+	if c.sshClient == nil {
+		// The in-process test server is already private to this process. Real
+		// clients always have an SSH connection and use the secure path below.
+		file = fmt.Sprintf("%s.tmp.%d", destPath, time.Now().UnixNano())
+		dst, createErr := c.sftpClient.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+		if createErr != nil {
+			return "", "", fmt.Errorf("failed to create remote temporary file %q: %w", file, createErr)
+		}
+		if createErr := dst.Chmod(0o600); createErr != nil {
+			_ = dst.Close()
+			_ = c.sftpClient.Remove(file)
+			return "", "", fmt.Errorf("failed to secure remote temporary file %q: %w", file, createErr)
+		}
+		if createErr := dst.Close(); createErr != nil {
+			_ = c.sftpClient.Remove(file)
+			return "", "", fmt.Errorf("failed to close remote temporary file %q: %w", file, createErr)
+		}
+		return "", file, nil
+	}
+
+	parent := path.Dir(destPath)
+	dir = path.Join(parent, fmt.Sprintf(".opspulse-upload-%d", time.Now().UnixNano()))
+	file = path.Join(dir, path.Base(destPath))
+
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to open remote session for temporary file: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	script := fmt.Sprintf("umask 077; mkdir -p %s && : > %s",
+		shellquote.Quote(dir), shellquote.Quote(file))
+	if out, err := session.CombinedOutput(script); err != nil {
+		return "", "", fmt.Errorf("failed to create private remote temporary file %q: %w: %s", file, err, strings.TrimSpace(string(out)))
+	}
+	if err := c.sftpClient.Chmod(dir, 0o700); err != nil {
+		_ = c.sftpClient.RemoveDirectory(dir)
+		return "", "", fmt.Errorf("failed to secure remote temporary directory %q: %w", dir, err)
+	}
+	if err := c.sftpClient.Chmod(file, 0o600); err != nil {
+		_ = c.sftpClient.Remove(file)
+		_ = c.sftpClient.RemoveDirectory(dir)
+		return "", "", fmt.Errorf("failed to secure remote temporary file %q: %w", file, err)
+	}
+	return dir, file, nil
+}
+
+// copyToRemoteFile writes through a context-aware reader. Closing the SFTP
+// subsystem is the only portable way to interrupt a blocked protocol request;
+// the caller closes the whole client as soon as the transfer returns.
+func (c *Client) copyToRemoteFile(ctx context.Context, remotePath string, src io.Reader) (int64, error) {
+	dst, err := c.sftpClient.OpenFile(remotePath, os.O_WRONLY|os.O_TRUNC)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open remote temporary file %q for writing: %w", remotePath, err)
+	}
+
+	type copyResult struct {
+		n   int64
+		err error
+	}
+	done := make(chan copyResult, 1)
+	go func() {
+		n, err := io.Copy(dst, &contextReader{ctx: ctx, r: src})
+		done <- copyResult{n: n, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = c.sftpClient.Close()
+		// Closing the subsystem unblocks a pending protocol write. Wait for the
+		// copy goroutine so it cannot race the cleanup that follows.
+		<-done
+		return 0, ctx.Err()
+	case result := <-done:
+		if result.err != nil {
+			_ = dst.Close()
+			return result.n, result.err
+		}
+		if err := dst.Close(); err != nil {
+			return result.n, fmt.Errorf("failed to close remote temporary file %q: %w", remotePath, err)
+		}
+		return result.n, nil
+	}
+}
+
+func (c *Client) removeRemoteTemp(dir, file string) error {
+	if c.sftpClient == nil && c.sshClient != nil {
+		return c.removeRemoteTempViaSSH(dir, file)
+	}
+
+	var errs []error
+	if c.sftpClient != nil {
+		if err := c.sftpClient.Remove(file); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+		if dir != "" {
+			if err := c.sftpClient.RemoveDirectory(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if len(errs) > 0 && c.sshClient != nil {
+		if err := c.removeRemoteTempViaSSH(dir, file); err == nil {
+			return nil
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// removeRemoteTempViaSSH is the cleanup path after a canceled transfer has
+// closed the SFTP subsystem to unblock a write. The SSH connection itself is
+// still usable, so the temp directory can be removed without waiting for the
+// process to reconnect.
+func (c *Client) removeRemoteTempViaSSH(dir, file string) error {
+	session, err := c.sshClient.NewSession()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = session.Close() }()
+
+	script := fmt.Sprintf("rm -f -- %s", shellquote.Quote(file))
+	if dir != "" {
+		script += fmt.Sprintf("; rmdir -- %s 2>/dev/null || true", shellquote.Quote(dir))
+	}
+	return session.Run(script)
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.r.Read(p)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return n, ctxErr
+	}
+	return n, err
 }
 
 // remoteFileOps is the slice of *sftp.Client that the atomic install sequence
@@ -193,6 +352,16 @@ func installRemoteFile(fs remoteFileOps, tmpPath, destPath string) error {
 
 // DownloadFile downloads a single remote file to the destination local path.
 func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
+	return c.DownloadFileContext(context.Background(), remotePath, localPath)
+}
+
+// DownloadFileContext downloads a single remote file and aborts on context
+// cancellation. A partially written local temporary file is always removed.
+func (c *Client) DownloadFileContext(ctx context.Context, remotePath, localPath string) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
 	srcFile, err := c.sftpClient.Open(remotePath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open remote file %q: %w", remotePath, err)
@@ -231,7 +400,7 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 	}()
 
 	progressReader := newProgressReader(srcFile, srcStat.Size(), "Downloading", remotePath, localPath)
-	n, copyErr := io.Copy(tmpFile, progressReader)
+	n, copyErr := copyWithContext(ctx, tmpFile, progressReader)
 	if copyErr != nil {
 		return 0, fmt.Errorf("failed to download data to %q: %w", localPath, copyErr)
 	}
@@ -247,6 +416,29 @@ func (c *Client) DownloadFile(remotePath, localPath string) (int64, error) {
 		return n, fmt.Errorf("failed to rename %q to %q: %w", tmpName, localPath, err)
 	}
 	return n, nil
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	type copyResult struct {
+		n   int64
+		err error
+	}
+	done := make(chan copyResult, 1)
+	go func() {
+		n, err := io.Copy(dst, &contextReader{ctx: ctx, r: src})
+		done <- copyResult{n: n, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		// The local temp file is removed by DownloadFileContext; the caller's
+		// deferred Close also interrupts a blocked SFTP read when the command
+		// unwinds.
+		<-done
+		return 0, ctx.Err()
+	case result := <-done:
+		return result.n, result.err
+	}
 }
 
 // localPermFromRemote maps a remote file mode onto the local copy's
@@ -269,6 +461,12 @@ type uploadTask struct {
 
 // UploadDir recursively uploads a local directory to a remote directory.
 func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
+	return c.UploadDirContext(context.Background(), localDir, remoteDir)
+}
+
+// UploadDirContext recursively uploads a local directory and stops scheduling
+// new files once the context is canceled.
+func (c *Client) UploadDirContext(ctx context.Context, localDir, remoteDir string) (int, int64, error) {
 	localDir = filepath.Clean(localDir)
 	info, err := os.Stat(localDir)
 	if err != nil {
@@ -318,7 +516,7 @@ func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
 		totalBytes int64
 	)
 	err = runBounded(files, dirWorkers, func(task uploadTask) error {
-		n, err := c.UploadFile(task.localPath, task.remotePath)
+		n, err := c.UploadFileContext(ctx, task.localPath, task.remotePath)
 		if err != nil {
 			return err
 		}
@@ -328,6 +526,9 @@ func (c *Client) UploadDir(localDir, remoteDir string) (int, int64, error) {
 		mu.Unlock()
 		return nil
 	})
+	if err == nil {
+		err = ctx.Err()
+	}
 	return filesCount, totalBytes, err
 }
 
@@ -338,6 +539,12 @@ type downloadTask struct {
 
 // DownloadDir recursively downloads a remote directory to a local directory.
 func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
+	return c.DownloadDirContext(context.Background(), remoteDir, localDir)
+}
+
+// DownloadDirContext recursively downloads a remote directory and stops
+// scheduling new files once the context is canceled.
+func (c *Client) DownloadDirContext(ctx context.Context, remoteDir, localDir string) (int, int64, error) {
 	remoteDir = path.Clean(remoteDir)
 	rStat, err := c.sftpClient.Stat(remoteDir)
 	if err != nil {
@@ -352,6 +559,9 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 	)
 	walker := c.sftpClient.Walk(remoteDir)
 	for walker.Step() {
+		if err := ctx.Err(); err != nil {
+			return 0, 0, err
+		}
 		if walker.Err() != nil {
 			return 0, 0, walker.Err()
 		}
@@ -392,7 +602,7 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 		totalBytes int64
 	)
 	err = runBounded(files, dirWorkers, func(task downloadTask) error {
-		n, err := c.DownloadFile(task.remotePath, task.localPath)
+		n, err := c.DownloadFileContext(ctx, task.remotePath, task.localPath)
 		if err != nil {
 			return err
 		}
@@ -402,6 +612,9 @@ func (c *Client) DownloadDir(remoteDir, localDir string) (int, int64, error) {
 		mu.Unlock()
 		return nil
 	})
+	if err == nil {
+		err = ctx.Err()
+	}
 	return filesCount, totalBytes, err
 }
 

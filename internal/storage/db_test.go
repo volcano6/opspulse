@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/volcano6/opspulse/internal/storage/migrations"
 )
 
 func TestDB_LifecycleAndMigration(t *testing.T) {
@@ -29,6 +31,70 @@ func TestDB_LifecycleAndMigration(t *testing.T) {
 	// Test idempotency of Migrate
 	if err := db.Migrate(context.Background()); err != nil {
 		t.Fatalf("second Migrate() should be idempotent, got error: %v", err)
+	}
+}
+
+func TestDB_ConcurrentOpenSerializesMigrations(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "concurrent-migrate.db")
+
+	const workers = 8
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	dbs := make(chan *DB, workers)
+	var wg sync.WaitGroup
+
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			db, err := Open(dbPath)
+			if err != nil {
+				errs <- err
+				return
+			}
+			dbs <- db
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(dbs)
+
+	for err := range errs {
+		t.Errorf("concurrent Open() error: %v", err)
+	}
+	opened := 0
+	for db := range dbs {
+		opened++
+		_ = db.Close()
+	}
+	if opened != workers {
+		t.Fatalf("opened %d databases, want %d", opened, workers)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open() after concurrent migration: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var count int
+	if err := db.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
+		t.Fatalf("count migrations: %v", err)
+	}
+	entries, err := migrations.FS.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read embedded migrations: %v", err)
+	}
+	want := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
+			want++
+		}
+	}
+	if count != want {
+		t.Errorf("schema_migrations rows = %d, want %d", count, want)
 	}
 }
 

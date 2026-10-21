@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -117,7 +118,7 @@ func TestExecuteUpload_PassesResolvedJumpHostToClient(t *testing.T) {
 
 	stub := stubSFTPClient(t)
 
-	err := executeUpload(store, "internal", localPath, "/tmp/upload.txt")
+	err := executeUpload(context.Background(), store, "internal", localPath, "/tmp/upload.txt")
 	if !errors.Is(err, stub.err) {
 		t.Fatalf("executeUpload() error = %v, want the stubbed failure", err)
 	}
@@ -140,7 +141,7 @@ func TestExecuteDownload_PassesResolvedJumpHostToClient(t *testing.T) {
 
 	stub := stubSFTPClient(t)
 
-	err := executeDownload(store, "internal", "/var/log/app.log", filepath.Join(t.TempDir(), "app.log"))
+	err := executeDownload(context.Background(), store, "internal", "/var/log/app.log", filepath.Join(t.TempDir(), "app.log"))
 	if !errors.Is(err, stub.err) {
 		t.Fatalf("executeDownload() error = %v, want the stubbed failure", err)
 	}
@@ -165,7 +166,7 @@ func TestExecuteUpload_UnknownJumpHostFailsBeforeConnecting(t *testing.T) {
 
 	stub := stubSFTPClient(t)
 
-	err := executeUpload(store, "internal", localPath, "/tmp/upload.txt")
+	err := executeUpload(context.Background(), store, "internal", localPath, "/tmp/upload.txt")
 	if errors.Is(err, stub.err) {
 		t.Fatal("a connection was attempted despite the unknown jump host")
 	}

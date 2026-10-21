@@ -22,7 +22,7 @@ type BackupRun struct {
 	JobName         string     `json:"job_name"`
 	ServerName      string     `json:"server_name"`
 	SnapshotID      string     `json:"snapshot_id,omitempty"`
-	Status          string     `json:"status"` // "success", "failed", "running"
+	Status          string     `json:"status"` // "success", "failed", "canceled", "running"
 	FilesNew        int64      `json:"files_new"`
 	FilesChanged    int64      `json:"files_changed"`
 	FilesUnmodified int64      `json:"files_unmodified"`
