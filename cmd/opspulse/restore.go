@@ -56,6 +56,7 @@ var (
 	restoreRunNoStart      bool
 	restoreRunAs           string
 	restoreRunYes          bool
+	restoreRunAllowUntracked bool
 )
 
 var restoreRunCmd = &cobra.Command{
@@ -118,13 +119,14 @@ success / partial / failed / canceled / dry-run。
 		}
 
 		opts := backup.RestoreOptions{
-			SnapshotID:   restoreRunSnapshot,
-			TargetServer: restoreRunTargetServer,
-			TargetPath:   restoreRunTargetPath,
-			AssetID:      restoreRunAssetID,
-			DryRun:       restoreRunDryRun,
-			StartPolicy:  startPolicy,
-			AliasName:    restoreRunAs,
+			SnapshotID:     restoreRunSnapshot,
+			TargetServer:   restoreRunTargetServer,
+			TargetPath:     restoreRunTargetPath,
+			AssetID:        restoreRunAssetID,
+			DryRun:         restoreRunDryRun,
+			StartPolicy:    startPolicy,
+			AliasName:      restoreRunAs,
+			AllowUntracked: restoreRunAllowUntracked,
 		}
 
 		targetHost := job.Server
@@ -160,6 +162,10 @@ success / partial / failed / canceled / dry-run。
 
 		if result != nil && (result.Status == "failed" || result.Status == "partial") {
 			return fmt.Errorf("restore finished with status %q: %s", result.Status, result.ErrorMessage)
+		}
+
+		if result != nil && result.Untracked {
+			return fmt.Errorf("restore %q completed but was not audited: %w", jobName, backup.ErrRestoreUntracked)
 		}
 
 		return nil
@@ -237,6 +243,7 @@ func init() {
 	restoreRunCmd.Flags().BoolVar(&restoreRunNoStart, "no-start", false, "还原后不启动：仅解压文件，不拉起容器也不灌库（与 --start 互斥）")
 	restoreRunCmd.Flags().StringVar(&restoreRunAs, "as", "", "在目标服务器上重命名容器/服务项目名")
 	restoreRunCmd.Flags().BoolVarP(&restoreRunYes, "yes", "y", false, "跳过执行前的交互式确认")
+	restoreRunCmd.Flags().BoolVar(&restoreRunAllowUntracked, "allow-untracked", false, "SQLite 写入失败时仍继续还原（记录标记为 UNTRACKED，进程以状态码 3 退出）")
 
 	restoreHistoryCmd.Flags().IntVarP(&restoreHistoryLimit, "limit", "n", 20, "最多显示的历史记录条数")
 

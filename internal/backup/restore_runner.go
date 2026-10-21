@@ -49,6 +49,7 @@ type RestoreOptions struct {
 	DryRun       bool   // Only preview files without writing
 	StartPolicy  StartPolicy
 	AliasName    string // Optional rename alias for container/service
+	AllowUntracked bool // Proceed even if the SQLite audit record cannot be created
 }
 
 // effectiveStartPolicy resolves the zero value to the scenario-aware default.
@@ -135,15 +136,22 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		Status:       "running",
 		StartedAt:    startTime,
 	}
+	var untrackedRun bool
 	if r.restoreRepo != nil {
 		if _, err := r.restoreRepo.CreateRun(ctx, runRecord); err != nil {
-			return nil, fmt.Errorf("refusing to run restore %q: its audit record could not be created in SQLite: %w", job.Name, err)
+			if !opts.AllowUntracked {
+				return nil, fmt.Errorf("refusing to run restore %q: its audit record could not be created in SQLite (%w); fix the database or re-run with --allow-untracked to proceed and mark the run untracked", job.Name, err)
+			}
+			untrackedRun = true
+			_, _ = fmt.Fprintf(consoleOut, "Warning: cannot create the audit record for restore %q: %v\n", job.Name, err)
+			_, _ = fmt.Fprintf(consoleOut, "Warning: --allow-untracked is set; running anyway. This run is UNTRACKED (exit code %d).\n", ExitUntracked)
 		}
 	}
 
 	// The per-step report is built alongside the run record: the record keeps
 	// the backward-compatible aggregate status, the report carries the detail.
 	result := newRestoreReport(runRecord)
+	result.Untracked = untrackedRun
 
 	// 0. Validate the job and the container alias. Both reach generated shell
 	// scripts, so they are checked before anything else runs.
@@ -270,6 +278,20 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 			}
 			return result, execErr
 		}
+		if result.Untracked {
+			if auditErr != nil {
+				return result, fmt.Errorf(
+					"restore dry-run for %q completed but its audit record could not be persisted: %w",
+					runRecord.JobName,
+					errors.Join(ErrRestoreUntracked, auditErr),
+				)
+			}
+			return result, fmt.Errorf(
+				"restore dry-run for %q completed but its audit record could not be created in SQLite: %w",
+				runRecord.JobName,
+				ErrRestoreUntracked,
+			)
+		}
 		if auditErr != nil {
 			result.Untracked = true
 			return result, fmt.Errorf(
@@ -354,6 +376,10 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 			finishedAt.Format(time.RFC3339), runRecord.Status)
 	}
 
+	if result.Untracked {
+		_, _ = fmt.Fprintf(consoleOut, "\n!!! UNTRACKED: this restore run has no audit record in SQLite; `ops restore history` will not list it as a normal run. !!!\n")
+	}
+
 	if auditErr != nil {
 		if execErr == nil {
 			result.Untracked = true
@@ -380,6 +406,14 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 				ErrRestoreAuditFailed,
 				auditErr,
 			),
+		)
+	}
+
+	if result.Untracked && execErr == nil {
+		return result, fmt.Errorf(
+			"restore run %q completed but its audit record could not be created in SQLite: %w",
+			runRecord.JobName,
+			ErrRestoreUntracked,
 		)
 	}
 

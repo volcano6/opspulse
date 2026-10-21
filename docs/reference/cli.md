@@ -940,6 +940,7 @@ success / partial / failed / canceled / dry-run。
 
 | flag | 简写 | 默认值 | 说明 |
 | --- | --- | --- | --- |
+| `--allow-untracked` | - | `false` | SQLite 写入失败时仍继续还原（记录标记为 UNTRACKED，进程以状态码 3 退出） |
 | `--as` | - | (空) | 在目标服务器上重命名容器/服务项目名 |
 | `--asset` | - | (空) | 仅还原指定资产（按资产 ID） |
 | `--dry-run` | - | `false` | 预演模式：仅列出文件，不执行实际还原 |

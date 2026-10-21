@@ -474,6 +474,41 @@ func TestRestoreRunner_RefusesWhenAuditRecordCannotBeCreated(t *testing.T) {
 	}
 }
 
+func TestRestoreRunner_ProceedsWhenAllowUntrackedAndAuditCannotBeCreated(t *testing.T) {
+	cause := errors.New("database is locked (5) (SQLITE_BUSY)")
+	recorder := &restoreAuditRecorder{createErr: cause}
+	exec := &restoreAuditExecutor{}
+	f := newRestoreAuditFixtureWithRecorder(t, exec, recorder)
+
+	var buf bytes.Buffer
+	result, err := f.runner.Run(context.Background(), f.job, RestoreOptions{
+		SnapshotID:     auditSnapshotID,
+		AllowUntracked: true,
+		StartPolicy:    StartPolicyNoStart,
+	}, &buf)
+	if err == nil {
+		t.Fatal("Run() returned nil error; an unaudited restore success must be reported with ErrRestoreUntracked")
+	}
+	if !errors.Is(err, ErrRestoreUntracked) {
+		t.Errorf("Run() error = %v; want it to wrap ErrRestoreUntracked", err)
+	}
+	if result == nil {
+		t.Fatal("Run() returned nil result; want a completed restore result")
+	}
+	if result.Status != "success" {
+		t.Errorf("result.Status = %q; want success", result.Status)
+	}
+	if !result.Untracked {
+		t.Error("result.Untracked = false; want true in --allow-untracked mode")
+	}
+	if exec.calls == 0 {
+		t.Error("executor did not run; want the restore to have completed in --allow-untracked mode")
+	}
+	if !strings.Contains(buf.String(), "--allow-untracked is set; running anyway") {
+		t.Errorf("console output = %q; want an untracked warning", buf.String())
+	}
+}
+
 func TestRestoreRunner_UntrackedWhenFinalAuditCannotPersist(t *testing.T) {
 	cause := errors.New("attempt to write a readonly database (8)")
 	recorder := &restoreAuditRecorder{updateErr: cause}

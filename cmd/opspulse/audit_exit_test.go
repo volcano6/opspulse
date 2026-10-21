@@ -53,6 +53,7 @@ func TestAllowUntrackedFlagDefaultsToFalse(t *testing.T) {
 		path []string
 	}{
 		{"backup run", []string{"backup", "run"}},
+		{"restore run", []string{"restore", "run"}},
 		{"daemon", []string{"daemon"}},
 	}
 
