@@ -621,11 +621,14 @@ func applyTargetAdjustment(
 
 	manifest := readApplyManifest(ctx, exec, target, projectDir)
 	if manifest != nil {
-		for _, volume := range manifest.Volumes {
+		for i, volume := range manifest.Volumes {
 			if volume.Archive == "" {
 				continue
 			}
-			archivePath := path.Join(projectDir, volume.Archive)
+			archivePath, err := manifest.ResolveVolumeArchive(projectDir, i)
+			if err != nil {
+				return fmt.Errorf("manifest 中的 named volume 路径非法: %w", err)
+			}
 			_, _ = fmt.Fprintf(out, "  -> 导入 named volume %q（%s）\n", volume.OriginalName, volume.Archive)
 			if _, err := runApplyScript(ctx, exec, target, "apply-volume-"+volume.OriginalName,
 				docker.BuildVolumeImportScript(volume.OriginalName, archivePath), out); err != nil {
@@ -645,7 +648,10 @@ func applyTargetAdjustment(
 		if container == "" || container == manifest.App {
 			container = alias
 		}
-		dumpPath := path.Join(projectDir, manifest.Database.Dump)
+		dumpPath, err := manifest.ResolveDatabaseDump(projectDir)
+		if err != nil {
+			return fmt.Errorf("manifest 中的数据库导出路径非法: %w", err)
+		}
 		importScript, err := docker.BuildImportScript(manifest.Database.Engine, container, dumpPath)
 		if err != nil {
 			return fmt.Errorf("构建数据库导入脚本失败: %w", err)

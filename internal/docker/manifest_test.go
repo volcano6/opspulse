@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,6 +57,136 @@ func TestManifest_MarshalUnmarshal(t *testing.T) {
 	}
 	if parsed.Database == nil || parsed.Database.Engine != "mysql" || parsed.Database.Dump != "dumps/database.sql.gz" {
 		t.Errorf("unexpected parsed database: %+v", parsed.Database)
+	}
+}
+
+func TestUnmarshalManifest_RejectsUnsupportedFormatVersion(t *testing.T) {
+	_, err := UnmarshalManifest([]byte(`format_version: 2
+app: blog
+compose_file: compose.yaml
+`))
+	if !errors.Is(err, ErrUnsupportedManifestVersion) {
+		t.Fatalf("UnmarshalManifest() error = %v; want ErrUnsupportedManifestVersion", err)
+	}
+}
+
+func TestUnmarshalManifest_RejectsMissingFormatVersion(t *testing.T) {
+	_, err := UnmarshalManifest([]byte(`app: blog
+compose_file: compose.yaml
+`))
+	if !errors.Is(err, ErrUnsupportedManifestVersion) {
+		t.Fatalf("UnmarshalManifest() error = %v; want ErrUnsupportedManifestVersion", err)
+	}
+}
+
+func TestUnmarshalManifest_RejectsUnsafePackagePaths(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "volume parent traversal",
+			body: `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+  - original_name: data
+    archive: ../../etc/shadow
+    target: /var/lib/app
+`,
+		},
+		{
+			name: "volume absolute path",
+			body: `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+  - original_name: data
+    archive: /etc/shadow
+    target: /var/lib/app
+`,
+		},
+		{
+			name: "volume windows drive",
+			body: `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+  - original_name: data
+    archive: C:\Windows\win.ini
+    target: /var/lib/app
+`,
+		},
+		{
+			name: "database parent traversal",
+			body: `format_version: 1
+app: blog
+compose_file: compose.yaml
+database:
+  engine: mysql
+  container: blog-db
+  dump: ../outside.sql.gz
+`,
+		},
+		{
+			name: "compose file escapes package",
+			body: `format_version: 1
+app: blog
+compose_file: ../compose.yaml
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := UnmarshalManifest([]byte(tc.body)); !errors.Is(err, ErrInvalidManifest) {
+				t.Fatalf("UnmarshalManifest() error = %v; want ErrInvalidManifest", err)
+			}
+		})
+	}
+}
+
+func TestUnmarshalManifest_RejectsUnsafeScalarFields(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty app",
+			body: "format_version: 1\napp: ''\ncompose_file: compose.yaml\n",
+		},
+		{
+			name: "newline in volume name",
+			body: "format_version: 1\napp: blog\ncompose_file: compose.yaml\nvolumes:\n  - original_name: \"data\\nname\"\n    archive: volumes/data.tar\n    target: /var/lib/app\n",
+		},
+		{
+			name: "unknown database engine",
+			body: "format_version: 1\napp: blog\ncompose_file: compose.yaml\ndatabase:\n  engine: sqlite\n  container: blog-db\n  dump: dumps/db.sql.gz\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := UnmarshalManifest([]byte(tc.body)); !errors.Is(err, ErrInvalidManifest) {
+				t.Fatalf("UnmarshalManifest() error = %v; want ErrInvalidManifest", err)
+			}
+		})
+	}
+}
+
+func TestManifest_ResolvePathStaysUnderPackageRoot(t *testing.T) {
+	m := &ContainerManifest{
+		FormatVersion: ManifestFormatVersion,
+		App:           "blog",
+		ComposeFile:   "compose.yaml",
+	}
+	got, err := m.ResolvePath("/srv/blog/.opspulse", "compose_file", "compose.yaml")
+	if err != nil {
+		t.Fatalf("ResolvePath() error: %v", err)
+	}
+	if got != "/srv/blog/.opspulse/compose.yaml" {
+		t.Errorf("ResolvePath() = %q", got)
+	}
+	if _, err := m.ResolvePath("/srv/blog/.opspulse", "compose_file", "../compose.yaml"); !errors.Is(err, ErrInvalidManifest) {
+		t.Fatalf("ResolvePath() traversal error = %v; want ErrInvalidManifest", err)
 	}
 }
 

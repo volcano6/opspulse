@@ -315,7 +315,11 @@ func (r *RestoreRunner) Run(ctx context.Context, job Job, opts RestoreOptions, c
 		// The container steps are scenario-aware: see runPostRestoreSteps.
 		if startErr := r.runPostRestoreSteps(ctx, target, job, opts, targetServerName, result, consoleOut); startErr != nil {
 			runRecord.FailureStage = storage.RestoreStagePostRestore
-			runRecord.ErrorMessage = fmt.Sprintf("restore completed but container auto-start failed: %v", startErr)
+			if errors.Is(startErr, ErrRestorePreflightBlocked) {
+				runRecord.ErrorMessage = fmt.Sprintf("restore completed but target preflight blocked container steps: %v", startErr)
+			} else {
+				runRecord.ErrorMessage = fmt.Sprintf("restore completed but container auto-start failed: %v", startErr)
+			}
 			_, _ = fmt.Fprintf(consoleOut, "⚠️ Restore completed with partial status (%s): %s\n", storage.RestoreStagePostRestore, runRecord.ErrorMessage)
 			if hint := restoreStageHint(storage.RestoreStagePostRestore); hint != "" {
 				_, _ = fmt.Fprintf(consoleOut, "   Next: %s\n", hint)
@@ -668,16 +672,87 @@ func (r *RestoreRunner) startRestoredServices(
 		}
 	}
 
+	// Resolve every artifact path before the first mutating step. A manifest
+	// that passed schema validation can still point at a file the snapshot did
+	// not restore; finding that out after the first volume import leaves the
+	// target half updated.
+	volumeArchivePaths := make([]string, len(manifest.Volumes))
+	for i, v := range manifest.Volumes {
+		if v.Archive == "" {
+			continue
+		}
+		archivePath, pathErr := manifest.ResolveVolumeArchive(packageRoot, i)
+		if pathErr != nil {
+			stepErr := fmt.Errorf("invalid volume archive in manifest: %w", pathErr)
+			result.setStep(RestoreStepVolumes, RestoreStepFailed, stepErr.Error(), "")
+			result.blockSteps("manifest 路径非法，未执行", RestoreStepDatabase, RestoreStepCompose)
+			return stepErr
+		}
+		volumeArchivePaths[i] = archivePath
+	}
+
+	databaseDumpPath := ""
+	if manifest.Database != nil && manifest.Database.Dump != "" {
+		resolvedDump, pathErr := manifest.ResolveDatabaseDump(packageRoot)
+		if pathErr != nil {
+			stepErr := fmt.Errorf("invalid database dump path in manifest: %w", pathErr)
+			result.setStep(RestoreStepDatabase, RestoreStepFailed, stepErr.Error(), "")
+			result.blockSteps("manifest 路径非法，未执行", RestoreStepVolumes, RestoreStepCompose)
+			return stepErr
+		}
+		databaseDumpPath = resolvedDump
+	}
+
+	projectName := manifest.App
+	if opts.AliasName != "" {
+		projectName = opts.AliasName
+	}
+	composeFile := manifest.ComposeFile
+	if composeFile == "" {
+		composeFile = "compose.yaml"
+	}
+
+	expectedContainers := []string{manifest.App}
+	if opts.AliasName != "" {
+		expectedContainers = append(expectedContainers, opts.AliasName)
+	}
+	if manifest.Database != nil {
+		expectedContainers = append(expectedContainers, databaseContainerName(manifest, opts))
+	}
+
+	var volumeArchives []string
+	for _, archivePath := range volumeArchivePaths {
+		if archivePath != "" {
+			volumeArchives = append(volumeArchives, archivePath)
+		}
+	}
+	preflightInput := restorePreflightInput{
+		ProjectName:        projectName,
+		ComposeFile:        path.Join(restoredProjectDir, composeFile),
+		VolumeArchives:     volumeArchives,
+		DatabaseDump:       databaseDumpPath,
+		ExpectedContainers: dedupPaths(expectedContainers),
+		CrossMachine:       target.Name != job.Server,
+	}
+
+	if preflightErr := runRestorePreflight(ctx, execToUse, target, job.Name, preflightInput); preflightErr != nil {
+		reason := fmt.Sprintf("恢复前目标预检失败：%v", preflightErr)
+		result.blockSteps(reason, RestoreStepVolumes, RestoreStepDatabase, RestoreStepCompose)
+		result.addPending("修复目标机前置条件后重新执行恢复；本次未导入任何卷、数据库，也未启动 Compose")
+		result.warnf(consoleOut, "  ⚠️ Warning: %s", reason)
+		return fmt.Errorf("%w: %v", ErrRestorePreflightBlocked, preflightErr)
+	}
+
 	// B. Restore named volumes
 	if len(manifest.Volumes) == 0 {
 		result.setStep(RestoreStepVolumes, RestoreStepSkipped, "快照中没有命名卷需要恢复", "")
 	}
 	restoredVolumes := 0
-	for _, v := range manifest.Volumes {
+	for i, v := range manifest.Volumes {
 		if v.Archive == "" {
 			continue
 		}
-		archivePath := path.Join(packageRoot, v.Archive)
+		archivePath := volumeArchivePaths[i]
 		_, _ = fmt.Fprintf(consoleOut, "  -> Restoring volume %q from %s...\n", v.OriginalName, v.Archive)
 		volScript := docker.BuildVolumeImportScript(v.OriginalName, archivePath)
 		vRes, vErr := execToUse.Execute(ctx, target, "restore-vol-"+v.OriginalName, volScript, consoleOut)
@@ -695,14 +770,6 @@ func (r *RestoreRunner) startRestoredServices(
 	}
 
 	// C. Start Compose
-	projectName := manifest.App
-	if opts.AliasName != "" {
-		projectName = opts.AliasName
-	}
-	composeFile := manifest.ComposeFile
-	if composeFile == "" {
-		composeFile = "compose.yaml"
-	}
 	startComposeScript := fmt.Sprintf(`if docker compose version >/dev/null 2>&1; then
   COMPOSE="docker compose"
 elif command -v docker-compose >/dev/null 2>&1; then
@@ -740,6 +807,20 @@ fi
 	return nil
 }
 
+// databaseContainerName returns the container name the database import will
+// address. It is shared by the preflight and the import itself so a renamed
+// Compose project is checked against the same container name it will use.
+func databaseContainerName(manifest *docker.ContainerManifest, opts RestoreOptions) string {
+	if manifest == nil || manifest.Database == nil {
+		return ""
+	}
+	name := manifest.Database.Container
+	if opts.AliasName != "" && name == manifest.App {
+		name = opts.AliasName
+	}
+	return name
+}
+
 // importRestoredDatabase performs the database step of a manifest-driven
 // restore. A manifest that names a database without a logical dump is recorded
 // as manual: copying a live data directory is not a consistent import, and
@@ -767,11 +848,13 @@ func (r *RestoreRunner) importRestoredDatabase(
 		return nil
 	}
 
-	dumpPath := path.Join(packageRoot, manifest.Database.Dump)
-	targetContainer := manifest.Database.Container
-	if opts.AliasName != "" && targetContainer == manifest.App {
-		targetContainer = opts.AliasName
+	dumpPath, err := manifest.ResolveDatabaseDump(packageRoot)
+	if err != nil {
+		stepErr := fmt.Errorf("invalid database dump path in manifest: %w", err)
+		result.setStep(RestoreStepDatabase, RestoreStepFailed, stepErr.Error(), "")
+		return stepErr
 	}
+	targetContainer := databaseContainerName(manifest, opts)
 	_, _ = fmt.Fprintf(consoleOut, "  -> Importing database dump from %s into %s (%s)...\n",
 		dumpPath, targetContainer, manifest.Database.Engine)
 

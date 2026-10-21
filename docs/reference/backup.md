@@ -153,6 +153,10 @@ ops backup run vps-01:nginx-test --as nginx
 `.opspulse/dumps` 与 `.opspulse/volumes` 这两处 OpsPulse 自己的历史残留，备份结束后只删
 `.opspulse/` 下的临时文件。
 
+`manifest.yaml` 只接受 `format_version: 1`，且 `compose_file`、卷归档 `archive`、数据库导出
+`dump` 都必须是包内相对路径。绝对路径、Windows 盘符、反斜杠分隔符、`..` 越界以及非法字段
+会让该 manifest 被拒绝，不会触发卷导入、Compose 启动或数据库导入。
+
 旧版本产生的快照（`manifest.yaml` 与 `volumes/` 直接落在项目目录下）**仍然可以还原**：
 `ops restore run` 先找 `.opspulse/manifest.yaml`，找不到再回退到旧位置，无需手工搬运。
 
@@ -311,6 +315,13 @@ ops restore run web-data --target-server new-vps --yes
 
 `--start` 强制启动（普通文件恢复走通用 auto-start），`--no-start` 强制只解压文件；
 两者互斥，同时给出会直接报错。被跳过或被阻止的步骤会在结果与通知里列出对应的后续命令。
+
+manifest 驱动的恢复会在导入第一个命名卷之前先做一次**只读目标预检**：检查 Docker CLI 与
+daemon、Compose 引擎、Compose 文件、全部卷归档和数据库 dump 是否存在且可读，有卷时还要求
+至少一个 helper 镜像可用；跨机恢复还会检查目标机是否已有同名容器或同名 Compose 项目。
+任何一项失败都会把 volume、数据库和 Compose 三步标为 `blocked`，且**不会创建或导入卷、
+不会启动 Compose、不会灌库**。文件恢复本身已经完成，因此总状态为 `PARTIAL`，可修复目标机
+条件后重新执行。同机 `--start` 允许重启已有项目，不会因为目标机本来就有同名容器而误阻断。
 
 还原结果同样会经已配置的通知渠道发出（`event` 为 `restore_success` / `restore_partial` /
 `restore_failed` / `restore_dry-run`），请求体带 `steps`、`warnings`、`pending` 三个字段，

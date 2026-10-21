@@ -123,6 +123,11 @@ ops restore run blog-web --start
 都会以非零退出码结束，并发送 `restore_failed` / `restore_partial` 通知。`partial` 表示文件已
 恢复，但后续步骤失败或被阻止，不能当作完整迁移成功。
 
+manifest 驱动的恢复会在导入第一个 named volume 前执行只读目标预检：Docker/Compose、Compose
+文件、所有卷归档和数据库 dump、helper 镜像，以及跨机目标上的同名容器/Compose 项目。预检失败
+时不会导入任何卷、不会启动 Compose、不会灌库，volume/database/compose 三步均为 `blocked`；
+修复目标机条件后重新执行即可。同机 `--start` 是合法的已有服务重启，不做同名容器阻断。
+
 `ops restore run` **不会自动执行迁移后健康检查**；健康检查由 `ops docker apply` 默认执行，
 或对保存的 plan 单独运行 `ops docker health`。
 

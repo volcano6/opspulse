@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -419,9 +420,11 @@ func TestRestoreRunner_Run_AutoStartExit127_MarksPartialStatus(t *testing.T) {
 // and records every generated script, so tests can assert on the commands
 // handed to the target instead of on internal state.
 type manifestRestoreExecutor struct {
-	manifests map[string]string // absolute manifest path -> YAML body
-	scripts   map[string]string // task name -> generated script
-	executed  []string
+	manifests           map[string]string // absolute manifest path -> YAML body
+	scripts             map[string]string // task name -> generated script
+	executed            []string
+	preflightContainers []string
+	preflightErrors     []string
 }
 
 func extractCatPath(script string) string {
@@ -448,6 +451,16 @@ func (m *manifestRestoreExecutor) Execute(_ context.Context, target executor.Tar
 	case strings.HasPrefix(taskName, "read-manifest-"):
 		if body, ok := m.manifests[extractCatPath(script)]; ok && output != nil {
 			_, _ = io.WriteString(output, body)
+		}
+	case strings.HasPrefix(taskName, "restore-preflight-"):
+		if output != nil {
+			for _, line := range m.preflightErrors {
+				_, _ = fmt.Fprintf(output, "OPSPULSE_PREFLIGHT_ERROR|test|%s\n", line)
+			}
+			for _, line := range m.preflightContainers {
+				_, _ = fmt.Fprintln(output, line)
+			}
+			_, _ = io.WriteString(output, "OPSPULSE_PREFLIGHT_END\n")
 		}
 	case taskName == "check-mount":
 		// Every probed external mount is reported absent, which is the signal
@@ -584,6 +597,221 @@ func TestRestoreRunner_Manifest_ScratchLayoutRestorable(t *testing.T) {
 	startScript := mock.scripts["compose-up-blog"]
 	if !strings.Contains(startScript, "cd '/opt/blog'") {
 		t.Errorf("compose must run from the project directory, not the scratch directory: %q", startScript)
+	}
+}
+
+// A cross-machine restore must find every prerequisite before importing the
+// first volume. A target conflict leaves the restored files in place, but no
+// volume, database or Compose step may have run.
+func TestRestoreRunner_Manifest_TargetConflictStopsBeforeVolumes(t *testing.T) {
+	const manifest = `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+    - original_name: blog-uploads
+      archive: volumes/blog-uploads/data.tar
+      target: /var/lib/app/uploads
+database:
+    engine: mysql
+    container: blog-db
+    dump: dumps/blog.sql.gz
+`
+	mock := &manifestRestoreExecutor{
+		manifests: map[string]string{
+			"/opt/blog/.opspulse/manifest.yaml": manifest,
+		},
+		preflightContainers: []string{
+			`{"ID":"1","Names":"blog-web","Image":"nginx","Labels":"com.docker.compose.project=blog,com.docker.compose.service=web"}`,
+		},
+	}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	result, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err == nil {
+		t.Fatal("expected a target conflict to stop the restore")
+	}
+	if !errors.Is(err, ErrRestorePreflightBlocked) {
+		t.Errorf("error = %v, want ErrRestorePreflightBlocked", err)
+	}
+	if !strings.Contains(err.Error(), "target conflicts") {
+		t.Errorf("error should explain the target conflict: %v", err)
+	}
+	for _, prefix := range []string{"restore-vol-", "compose-up-", "import-db-"} {
+		if mock.hasTaskPrefix(prefix) {
+			t.Errorf("preflight conflict must not run %s: %v", prefix, mock.executed)
+		}
+	}
+	if result.Status != "partial" {
+		t.Errorf("status = %q, want partial (files restored, container steps blocked)", result.Status)
+	}
+	if !strings.Contains(result.ErrorMessage, "target preflight blocked") {
+		t.Errorf("record error should name the preflight, got %q", result.ErrorMessage)
+	}
+	for _, kind := range []string{RestoreStepVolumes, RestoreStepDatabase, RestoreStepCompose} {
+		if got := stepStatus(t, result, kind); got.Status != RestoreStepBlocked {
+			t.Errorf("%s step = %+v, want blocked", kind, got)
+		}
+	}
+}
+
+// Missing artifacts and a missing helper image are also discovered by the
+// preflight, before the first volume import can change the target.
+func TestRestoreRunner_Manifest_MissingPrerequisitesStopBeforeVolumes(t *testing.T) {
+	cases := []struct {
+		name       string
+		preflight  []string
+		wantErrSub string
+	}{
+		{name: "missing archive", preflight: []string{"path_missing: volume archive is missing"}, wantErrSub: "path_missing"},
+		{name: "missing helper image", preflight: []string{"helper_image_missing: no helper image"}, wantErrSub: "helper_image_missing"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &manifestRestoreExecutor{
+				manifests: map[string]string{
+					"/opt/blog/.opspulse/manifest.yaml": restoreTestManifest,
+				},
+				preflightErrors: tc.preflight,
+			}
+			runner, _, job := newRestoreTestRunner(t, mock)
+
+			var buf bytes.Buffer
+			result, err := runner.Run(context.Background(), job, RestoreOptions{
+				SnapshotID:   "snap-abcdef1234567890",
+				TargetServer: "vps-02",
+			}, &buf)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("error = %v, want one containing %q", err, tc.wantErrSub)
+			}
+			for _, prefix := range []string{"restore-vol-", "compose-up-", "import-db-"} {
+				if mock.hasTaskPrefix(prefix) {
+					t.Errorf("failed preflight must not run %s: %v", prefix, mock.executed)
+				}
+			}
+			if got := stepStatus(t, result, RestoreStepVolumes); got.Status != RestoreStepBlocked {
+				t.Errorf("volumes step = %+v, want blocked", got)
+			}
+		})
+	}
+}
+
+// A same-host --start restore is a legitimate restart of services that may
+// already exist, so target container/project conflicts are checked only for a
+// cross-machine restore.
+func TestRestoreRunner_Manifest_SameHostStartIgnoresExistingProject(t *testing.T) {
+	mock := &manifestRestoreExecutor{
+		manifests: map[string]string{
+			"/opt/blog/.opspulse/manifest.yaml": restoreTestManifest,
+		},
+		preflightContainers: []string{
+			`{"ID":"1","Names":"blog-web","Image":"nginx","Labels":"com.docker.compose.project=blog"}`,
+		},
+	}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	if _, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:  "snap-abcdef1234567890",
+		StartPolicy: StartPolicyStart,
+	}, &buf); err != nil {
+		t.Fatalf("same-host --start must not be blocked by its own project: %v", err)
+	}
+	if !mock.hasTaskPrefix("restore-vol-") || !mock.hasTaskPrefix("compose-up-") {
+		t.Errorf("same-host --start should import and start, executed: %v", mock.executed)
+	}
+}
+
+// A manifest that points a volume archive outside the restored package must
+// never reach docker.BuildVolumeImportScript. The whole manifest is rejected at
+// parse time, so no volume or database import is attempted.
+func TestRestoreRunner_Manifest_RejectsVolumePathTraversal(t *testing.T) {
+	const manifest = `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+    - original_name: blog-uploads
+      archive: ../../etc/shadow
+      target: /var/lib/app/uploads
+`
+	mock := &manifestRestoreExecutor{manifests: map[string]string{
+		"/opt/blog/.opspulse/manifest.yaml": manifest,
+	}}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	_, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+	if mock.hasTaskPrefix("restore-vol-") {
+		t.Errorf("unsafe manifest must not import a volume: %v", mock.executed)
+	}
+	if mock.hasTaskPrefix("compose-up-") {
+		t.Errorf("unsafe manifest must not start services: %v", mock.executed)
+	}
+	if !strings.Contains(buf.String(), "could not parse it") {
+		t.Errorf("console output should explain the rejected manifest:\n%s", buf.String())
+	}
+}
+
+func TestRestoreRunner_Manifest_RejectsDatabaseDumpTraversal(t *testing.T) {
+	const manifest = `format_version: 1
+app: blog
+compose_file: compose.yaml
+database:
+    engine: mysql
+    container: blog-db
+    dump: ../outside.sql.gz
+`
+	mock := &manifestRestoreExecutor{manifests: map[string]string{
+		"/opt/blog/.opspulse/manifest.yaml": manifest,
+	}}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	_, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+	if mock.hasTaskPrefix("import-db-") {
+		t.Errorf("unsafe manifest must not import a database: %v", mock.executed)
+	}
+}
+
+func TestRestoreRunner_Manifest_RejectsUnknownFormatVersion(t *testing.T) {
+	const manifest = `format_version: 99
+app: blog
+compose_file: compose.yaml
+`
+	mock := &manifestRestoreExecutor{manifests: map[string]string{
+		"/opt/blog/.opspulse/manifest.yaml": manifest,
+	}}
+	runner, _, job := newRestoreTestRunner(t, mock)
+
+	var buf bytes.Buffer
+	_, err := runner.Run(context.Background(), job, RestoreOptions{
+		SnapshotID:   "snap-abcdef1234567890",
+		TargetServer: "vps-02",
+	}, &buf)
+	if err != nil {
+		t.Fatalf("RestoreRunner.Run() error = %v", err)
+	}
+	if mock.hasTaskPrefix("compose-up-") || mock.hasTaskPrefix("restore-vol-") || mock.hasTaskPrefix("import-db-") {
+		t.Errorf("manifest with an unknown version must not drive the restore: %v", mock.executed)
+	}
+	if !strings.Contains(buf.String(), "could not parse it") {
+		t.Errorf("console output should explain the rejected manifest:\n%s", buf.String())
 	}
 }
 

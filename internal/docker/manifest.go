@@ -1,8 +1,12 @@
 package docker
 
 import (
+	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/volcano6/opspulse/internal/shellquote"
 	"gopkg.in/yaml.v3"
@@ -10,6 +14,18 @@ import (
 
 // ManifestFileName is the standard manifest file name in container backup packages.
 const ManifestFileName = "manifest.yaml"
+
+// ManifestFormatVersion is the only container-manifest schema this build can
+// interpret. Unknown versions must be rejected rather than guessed at.
+const ManifestFormatVersion = 1
+
+var (
+	// ErrUnsupportedManifestVersion reports a manifest written by a newer or
+	// incompatible OpsPulse build.
+	ErrUnsupportedManifestVersion = errors.New("unsupported container manifest format version")
+	// ErrInvalidManifest reports malformed or unsafe manifest content.
+	ErrInvalidManifest = errors.New("invalid container manifest")
+)
 
 // ScratchDirName is the OpsPulse-owned working directory inside a container
 // project directory. Hot dumps, volume archives and manifest.yaml all live
@@ -93,7 +109,165 @@ func UnmarshalManifest(data []byte) (*ContainerManifest, error) {
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("unmarshal manifest: %w", err)
 	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
 	return &m, nil
+}
+
+// Validate enforces the manifest schema and the package-relative path
+// boundary. Every artifact path is later joined with the package root and fed
+// to a shell script, so accepting "../" here would let a crafted manifest read
+// a file outside the restored package.
+func (m *ContainerManifest) Validate() error {
+	if m == nil {
+		return fmt.Errorf("%w: manifest is nil", ErrInvalidManifest)
+	}
+	if m.FormatVersion != ManifestFormatVersion {
+		return fmt.Errorf(
+			"%w: got %d, want %d",
+			ErrUnsupportedManifestVersion,
+			m.FormatVersion,
+			ManifestFormatVersion,
+		)
+	}
+	if err := validateManifestField("app", m.App); err != nil {
+		return err
+	}
+	if strings.TrimSpace(m.ComposeFile) == "" {
+		return fmt.Errorf("%w: compose_file is required", ErrInvalidManifest)
+	}
+	if err := validatePackageRelativePath("compose_file", m.ComposeFile); err != nil {
+		return err
+	}
+	for i, v := range m.Volumes {
+		if err := validateManifestField(fmt.Sprintf("volumes[%d].original_name", i), v.OriginalName); err != nil {
+			return err
+		}
+		if strings.TrimSpace(v.Archive) == "" {
+			return fmt.Errorf("%w: volumes[%d].archive is required", ErrInvalidManifest, i)
+		}
+		if err := validatePackageRelativePath(fmt.Sprintf("volumes[%d].archive", i), v.Archive); err != nil {
+			return err
+		}
+		if err := validateManifestField(fmt.Sprintf("volumes[%d].target", i), v.Target); err != nil {
+			return err
+		}
+	}
+	for i, em := range m.ExternalMounts {
+		if err := validateManifestField(fmt.Sprintf("external_mounts[%d].source", i), em.Source); err != nil {
+			return err
+		}
+		if err := validateManifestField(fmt.Sprintf("external_mounts[%d].target", i), em.Target); err != nil {
+			return err
+		}
+		if hasControlCharacter(em.Reason) {
+			return fmt.Errorf("%w: external_mounts[%d].reason contains a control character", ErrInvalidManifest, i)
+		}
+	}
+	if m.Database != nil {
+		if _, err := normalizeManifestEngine(m.Database.Engine); err != nil {
+			return err
+		}
+		if err := validateManifestField("database.container", m.Database.Container); err != nil {
+			return err
+		}
+		if m.Database.Dump != "" {
+			if err := validatePackageRelativePath("database.dump", m.Database.Dump); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// ResolvePath joins a validated package-relative path with root and verifies
+// that the result stays under root. Validate already rejects traversal, but
+// this second boundary keeps callers safe if a manifest is constructed in Go
+// instead of parsed from YAML.
+func (m *ContainerManifest) ResolvePath(root, name, relative string) (string, error) {
+	if err := validatePackageRelativePath(name, relative); err != nil {
+		return "", err
+	}
+	cleanRoot := path.Clean(root)
+	resolved := path.Clean(path.Join(cleanRoot, relative))
+	if !isWithinRoot(cleanRoot, resolved) {
+		return "", fmt.Errorf("%w: %s %q escapes package root %q", ErrInvalidManifest, name, relative, root)
+	}
+	return resolved, nil
+}
+
+// ResolveVolumeArchive resolves one volume archive under the package root.
+func (m *ContainerManifest) ResolveVolumeArchive(root string, index int) (string, error) {
+	if index < 0 || index >= len(m.Volumes) {
+		return "", fmt.Errorf("%w: volume index %d out of range", ErrInvalidManifest, index)
+	}
+	return m.ResolvePath(root, fmt.Sprintf("volumes[%d].archive", index), m.Volumes[index].Archive)
+}
+
+// ResolveDatabaseDump resolves the database dump under the package root.
+func (m *ContainerManifest) ResolveDatabaseDump(root string) (string, error) {
+	if m.Database == nil {
+		return "", fmt.Errorf("%w: database section is missing", ErrInvalidManifest)
+	}
+	return m.ResolvePath(root, "database.dump", m.Database.Dump)
+}
+
+func validateManifestField(name, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: %s is required", ErrInvalidManifest, name)
+	}
+	if hasControlCharacter(value) {
+		return fmt.Errorf("%w: %s contains a control character", ErrInvalidManifest, name)
+	}
+	return nil
+}
+
+func hasControlCharacter(value string) bool {
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// validatePackageRelativePath accepts only a normalized path below the package
+// root. Both '/' and '\' are treated as separators because manifests can be
+// copied between Windows and Linux, and filepath.Clean on Windows would
+// otherwise hide a traversal that the target shell still interprets.
+func validatePackageRelativePath(name, value string) error {
+	if err := validateManifestField(name, value); err != nil {
+		return err
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) {
+		return fmt.Errorf("%w: %s %q must be relative to the package root", ErrInvalidManifest, name, value)
+	}
+	if len(value) >= 2 && value[1] == ':' {
+		return fmt.Errorf("%w: %s %q must not contain a drive prefix", ErrInvalidManifest, name, value)
+	}
+	normalized := strings.ReplaceAll(value, `\`, "/")
+	if path.IsAbs(normalized) || path.Clean(normalized) != normalized || normalized == "." || normalized == ".." ||
+		strings.HasPrefix(normalized, "../") || strings.Contains(normalized, "/../") {
+		return fmt.Errorf("%w: %s %q must be a clean path inside the package", ErrInvalidManifest, name, value)
+	}
+	return nil
+}
+
+func isWithinRoot(root, candidate string) bool {
+	rel, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(candidate))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func normalizeManifestEngine(engine string) (string, error) {
+	normalized, err := NormalizeDatabaseEngine(engine)
+	if err != nil {
+		return "", fmt.Errorf("%w: database.engine: %v", ErrInvalidManifest, err)
+	}
+	return normalized, nil
 }
 
 // helperImagePrologue resolves the helper image to use for volume scripts. It

@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/volcano6/opspulse/internal/capability"
 	"github.com/volcano6/opspulse/internal/docker"
+	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/migration"
+	"github.com/volcano6/opspulse/internal/shellquote"
 )
 
 // fakeApplyMigrator replaces the production backup/restore driver so the CLI
@@ -30,6 +33,24 @@ type applyCall struct {
 	Alias     string
 }
 
+type applyManifestExecutor struct {
+	files map[string]string
+}
+
+func (e *applyManifestExecutor) Execute(_ context.Context, _ executor.Target, _ string, script string, output io.Writer) (*executor.Result, error) {
+	for file, body := range e.files {
+		if strings.Contains(script, shellquote.Quote(file)) {
+			_, _ = io.WriteString(output, body)
+			return &executor.Result{Success: true}, nil
+		}
+	}
+	return &executor.Result{Success: false, ExitCode: 1}, nil
+}
+
+func (e *applyManifestExecutor) Test(_ context.Context, _ executor.Target) (time.Duration, string, error) {
+	return 0, "Linux", nil
+}
+
 func (f *fakeApplyMigrator) Migrate(_ context.Context, plan *migration.Plan, service migration.ServicePlan, _ io.Writer) error {
 	f.calls = append(f.calls, applyCall{
 		Source:    plan.Source.Server,
@@ -39,6 +60,59 @@ func (f *fakeApplyMigrator) Migrate(_ context.Context, plan *migration.Plan, ser
 		Alias:     migration.ApplyAlias(service),
 	})
 	return f.failOn[service.Name]
+}
+
+func TestReadApplyManifest_ValidatesBeforeUse(t *testing.T) {
+	target := executor.Target{Name: "vps-b"}
+	const valid = `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+  - original_name: uploads
+    archive: volumes/uploads/data.tar
+    target: /var/lib/uploads
+`
+	cases := []struct {
+		name string
+		body string
+		ok   bool
+	}{
+		{name: "valid", body: valid, ok: true},
+		{
+			name: "unknown version",
+			body: `format_version: 99
+app: blog
+compose_file: compose.yaml
+`,
+			ok: false,
+		},
+		{
+			name: "path traversal",
+			body: `format_version: 1
+app: blog
+compose_file: compose.yaml
+volumes:
+  - original_name: uploads
+    archive: ../../etc/shadow
+    target: /var/lib/uploads
+`,
+			ok: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &applyManifestExecutor{files: map[string]string{
+				docker.ManifestPath("/opt/blog"): tc.body,
+			}}
+			manifest := readApplyManifest(context.Background(), exec, target, "/opt/blog")
+			if tc.ok && manifest == nil {
+				t.Fatal("readApplyManifest() = nil; want a validated manifest")
+			}
+			if !tc.ok && manifest != nil {
+				t.Fatalf("readApplyManifest() = %+v; want nil for rejected manifest", manifest)
+			}
+		})
+	}
 }
 
 func installFakeApplyMigrator(t *testing.T, fake *fakeApplyMigrator) {
