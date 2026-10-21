@@ -15,6 +15,7 @@ import (
 	"github.com/volcano6/opspulse/internal/config"
 	"github.com/volcano6/opspulse/internal/server"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 func TestExpandPath(t *testing.T) {
@@ -211,6 +212,117 @@ func TestHostKeyCallback_OptInTrustNew_AcceptsAndLogs(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("known_hosts mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestHostKeyCallback_UnknownHostHandlerAcceptsAndPersists(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	var warnBuf bytes.Buffer
+	var got UnknownHostKey
+	callback := tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, &warnBuf, func(info UnknownHostKey) (bool, error) {
+		got = info
+		return true, nil
+	})
+	remote := &net.TCPAddr{IP: net.ParseIP("192.0.2.12"), Port: 2222}
+	hostname := "prompt.test:2222"
+	key := newTestHostKey(t)
+
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "")
+	if err := callback(hostname, remote, key); err != nil {
+		t.Fatalf("accepted unknown host key must be trusted: %v", err)
+	}
+	if got.Address != hostname || got.Host != "prompt.test" || got.Port != "2222" {
+		t.Errorf("handler got address %+v, want prompt.test:2222", got)
+	}
+	if got.KeyType != key.Type() || got.Fingerprint != ssh.FingerprintSHA256(key) {
+		t.Errorf("handler got key %s %s, want %s %s", got.KeyType, got.Fingerprint, key.Type(), ssh.FingerprintSHA256(key))
+	}
+	if !strings.Contains(warnBuf.String(), "Permanently added 'prompt.test:2222'") {
+		t.Errorf("expected trust notice, got: %s", warnBuf.String())
+	}
+
+	// A recorded key is accepted without asking again.
+	calls := 0
+	callback = tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, &warnBuf, func(UnknownHostKey) (bool, error) {
+		calls++
+		return true, nil
+	})
+	if err := callback(hostname, remote, key); err != nil {
+		t.Fatalf("recorded host key must be accepted: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("known host key invoked the prompt handler %d time(s)", calls)
+	}
+}
+
+func TestHostKeyCallback_UnknownHostHandlerDeclineKeepsFailClosed(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	callback := tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, nil, func(UnknownHostKey) (bool, error) {
+		return false, nil
+	})
+	hostname := "decline.test:22"
+	err := callback(hostname, &net.TCPAddr{IP: net.ParseIP("192.0.2.13"), Port: 22}, newTestHostKey(t))
+	if err == nil || !strings.Contains(err.Error(), "host key not recorded") {
+		t.Fatalf("declined host key must be rejected, got %v", err)
+	}
+	data, readErr := os.ReadFile(knownHostsPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("declined host key was written:\n%s", data)
+	}
+}
+
+func TestHostKeyCallback_UnknownHostHandlerDoesNotOverrideMismatch(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	existing := newTestHostKey(t)
+	if err := os.MkdirAll(filepath.Dir(knownHostsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHostsPath, []byte(knownhosts.Line([]string{"mismatch.test:22"}, existing)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	callback := tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, nil, func(UnknownHostKey) (bool, error) {
+		called = true
+		return true, nil
+	})
+	err := callback("mismatch.test:22", &net.TCPAddr{IP: net.ParseIP("192.0.2.14"), Port: 22}, newTestHostKey(t))
+	if err == nil || !strings.Contains(err.Error(), "knownhosts key mismatch") {
+		t.Fatalf("mismatched host key must be rejected, got %v", err)
+	}
+	if called {
+		t.Fatal("prompt handler must not be called for a mismatched host key")
+	}
+}
+
+func TestHostKeyCallback_EnvTrustSkipsPrompt(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	called := false
+	callback := tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, nil, func(UnknownHostKey) (bool, error) {
+		called = true
+		return false, nil
+	})
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "1")
+	if err := callback("env.test:22", &net.TCPAddr{IP: net.ParseIP("192.0.2.15"), Port: 22}, newTestHostKey(t)); err != nil {
+		t.Fatalf("env opt-in must trust the host key: %v", err)
+	}
+	if called {
+		t.Fatal("env opt-in must not prompt for an unknown host key")
+	}
+}
+
+func TestHostKeyCallback_UnknownHostErrorIncludesNonDefaultPort(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), ".ssh", "known_hosts")
+	callback := tofuHostKeyCallbackForWithWriter(knownHostsPath, nil)
+	t.Setenv("OPSPULSE_TRUST_NEW_HOST_KEY", "")
+	err := callback("port.test:2222", &net.TCPAddr{IP: net.ParseIP("192.0.2.16"), Port: 2222}, newTestHostKey(t))
+	if err == nil {
+		t.Fatal("unknown host key must be rejected")
+	}
+	if !strings.Contains(err.Error(), "'ssh -p 2222 port.test'") {
+		t.Fatalf("error must include the non-default SSH port, got: %v", err)
 	}
 }
 

@@ -19,10 +19,11 @@ var ErrInvalidTarget = errors.New("invalid target for executor")
 
 // SSHExecutor handles executing scripts and commands over SSH.
 type SSHExecutor struct {
-	ConnectTimeout time.Duration
-	ExecuteTimeout time.Duration
-	ServerResolver func(name string) (*server.Server, error)
-	WarnWriter     io.Writer
+	ConnectTimeout        time.Duration
+	ExecuteTimeout        time.Duration
+	ServerResolver        func(name string) (*server.Server, error)
+	WarnWriter            io.Writer
+	UnknownHostKeyHandler UnknownHostKeyHandler
 }
 
 // NewSSHExecutor creates a new SSHExecutor with sensible default timeouts.
@@ -42,6 +43,14 @@ func (e *SSHExecutor) WithServerResolver(resolver func(name string) (*server.Ser
 // WithWarnWriter sets the warn writer for host key warnings and audit notices.
 func (e *SSHExecutor) WithWarnWriter(w io.Writer) *SSHExecutor {
 	e.WarnWriter = w
+	return e
+}
+
+// WithUnknownHostKeyHandler allows an interactive caller to inspect and
+// explicitly trust a host key that is not yet recorded. A nil handler keeps the
+// default fail-closed policy.
+func (e *SSHExecutor) WithUnknownHostKeyHandler(handler UnknownHostKeyHandler) *SSHExecutor {
+	e.UnknownHostKeyHandler = handler
 	return e
 }
 
@@ -100,7 +109,7 @@ func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, w
 	}
 	srv := *target.Server
 
-	targetConfig, err := BuildClientConfigWithWriter(srv, e.ConnectTimeout, warnWriter)
+	targetConfig, err := buildClientConfig(srv, e.ConnectTimeout, warnWriter, e.UnknownHostKeyHandler)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -118,7 +127,7 @@ func (e *SSHExecutor) DialTargetWithWriter(ctx context.Context, target Target, w
 
 	// 1. If Jump Host is configured, establish direct-tcpip tunnel through it
 	if jumpSrv != nil {
-		jumpConfig, err := BuildClientConfigWithWriter(*jumpSrv, e.ConnectTimeout, warnWriter)
+		jumpConfig, err := buildClientConfig(*jumpSrv, e.ConnectTimeout, warnWriter, e.UnknownHostKeyHandler)
 		if err != nil {
 			return nil, nil, fmt.Errorf("jump host %s config error: %w", jumpSrv.Name, err)
 		}

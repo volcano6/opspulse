@@ -42,7 +42,8 @@ ops server add oracle-sg --host 203.0.113.10 --user ubuntu -i ~/.ssh/id_ed25519
 > - **静默密码交互**：未提供 `-i` 私钥时，终端会提示输入 SSH 密码，输入过程静默隐藏不回显，绝不留在 Shell 历史记录中。
 > - **公钥一键注入**：首次密码连通成功后，Ops 会检测本地通用公钥（如 `~/.ssh/id_ed25519.pub` 或 `~/.ssh/id_rsa.pub`，若无则自动生成专用密钥），并询问是否注入远端 VPS 的 `~/.ssh/authorized_keys`。注入成功并验证通过后，本地自动升级为密钥直连认证，且清空本地密码明文存储，兼顾极速与安全。
 > - **私钥安全位置迁移**：当 `-i <path>` 指向 `~/.ssh/` 之外的目录（例如 `~/Downloads/` 或临时目录）时，Ops 会交互式询问是否将密钥复制到 `~/.ssh/opspulse_<server_name>.pem` 并自动设置为 `0600` 权限（可用 `--no-copy-key` 跳过复制）。
-> - **即时连通性验证与失败回滚**：`ops add` 默认自动测试 SSH 连通性。若认证失败，会自动清理复制的临时私钥且不保存错误服务器（离线服务器可通过 `--skip-test` 跳过验证）。
+> - **首次主机密钥确认**：交互式终端中遇到未知主机时，`ops add` 会先展示密钥算法与 SHA256 指纹，默认答案是否；只有明确回答 `y` 才会写入 `~/.ssh/known_hosts` 并继续连通性测试。非交互环境仍默认拒绝未知主机（可显式设置 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 放行）；已记录但指纹不同的主机始终拒绝，需先用 `ssh-keygen -R <host>` 清理旧条目。
+> - **即时连通性验证与失败回滚**：`ops add` 默认自动测试 SSH 连通性。若认证或主机密钥确认失败，会自动清理复制的临时私钥且不保存错误服务器（离线服务器可通过 `--skip-test` 跳过验证）。
 > - **生命周期与依赖保护**：通过 `ops server remove <name>` 删除服务器时，若存在下游内网机器正以此机器作为跳板机，OpsPulse 会自动拦截并提示依赖关系，防止误删导致内网机失联。
 
 ### 增量更新与交互编辑
@@ -223,7 +224,7 @@ ops export ssh-config --write --filter env=prod
 
 绑定 `key_path` 后，原生 SSH 会自动追加 `IdentitiesOnly=yes`，只提交该私钥，避免 ssh-agent 中多把密钥触发 `Too many authentication failures`。`server add --key` 支持补全 `id_*` 和 `*.pem` 私钥文件。
 
-非交互 SSH 执行与 SFTP 默认执行**严格主机密钥校验**：主机密钥不在 `~/.ssh/known_hosts` 中时**直接拒绝连接**，并打印密钥类型与 SHA256 指纹；只有显式设置 `OPSPULSE_TRUST_NEW_HOST_KEY=1`（或 `true`）才会在首次连接时受信并写入 `~/.ssh/known_hosts`，之后应及时取消该变量以恢复严格校验。已记录的主机密钥不匹配时同样拒绝连接（需 `ssh-keygen -R <host>` 清除旧行后再连）。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key --remove-password`（安装密钥并在验证可用后自动清除明文密码）。
+非交互 SSH 执行与 SFTP 默认执行**严格主机密钥校验**：主机密钥不在 `~/.ssh/known_hosts` 中时**直接拒绝连接**，并打印密钥类型与 SHA256 指纹；交互式 `ops add` 会展示同一指纹并询问是否登记，非交互场景只有显式设置 `OPSPULSE_TRUST_NEW_HOST_KEY=1`（或 `true`）才会在首次连接时受信并写入 `~/.ssh/known_hosts`，之后应及时取消该变量以恢复严格校验。已记录的主机密钥不匹配时同样拒绝连接（需 `ssh-keygen -R <host>` 清除旧行后再连）。首次连接前仍应通过可信渠道核对服务器指纹。`servers.yaml` 中的 `password` 是权限为 `0600` 的明文字段，请优先执行 `server setup-key --remove-password`（安装密钥并在验证可用后自动清除明文密码）。
 
 > **设计优势**：
 > - **密钥模式（Linux / macOS）**：采用系统底层进程替换（`syscall.Exec`），保证原生 PTY 交互体验。

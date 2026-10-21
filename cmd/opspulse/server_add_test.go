@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/volcano6/opspulse/internal/config"
+	"github.com/volcano6/opspulse/internal/executor"
 	"github.com/volcano6/opspulse/internal/server"
 )
 
@@ -169,6 +170,33 @@ func TestPromptConfirm(t *testing.T) {
 				t.Errorf("promptConfirm(%q, %v) = %v, want %v", tc.input, tc.defaultYes, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPromptUnknownHostKey(t *testing.T) {
+	var out bytes.Buffer
+	handler := promptUnknownHostKey(strings.NewReader("y\n"), &out)
+	accepted, err := handler(executor.UnknownHostKey{
+		Address:        "203.0.113.10:2222",
+		KeyType:        "ssh-ed25519",
+		Fingerprint:    "SHA256:test-fingerprint",
+		KnownHostsPath: "~/.ssh/known_hosts",
+	})
+	if err != nil {
+		t.Fatalf("promptUnknownHostKey() error: %v", err)
+	}
+	if !accepted {
+		t.Fatal("promptUnknownHostKey() declined after an explicit yes")
+	}
+	for _, want := range []string{
+		"Unknown SSH host key for 203.0.113.10:2222",
+		"ssh-ed25519",
+		"SHA256:test-fingerprint",
+		"Trust and add this key to known_hosts?",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("prompt output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 

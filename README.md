@@ -101,8 +101,8 @@ ops completion --install  # 注入 shell 补全（Bash / Zsh / Fish / PowerShell
   常规 bind mount 与受支持 SQL 数据库；任意 runtime 字段、离线镜像、GPU/宿主机资源、
   DNS/证书/反向代理与完整手写 SSH 配置需要人工处理。
 
-**安全边界**：信任根是本机磁盘（`servers.yaml` 权限 `0600`）；主机密钥默认 fail-closed，只有显式
-`OPSPULSE_TRUST_NEW_HOST_KEY=1` 才写入未知主机；私钥永不外传；交互式密码经 `0600` 受限临时文件
+**安全边界**：信任根是本机磁盘（`servers.yaml` 权限 `0600`）；主机密钥默认 fail-closed，交互式
+`ops add` 会展示指纹并要求明确确认，非交互场景只有显式 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 才写入未知主机；私钥永不外传；交互式密码经 `0600` 受限临时文件
 交给 `SSH_ASKPASS`，连接退出后写零并删除。完整的信任模型、凭据生命周期与落盘权限表见
 [架构与信任模型](docs/explanation/architecture.md)；漏洞上报渠道与支持版本见 [SECURITY.md](SECURITY.md)。
 

@@ -28,7 +28,7 @@ var rootCmd = &cobra.Command{
   OPSPULSE_HOME                覆盖 OpsPulse 主目录（配置与数据）。
   OPSPULSE_OP_PATH             强制指定 'ops 1p' 驱动的 1Password CLI 可执行文件。
   OPSPULSE_KNOWN_HOSTS         为内置 SSH 客户端指定其他 known_hosts 文件。
-  OPSPULSE_TRUST_NEW_HOST_KEY  设为 1，首次连接时接受未知主机密钥。
+  OPSPULSE_TRUST_NEW_HOST_KEY  设为 1，非交互首次连接时接受未知主机密钥。
   OP_VAULT                     默认 1Password 保险库，覆盖已记住的值。
   OP_ACCOUNT                   默认 1Password 账户，覆盖已记住的值。`,
 	Version:      version.Version,

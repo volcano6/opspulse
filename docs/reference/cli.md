@@ -88,7 +88,7 @@ Ops —— 自托管服务器自动化、备份编排与安全运维。
   OPSPULSE_HOME                覆盖 OpsPulse 主目录（配置与数据）。
   OPSPULSE_OP_PATH             强制指定 'ops 1p' 驱动的 1Password CLI 可执行文件。
   OPSPULSE_KNOWN_HOSTS         为内置 SSH 客户端指定其他 known_hosts 文件。
-  OPSPULSE_TRUST_NEW_HOST_KEY  设为 1，首次连接时接受未知主机密钥。
+  OPSPULSE_TRUST_NEW_HOST_KEY  设为 1，非交互首次连接时接受未知主机密钥。
   OP_VAULT                     默认 1Password 保险库，覆盖已记住的值。
   OP_ACCOUNT                   默认 1Password 账户，覆盖已记住的值。
 ```
@@ -258,6 +258,10 @@ servers.yaml 里仍然持有 'op://' 引用的服务器会在还原过程中迁�
 
 目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
 默认用户为 root，默认 SSH 端口为 22。
+
+首次连接未知主机时，交互式终端会显示主机密钥算法与 SHA256 指纹，
+确认后写入 ~/.ssh/known_hosts；非交互环境仍默认拒绝未知主机，
+可显式设置 OPSPULSE_TRUST_NEW_HOST_KEY=1 放行首次连接。
 
 服务器名只允许字母、数字和中划线。新增时下划线会自动改写为中划线
 "web_1" 保存为 "web-1"（会打印一行提示），其它非法字符（如 "."、"@"）
@@ -962,6 +966,10 @@ success / partial / failed / canceled / dry-run。
 
 目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
 默认用户为 root，默认 SSH 端口为 22。
+
+首次连接未知主机时，交互式终端会显示主机密钥算法与 SHA256 指纹，
+确认后写入 ~/.ssh/known_hosts；非交互环境仍默认拒绝未知主机，
+可显式设置 OPSPULSE_TRUST_NEW_HOST_KEY=1 放行首次连接。
 
 服务器名只允许字母、数字和中划线。新增时下划线会自动改写为中划线
 "web_1" 保存为 "web-1"（会打印一行提示），其它非法字符（如 "."、"@"）

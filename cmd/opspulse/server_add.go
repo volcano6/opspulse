@@ -29,6 +29,10 @@ var addCmd = &cobra.Command{
 目标可用位置参数 [user@]host[:port] 指定，也可通过 flag 指定。
 默认用户为 root，默认 SSH 端口为 22。
 
+首次连接未知主机时，交互式终端会显示主机密钥算法与 SHA256 指纹，
+确认后写入 ~/.ssh/known_hosts；非交互环境仍默认拒绝未知主机，
+可显式设置 OPSPULSE_TRUST_NEW_HOST_KEY=1 放行首次连接。
+
 服务器名只允许字母、数字和中划线。新增时下划线会自动改写为中划线
 "web_1" 保存为 "web-1"（会打印一行提示），其它非法字符（如 "."、"@"）
 会直接报错。已存在的条目不会被自动改名。
@@ -200,6 +204,19 @@ func promptConfirm(in io.Reader, out io.Writer, prompt string, defaultYes bool) 
 		}
 	}
 	return false
+}
+
+func promptUnknownHostKey(in io.Reader, out io.Writer) executor.UnknownHostKeyHandler {
+	return func(info executor.UnknownHostKey) (bool, error) {
+		if out != nil {
+			_, _ = fmt.Fprintf(out, "\n🔐 Unknown SSH host key for %s\n", info.Address)
+			_, _ = fmt.Fprintf(out, "   Type        : %s\n", info.KeyType)
+			_, _ = fmt.Fprintf(out, "   Fingerprint : %s\n", info.Fingerprint)
+			_, _ = fmt.Fprintf(out, "   known_hosts : %s\n", info.KnownHostsPath)
+			_, _ = fmt.Fprintln(out, "   Verify this fingerprint through a trusted channel before accepting.")
+		}
+		return promptConfirm(in, out, "Trust and add this key to known_hosts? [y/N]: ", false), nil
+	}
 }
 
 func handlePublicKeyInjection(in io.Reader, out io.Writer, srv *server.Server, password string) {
@@ -480,6 +497,9 @@ func runServerAdd(cmd *cobra.Command, args []string) error {
 			_, _ = fmt.Fprintf(os.Stdout, "--> Verifying SSH connection to %s (%s)...\n", srv.Name, srv.Address())
 		}
 		exec := executor.NewSSHExecutor().WithServerResolver(store.Get).WithWarnWriter(os.Stderr)
+		if stdinIsInteractive() {
+			exec = exec.WithUnknownHostKeyHandler(promptUnknownHostKey(os.Stdin, os.Stdout))
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 

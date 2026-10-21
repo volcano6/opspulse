@@ -32,6 +32,26 @@ func BuildClientConfig(srv server.Server, timeout time.Duration) (*ssh.ClientCon
 // BuildClientConfigWithWriter constructs an ssh.ClientConfig from server configuration,
 // optionally routing host key trust notices through the provided warnWriter.
 func BuildClientConfigWithWriter(srv server.Server, timeout time.Duration, warnWriter io.Writer) (*ssh.ClientConfig, error) {
+	return buildClientConfig(srv, timeout, warnWriter, nil)
+}
+
+// UnknownHostKey describes a host key that is not present in known_hosts.
+// It is handed to an interactive caller so the fingerprint can be displayed
+// before the key is written to the trust store.
+type UnknownHostKey struct {
+	Address        string
+	Host           string
+	Port           string
+	KeyType        string
+	Fingerprint    string
+	KnownHostsPath string
+}
+
+// UnknownHostKeyHandler decides whether an unknown host key may be trusted.
+// Returning false leaves the connection rejected.
+type UnknownHostKeyHandler func(UnknownHostKey) (bool, error)
+
+func buildClientConfig(srv server.Server, timeout time.Duration, warnWriter io.Writer, unknownHostKeyHandler UnknownHostKeyHandler) (*ssh.ClientConfig, error) {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -89,7 +109,7 @@ func BuildClientConfigWithWriter(srv server.Server, timeout time.Duration, warnW
 		user = "root"
 	}
 
-	hostKeyCallback, err := tofuHostKeyCallbackWithWriter(warnWriter)
+	hostKeyCallback, err := tofuHostKeyCallbackWithWriterAndHandler(warnWriter, unknownHostKeyHandler)
 	if err != nil {
 		return nil, &AuthError{User: user, Host: srv.Host, Reason: err}
 	}
@@ -117,17 +137,25 @@ func BuildClientConfigWithWriter(srv server.Server, timeout time.Duration, warnW
 var knownHostsMu sync.Mutex
 
 func tofuHostKeyCallbackWithWriter(warnWriter io.Writer) (ssh.HostKeyCallback, error) {
+	return tofuHostKeyCallbackWithWriterAndHandler(warnWriter, nil)
+}
+
+func tofuHostKeyCallbackWithWriterAndHandler(warnWriter io.Writer, unknownHostKeyHandler UnknownHostKeyHandler) (ssh.HostKeyCallback, error) {
 	if custom := os.Getenv("OPSPULSE_KNOWN_HOSTS"); custom != "" {
-		return tofuHostKeyCallbackForWithWriter(custom, warnWriter), nil
+		return tofuHostKeyCallbackForWithWriterAndHandler(custom, warnWriter, unknownHostKeyHandler), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory for SSH host keys: %w", err)
 	}
-	return tofuHostKeyCallbackForWithWriter(filepath.Join(home, ".ssh", "known_hosts"), warnWriter), nil
+	return tofuHostKeyCallbackForWithWriterAndHandler(filepath.Join(home, ".ssh", "known_hosts"), warnWriter, unknownHostKeyHandler), nil
 }
 
 func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Writer) ssh.HostKeyCallback {
+	return tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath, warnWriter, nil)
+}
+
+func tofuHostKeyCallbackForWithWriterAndHandler(knownHostsPath string, warnWriter io.Writer, unknownHostKeyHandler UnknownHostKeyHandler) ssh.HostKeyCallback {
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		knownHostsMu.Lock()
 		defer knownHostsMu.Unlock()
@@ -170,16 +198,36 @@ func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Write
 
 		// Host key is not found in known_hosts (unknown host / first connection).
 		// By default, strict host key checking is ENFORCED: unknown hosts are rejected to prevent MITM.
-		// Users can explicitly opt-in via OPSPULSE_TRUST_NEW_HOST_KEY=1 to accept and trust new hosts on first use.
+		// Users can explicitly opt-in via OPSPULSE_TRUST_NEW_HOST_KEY=1, or an interactive
+		// caller can supply a handler that shows the fingerprint and asks first.
+		hostOnly, port, _ := net.SplitHostPort(hostname)
+		if hostOnly == "" {
+			hostOnly = hostname
+		}
+		fingerprint := ssh.FingerprintSHA256(key)
+
 		trustNew := os.Getenv("OPSPULSE_TRUST_NEW_HOST_KEY")
-		if trustNew != "true" && trustNew != "1" {
-			fingerprint := ssh.FingerprintSHA256(key)
-			hostOnly, _, _ := net.SplitHostPort(hostname)
-			if hostOnly == "" {
-				hostOnly = hostname
+		trustedByEnv := trustNew == "true" || trustNew == "1"
+
+		trustedByHandler := false
+		if !trustedByEnv && unknownHostKeyHandler != nil {
+			accepted, handlerErr := unknownHostKeyHandler(UnknownHostKey{
+				Address:        hostname,
+				Host:           hostOnly,
+				Port:           port,
+				KeyType:        key.Type(),
+				Fingerprint:    fingerprint,
+				KnownHostsPath: knownHostsPath,
+			})
+			if handlerErr != nil {
+				return fmt.Errorf("confirm SSH host key for %s: %w", hostname, handlerErr)
 			}
+			trustedByHandler = accepted
+		}
+
+		if !trustedByHandler && !trustedByEnv {
 			return fmt.Errorf("verify SSH host key for %s: host key not recorded in %s (key type: %s, fingerprint: %s). Connect once with 'ssh %s' to accept the key or set OPSPULSE_TRUST_NEW_HOST_KEY=1 to trust new hosts on first use",
-				hostname, knownHostsPath, key.Type(), fingerprint, hostOnly)
+				hostname, knownHostsPath, key.Type(), fingerprint, sshHostHint(hostOnly, port))
 		}
 
 		file, err = os.OpenFile(knownHostsPath, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -196,9 +244,11 @@ func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Write
 		}
 
 		// Security audit log: route notice through the injected writer (thread-safe and logfile-aware)
-		fingerprint := ssh.FingerprintSHA256(key)
-		msg := fmt.Sprintf("Warning: Permanently added '%s' (%s, %s) to the list of known hosts (%s).\nHint: Remember to unset OPSPULSE_TRUST_NEW_HOST_KEY once initial host enrollment is complete to enforce strict verification.\n",
+		msg := fmt.Sprintf("Warning: Permanently added '%s' (%s, %s) to the list of known hosts (%s).\n",
 			hostname, key.Type(), fingerprint, knownHostsPath)
+		if trustedByEnv && !trustedByHandler {
+			msg += "Hint: Remember to unset OPSPULSE_TRUST_NEW_HOST_KEY once initial host enrollment is complete to enforce strict verification.\n"
+		}
 		if warnWriter != nil {
 			_, _ = fmt.Fprint(warnWriter, msg)
 		} else {
@@ -206,6 +256,13 @@ func tofuHostKeyCallbackForWithWriter(knownHostsPath string, warnWriter io.Write
 		}
 		return nil
 	}
+}
+
+func sshHostHint(host, port string) string {
+	if port == "" || port == "22" {
+		return host
+	}
+	return "-p " + port + " " + host
 }
 
 func loadPrivateKey(path string) (ssh.Signer, error) {
