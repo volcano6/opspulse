@@ -61,6 +61,7 @@
 | `ops server info <name>` | 采集服务器的系统、硬件与 Docker 状态 |
 | `ops server list` | 列出所有已配置的服务器 |
 | `ops server remove <name>` | 从服务器清单中删除服务器 |
+| `ops server rename <old-name> <new-name>` | 重命名服务器并同步跳板机与备份引用 |
 | `ops server set <name>` | 增量更新已有服务器的指定字段 |
 | `ops server setup [server...]` | 在新 WSL 中安全重建服务器清单、私钥、SSH config 与 known_hosts |
 | `ops server setup-key <name>` | 用已配置的密码生成并安装 SSH 密钥 |
@@ -955,7 +956,7 @@ success / partial / failed / canceled / dry-run。
 
 ### `ops server`
 
-新增、列出、查看、测试连通性与删除 servers.yaml 中托管的服务器。
+新增、重命名、列出、查看、测试连通性与删除 servers.yaml 中托管的服务器。
 
 该命令没有自己的 flag。
 
@@ -1068,6 +1069,26 @@ success / partial / failed / canceled / dry-run。
 | --- | --- | --- | --- |
 | `--keep-key` | - | `false` | 不删除磁盘上由 OpsPulse 托管的私钥文件 |
 | `--yes` | `-y` | `false` | 跳过删除确认提示 |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops server rename <old-name> <new-name>`
+
+重命名 servers.yaml 中的服务器。
+
+名称修改和所有 jump_host 引用会在同一次清单写入中完成，因此作为跳板机的
+服务器改名后，依赖它的内网机器仍能解析到新名称。backups.yaml 中引用旧名称
+的备份作业也会同步更新；如果备份配置无法写入，服务器清单会回滚。
+
+名称规则与 ops server add 相同：只允许 ASCII 字母、数字和中划线，下划线会
+自动改写为中划线。私钥文件不会移动，清单中的 key_path 保持不变。
+
+示例：
+```
+  ops server rename amd2 oracle-amd2
+```
+
+该命令没有自己的 flag。
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 

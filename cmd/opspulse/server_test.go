@@ -396,3 +396,100 @@ func TestServerRemoveDeletesManagedKeyAfterSuccessfulRemoval(t *testing.T) {
 		}
 	}
 }
+
+func TestServerRenameUpdatesJumpAndBackupReferences(t *testing.T) {
+	root := t.TempDir()
+	setTestHome(t, root)
+
+	store := server.NewDefaultStore()
+	for _, srv := range []server.Server{
+		{Name: "amd2", Host: "1.1.1.1"},
+		{Name: "web-1", Host: "10.0.0.1", JumpHost: "amd2"},
+		{Name: "db-1", Host: "10.0.0.2", JumpHost: "amd2"},
+	} {
+		if err := store.Save(srv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backupStore := backup.NewDefaultStore()
+	for _, job := range []backup.Job{
+		{Name: "web-data", Server: "amd2", Paths: []string{"/srv/web"}, Backend: "local:/repo"},
+		{Name: "db-data", Server: "amd2", Paths: []string{"/srv/db"}, Backend: "local:/repo"},
+	} {
+		if err := backupStore.Save(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := captureStdout(t, func() {
+		if err := serverRenameCmd.RunE(serverRenameCmd, []string{"amd2", "oracle_amd2"}); err != nil {
+			t.Errorf("serverRenameCmd failed: %v", err)
+		}
+	})
+	for _, want := range []string{"oracle-amd2", "web-1, db-1", "web-data, db-data"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q does not mention %q", out, want)
+		}
+	}
+
+	if _, err := store.Get("amd2"); err == nil {
+		t.Fatal("old server name still resolves")
+	}
+	if _, err := store.Get("oracle-amd2"); err != nil {
+		t.Fatalf("renamed server not found: %v", err)
+	}
+	for _, name := range []string{"web-1", "db-1"} {
+		srv, err := store.Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if srv.JumpHost != "oracle-amd2" {
+			t.Errorf("%s JumpHost = %q, want oracle-amd2", name, srv.JumpHost)
+		}
+	}
+	for _, name := range []string{"web-data", "db-data"} {
+		job, err := backupStore.Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Server != "oracle-amd2" {
+			t.Errorf("%s Server = %q, want oracle-amd2", name, job.Server)
+		}
+	}
+}
+
+func TestServerRenameRollsBackInventoryWhenBackupUpdateFails(t *testing.T) {
+	root := t.TempDir()
+	setTestHome(t, root)
+
+	store := server.NewDefaultStore()
+	if err := store.Save(server.Server{Name: "amd2", Host: "1.1.1.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(server.Server{Name: "web-1", Host: "10.0.0.1", JumpHost: "amd2"}); err != nil {
+		t.Fatal(err)
+	}
+	backupStore := backup.NewDefaultStore()
+	if err := backupStore.Save(backup.Job{Name: "web-data", Server: "amd2", Paths: []string{"/srv/web"}, Backend: "local:/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	blockStoreWrites(t, backupStore.FilePath())
+
+	if err := serverRenameCmd.RunE(serverRenameCmd, []string{"amd2", "oracle-amd2"}); err == nil {
+		t.Fatal("expected backup reference update to fail")
+	}
+
+	if _, err := store.Get("amd2"); err != nil {
+		t.Fatalf("server rename was not rolled back: %v", err)
+	}
+	if _, err := store.Get("oracle-amd2"); err == nil {
+		t.Fatal("rolled-back inventory still has the new name")
+	}
+	web, err := store.Get("web-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if web.JumpHost != "amd2" {
+		t.Fatalf("jump host reference was not rolled back: %q", web.JumpHost)
+	}
+}

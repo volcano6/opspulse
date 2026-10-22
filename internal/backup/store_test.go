@@ -218,6 +218,46 @@ func TestStore_Concurrency(t *testing.T) {
 	}
 }
 
+func TestStore_RenameServerReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backups.yaml")
+	store := NewStore(path)
+
+	for _, job := range []Job{
+		{Name: "web-data", Server: "amd2", Paths: []string{"/srv/web"}, Backend: "local:/repo"},
+		{Name: "db-data", Server: "amd2", Paths: []string{"/srv/db"}, Backend: "local:/repo"},
+		{Name: "local-data", Server: "local", Paths: []string{"/srv/local"}, Backend: "local:/repo"},
+	} {
+		if err := store.Save(job); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	updated, err := store.RenameServerReferences("amd2", "oracle-amd2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated) != 2 || updated[0] != "web-data" || updated[1] != "db-data" {
+		t.Fatalf("unexpected updated jobs: %v", updated)
+	}
+
+	for _, name := range []string{"web-data", "db-data"} {
+		job, err := store.Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Server != "oracle-amd2" {
+			t.Errorf("%s Server = %q, want oracle-amd2", name, job.Server)
+		}
+	}
+	local, err := store.Get("local-data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.Server != "local" {
+		t.Errorf("unrelated local job changed to %q", local.Server)
+	}
+}
+
 func TestStoreReadRejectsInvalidConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backups.yaml")
 	data := []byte("backups:\n  - name: duplicate\n    server: local\n    paths: [/one]\n    backend: /repo\n  - name: duplicate\n    server: local\n    paths: [/two]\n    backend: /repo\n")

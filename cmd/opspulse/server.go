@@ -23,7 +23,7 @@ import (
 var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "管理服务器清单",
-	Long:  "新增、列出、查看、测试连通性与删除 servers.yaml 中托管的服务器。",
+	Long:  "新增、重命名、列出、查看、测试连通性与删除 servers.yaml 中托管的服务器。",
 }
 
 var listFilter string
@@ -271,6 +271,57 @@ var serverRemoveCmd = &cobra.Command{
 	},
 }
 
+var serverRenameCmd = &cobra.Command{
+	Use:   "rename <old-name> <new-name>",
+	Short: "重命名服务器并同步跳板机与备份引用",
+	Long: `重命名 servers.yaml 中的服务器。
+
+名称修改和所有 jump_host 引用会在同一次清单写入中完成，因此作为跳板机的
+服务器改名后，依赖它的内网机器仍能解析到新名称。backups.yaml 中引用旧名称
+的备份作业也会同步更新；如果备份配置无法写入，服务器清单会回滚。
+
+名称规则与 ops server add 相同：只允许 ASCII 字母、数字和中划线，下划线会
+自动改写为中划线。私钥文件不会移动，清单中的 key_path 保持不变。
+
+示例：
+  ops server rename amd2 oracle-amd2`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(_ *cobra.Command, args []string) error {
+		oldName := args[0]
+		newName := server.NormalizeServerName(args[1])
+		if newName != args[1] {
+			fmt.Printf("ℹ️  Server name %q contains underscores; using %q instead.\n", args[1], newName)
+		}
+
+		store := server.NewDefaultStore()
+		dependents, err := store.Rename(oldName, newName)
+		if err != nil {
+			return fmt.Errorf("rename server %q to %q: %w", oldName, newName, err)
+		}
+
+		jobs, err := backup.NewDefaultStore().RenameServerReferences(oldName, newName)
+		if err != nil {
+			if _, rollbackErr := store.Rename(newName, oldName); rollbackErr != nil {
+				return fmt.Errorf("update backup job references: %w; rollback of servers.yaml also failed: %v", err, rollbackErr)
+			}
+			return fmt.Errorf("update backup job references: %w; server rename was rolled back", err)
+		}
+
+		fmt.Printf("✅ Server %q renamed to %q.\n", oldName, newName)
+		if len(dependents) > 0 {
+			names := make([]string, 0, len(dependents))
+			for _, srv := range dependents {
+				names = append(names, srv.Name)
+			}
+			fmt.Printf("🔗 Updated jump host reference(s): %s\n", strings.Join(names, ", "))
+		}
+		if len(jobs) > 0 {
+			fmt.Printf("🗂️  Updated backup job reference(s): %s\n", strings.Join(jobs, ", "))
+		}
+		return nil
+	},
+}
+
 // backupRefCheck is the best-effort scan of the backup inventory performed
 // before a destructive removal.
 //
@@ -473,11 +524,13 @@ func init() {
 	serverInfoCmd.ValidArgsFunction = completeServerNames
 	serverTestCmd.ValidArgsFunction = completeServerNames
 	serverRemoveCmd.ValidArgsFunction = completeServerNames
+	serverRenameCmd.ValidArgsFunction = completeServerNames
 
 	serverCmd.AddCommand(serverListCmd)
 	serverCmd.AddCommand(serverInfoCmd)
 	serverCmd.AddCommand(serverTestCmd)
 	serverCmd.AddCommand(serverRemoveCmd)
+	serverCmd.AddCommand(serverRenameCmd)
 
 	lsCmd.Flags().StringVarP(&listFilter, "filter", "f", "", "按 Label（key=value）、Tag 或名称筛选服务器")
 

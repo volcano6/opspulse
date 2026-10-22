@@ -63,6 +63,25 @@ ops server edit oracle-sg
 
 `server edit` 在临时副本中编辑。编辑器正常退出后才校验 YAML、服务器字段和名称唯一性；校验失败或目标服务器被删除时，原 `servers.yaml` 保持不变。
 
+### 重命名服务器 (`ops server rename`)
+
+服务器名称是清单、跳板机链路和备份作业共同引用的稳定标识。改名时不要先删除再新增，
+否则依赖它的 `jump_host` 会短暂失效，备份作业也可能继续指向旧名称：
+
+```bash
+# 将 amd2 改名为 oracle-amd2；所有 jump_host: amd2 会同步更新
+ops server rename amd2 oracle-amd2
+
+# 下划线会按新增服务器的规则规范化为中划线
+ops server rename amd2 oracle_amd2
+```
+
+名称修改和所有直接 `jump_host` 引用在同一次 `servers.yaml` 写入中完成，并重新校验
+跳板链。`backups.yaml` 中 `server: amd2` 的作业也会同步改写；如果备份配置无法写入，
+服务器清单会回滚。私钥文件不会移动，服务器条目中的 `key_path` 保持不变。
+
+如果新名称已被占用、旧名称不存在或新名称不符合命名规则，命令会拒绝执行且不修改任何文件。
+
 ### 删除服务器确认 (`ops server remove`)
 
 `ops server remove <name>`（别名 `rm` / `delete`）删除清单条目的同时，还会删除 OpsPulse 为该机托管的私钥文件，因此默认要求交互确认：

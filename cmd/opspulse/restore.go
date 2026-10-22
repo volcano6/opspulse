@@ -47,15 +47,15 @@ var newRestoreExecutor = func(serverStore *server.Store) executor.Executor {
 }
 
 var (
-	restoreRunSnapshot     string
-	restoreRunTargetServer string
-	restoreRunTargetPath   string
-	restoreRunAssetID      string
-	restoreRunDryRun       bool
-	restoreRunStart        bool
-	restoreRunNoStart      bool
-	restoreRunAs           string
-	restoreRunYes          bool
+	restoreRunSnapshot       string
+	restoreRunTargetServer   string
+	restoreRunTargetPath     string
+	restoreRunAssetID        string
+	restoreRunDryRun         bool
+	restoreRunStart          bool
+	restoreRunNoStart        bool
+	restoreRunAs             string
+	restoreRunYes            bool
 	restoreRunAllowUntracked bool
 )
 

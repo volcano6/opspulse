@@ -42,14 +42,14 @@ const (
 
 // RestoreOptions configures how a restore operation should be executed.
 type RestoreOptions struct {
-	SnapshotID   string // Snapshot ID to restore from ("latest" or specific ID)
-	TargetServer string // Target server name (empty = same as job's source server)
-	TargetPath   string // Override restore target path (empty = original paths)
-	AssetID      string // Optional asset ID for targeted single-asset restore
-	DryRun       bool   // Only preview files without writing
-	StartPolicy  StartPolicy
-	AliasName    string // Optional rename alias for container/service
-	AllowUntracked bool // Proceed even if the SQLite audit record cannot be created
+	SnapshotID     string // Snapshot ID to restore from ("latest" or specific ID)
+	TargetServer   string // Target server name (empty = same as job's source server)
+	TargetPath     string // Override restore target path (empty = original paths)
+	AssetID        string // Optional asset ID for targeted single-asset restore
+	DryRun         bool   // Only preview files without writing
+	StartPolicy    StartPolicy
+	AliasName      string // Optional rename alias for container/service
+	AllowUntracked bool   // Proceed even if the SQLite audit record cannot be created
 }
 
 // effectiveStartPolicy resolves the zero value to the scenario-aware default.

@@ -109,6 +109,63 @@ func (s *Store) Save(srv Server) error {
 	return s.write(cf)
 }
 
+// Rename changes a server's name and updates every direct jump-host reference
+// in the same inventory write. It returns the servers whose JumpHost was
+// updated.
+func (s *Store) Rename(oldName, newName string) ([]Server, error) {
+	if oldName == newName {
+		return nil, fmt.Errorf("new server name must differ from %q", oldName)
+	}
+	if err := ValidateServerName(newName); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
+
+	cf, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+
+	oldIndex := -1
+	for i := range cf.Servers {
+		switch cf.Servers[i].Name {
+		case oldName:
+			oldIndex = i
+		case newName:
+			return nil, fmt.Errorf("server %q already exists", newName)
+		}
+	}
+	if oldIndex == -1 {
+		return nil, fmt.Errorf("%w: %s", ErrServerNotFound, oldName)
+	}
+
+	cf.Servers[oldIndex].Name = newName
+	var dependents []Server
+	for i := range cf.Servers {
+		if cf.Servers[i].JumpHost != oldName {
+			continue
+		}
+		cf.Servers[i].JumpHost = newName
+		dependents = append(dependents, cloneServer(cf.Servers[i]))
+	}
+
+	if err := validateServers(cf.Servers); err != nil {
+		return nil, err
+	}
+	if err := s.write(cf); err != nil {
+		return nil, err
+	}
+	return dependents, nil
+}
+
 // Delete removes a server by its name.
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()

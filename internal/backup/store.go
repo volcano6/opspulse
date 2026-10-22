@@ -182,6 +182,47 @@ func (s *Store) Delete(name string) error {
 	return s.writeConfig(cfg)
 }
 
+// RenameServerReferences updates every backup job bound to oldName and returns
+// the affected job names in file order.
+func (s *Store) RenameServerReferences(oldName, newName string) ([]string, error) {
+	if oldName == newName {
+		return nil, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	unlock, err := filelock.Lock(s.filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire file lock: %w", err)
+	}
+	defer unlock()
+
+	cfg, err := s.readConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	var updated []string
+	for i := range cfg.Backups {
+		if cfg.Backups[i].Server != oldName {
+			continue
+		}
+		cfg.Backups[i].Server = newName
+		updated = append(updated, cfg.Backups[i].Name)
+	}
+	if len(updated) == 0 {
+		return nil, nil
+	}
+	if err := backupSchema.Validate(cfg); err != nil {
+		return nil, err
+	}
+	if err := s.writeConfig(cfg); err != nil {
+		return nil, err
+	}
+	return updated, nil
+}
+
 func (s *Store) readConfig() (*backupConfig, error) {
 	return s.cache.Read(s.filePath, backupSchema)
 }

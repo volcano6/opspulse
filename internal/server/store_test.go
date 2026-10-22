@@ -541,6 +541,112 @@ func TestStore_GetDependents(t *testing.T) {
 	}
 }
 
+func TestStore_RenameUpdatesJumpHostReferences(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+
+	for _, srv := range []Server{
+		{Name: "amd2", Host: "1.1.1.1"},
+		{Name: "web-1", Host: "10.0.0.1", JumpHost: "amd2"},
+		{Name: "db-1", Host: "10.0.0.2", JumpHost: "amd2"},
+		{Name: "standalone", Host: "2.2.2.2"},
+	} {
+		if err := store.Save(srv); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dependents, err := store.Rename("amd2", "oracle-amd2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dependents) != 2 || dependents[0].Name != "web-1" || dependents[1].Name != "db-1" {
+		t.Fatalf("unexpected dependents: %+v", dependents)
+	}
+
+	if _, err := store.Get("amd2"); err == nil {
+		t.Fatal("old server name still resolves")
+	}
+	renamed, err := store.Get("oracle-amd2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Host != "1.1.1.1" {
+		t.Fatalf("renamed server lost fields: %+v", renamed)
+	}
+	for _, name := range []string{"web-1", "db-1"} {
+		srv, err := store.Get(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if srv.JumpHost != "oracle-amd2" {
+			t.Errorf("%s JumpHost = %q, want oracle-amd2", name, srv.JumpHost)
+		}
+	}
+}
+
+func TestStore_RenamePreservesJumpHostChain(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+
+	for _, srv := range []Server{
+		{Name: "edge", Host: "1.1.1.1"},
+		{Name: "bastion", Host: "10.0.0.1", JumpHost: "edge"},
+		{Name: "internal", Host: "10.0.0.2", JumpHost: "bastion"},
+	} {
+		if err := store.Save(srv); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Rename("bastion", "oracle-bastion"); err != nil {
+		t.Fatal(err)
+	}
+
+	internal, err := store.Get("internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if internal.JumpHost != "oracle-bastion" {
+		t.Fatalf("internal JumpHost = %q, want oracle-bastion", internal.JumpHost)
+	}
+	renamed, err := store.Get("oracle-bastion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.JumpHost != "edge" {
+		t.Fatalf("renamed jump host's upstream changed to %q", renamed.JumpHost)
+	}
+}
+
+func TestStore_RenameRejectsInvalidOrConflictingNames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "servers.yaml")
+	store := NewStore(path)
+	for _, srv := range []Server{
+		{Name: "amd2", Host: "1.1.1.1"},
+		{Name: "taken", Host: "2.2.2.2"},
+	} {
+		if err := store.Save(srv); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := store.Rename("missing", "new-name"); err == nil {
+		t.Fatal("expected missing server to fail")
+	}
+	if _, err := store.Rename("amd2", "taken"); err == nil {
+		t.Fatal("expected existing target name to fail")
+	}
+	if _, err := store.Rename("amd2", "bad_name"); err == nil {
+		t.Fatal("expected invalid target name to fail")
+	}
+	if _, err := store.Rename("amd2", "amd2"); err == nil {
+		t.Fatal("expected unchanged name to fail")
+	}
+	if _, err := store.Get("amd2"); err != nil {
+		t.Fatalf("failed rename changed the inventory: %v", err)
+	}
+}
+
 func TestServer_SkipBatchAndMatchBatchFilter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "servers.yaml")
 	store := NewStore(path)
