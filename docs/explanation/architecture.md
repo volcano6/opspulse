@@ -21,7 +21,7 @@ OpsPulse 是一个单二进制 CLI：它不常驻、不自建服务端，本机�
 → 脚本正文经 SSH 的 **stdin** 交给远端 shell → 远端 `restic` / `docker` / `mysqldump` 干活
 → 退出码与输出回流 → 结果写进本机 SQLite 与日志文件。
 
-本机只有两类持久化：配置目录下的 4 个 YAML 与 `templates/`，数据目录下的 `opspulse.db`
+本机只有两类持久化：配置目录下的 5 个 YAML 与 `templates/`，数据目录下的 `opspulse.db`
 与 `logs/`。**没有**自建 HTTP 服务、没有监听端口、没有遥测上报端点；唯一由 OpsPulse 主动
 发起的出站 HTTP 是告警 webhook。
 

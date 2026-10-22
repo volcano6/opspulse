@@ -94,8 +94,8 @@ jobs:
               -o "${OUTPUT_DIR}/${BIN_NAME}" \
               ./cmd/opspulse
 
-            # Package archive with README and LICENSE
-            cp README.md LICENSE "${OUTPUT_DIR}/" 2>/dev/null || true
+            # Package archive with both README variants and LICENSE
+            cp README.md README_zh.md LICENSE "${OUTPUT_DIR}/" 2>/dev/null || true
             if [ "$GOOS" = "windows" ]; then
               (cd "$OUTPUT_DIR" && zip -q -r "../../dist/${ARCHIVE_NAME}.zip" .)
             else
@@ -126,7 +126,7 @@ jobs:
           {
             printf '## 安装\n\n'
             printf '从本页附件下载对应平台的压缩包（linux / darwin / windows × amd64 / arm64），\n'
-            printf '按同页 `checksums.txt` 校验后解压即用；具体步骤见 README 的「安装 (Install)」章节。\n\n'
+            printf '按同页 `checksums.txt` 校验后解压即用；具体步骤见 README 的 Installation / 安装 (Install) 章节。\n\n'
             # 变更记录与 CHANGELOG.md 同源：都由 conventional commit 推导。
             # 不用 generate_release_notes —— 它只列 PR，直推 main 的提交会整段漏掉。
             if [ "${GITHUB_REF_NAME}" = v* ]; then

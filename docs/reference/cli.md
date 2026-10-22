@@ -115,9 +115,9 @@ Ops —— 自托管服务器自动化、备份编排与安全运维。
 'ops ssh' / 'ops exec' / 'ops cp' 直接读取，不与 1Password 发生任何往返。
 正常连接过程中不会运行这里的任何东西，这正是那些命令从不弹授权框的原因。
 
-密钥存放在标题为 opspulse_<server>_key 的 Login 条目里，位于一个自定义的
-concealed 字段中；密码存放在标题为 opspulse_<server>_password 的 Login 条目里。
-servers.yaml 本身作为共享条目 opspulse_inventory 备份。
+整台机器的清单与凭据存放在标题为 opspulse_inventory_<hostname> 的 Secure Note 中。
+旧版本按服务器命名的 opspulse_<server>_key / opspulse_<server>_password Login 条目
+仍可在 restore 时只读兼容。
 
 通常你完全不必指定保险库：OpsPulse 用你通过 'ops 1p config --vault <name>'
 记住的那个，其次是 $OP_VAULT，否则就是该账号唯一可见的保险库。

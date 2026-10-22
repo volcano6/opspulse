@@ -44,7 +44,7 @@ func skipDocsFile(rel string) bool {
 }
 
 // docsCheckEntryFiles 是 docs/ 之外同样纳入扫描的手写文档。
-var docsCheckEntryFiles = []string{"README.md"}
+var docsCheckEntryFiles = []string{"README.md", "README_zh.md", "SECURITY.md", "CONTRIBUTING.md"}
 
 type docsFile struct {
 	rel  string // 仓库根相对路径，斜杠分隔
@@ -103,8 +103,10 @@ func TestLoadDocsCorpusSkipsHandoffButKeepsCurrentDocs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Test\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(README) error: %v", err)
+	for _, rel := range docsCheckEntryFiles {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(rel)), []byte("# Test\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s) error: %v", rel, err)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(root, "docs", "handoff_handoff.md"), []byte("`ops old --stale`\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(handoff) error: %v", err)

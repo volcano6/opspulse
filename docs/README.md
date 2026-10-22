@@ -58,7 +58,8 @@
 
 ## 5. 文档之外 (Beyond These Docs)
 
-[README.md](../README.md)（简介、安装、快速上手）、[SECURITY.md](../SECURITY.md)（漏洞上报与支持版本）、
+[README.md](../README.md)（英文简介、安装、快速上手）、[README_zh.md](../README_zh.md)（中文简介、安装、快速上手）、
+[SECURITY.md](../SECURITY.md)（漏洞上报与支持版本）、
 [CONTRIBUTING.md](../CONTRIBUTING.md)（构建、提交与中性化约定）、[CHANGELOG.md](../CHANGELOG.md)（版本变更）。
 
 ## 6. 维护约定 (Maintenance)
@@ -85,4 +86,4 @@
 文档里出现的命令与 flag 都能在命令树里解析、命令树里每条命令都在手写文档里露过面。新增或改名命令后
 如果忘了同步文档，这条门禁会直接失败。确有正当例外时，在该行加 `<!-- docs-check: ignore -->` 即可豁免该行
 及其下一行。`docs/*_handoff.md` 是本地评审/交接材料（已被 `.gitignore` 排除），记录的历史命令不参与
-当前 CLI 契约校验；正式文档和 `README.md` 仍会被扫描。
+当前 CLI 契约校验；正式文档、`README.md` 与 `README_zh.md` 仍会被扫描。

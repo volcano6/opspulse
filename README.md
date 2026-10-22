@@ -4,108 +4,126 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/volcano6/opspulse)](https://go.dev/)
 [![License](https://img.shields.io/github/license/volcano6/opspulse)](LICENSE)
 
-**Infrastructure Action Runner** — 面向个人开发者的自托管服务器自动化与备份编排工具。
+English | [简体中文](README_zh.md)
 
-单二进制、无服务端、无远端 Agent：一份声明式清单管理多台 VPS，用 Shell 模板做初始化，用 restic
-做统一备份与跨机还原，执行历史落在本地 SQLite 里。`ops` 与 `opspulse` 是同一个二进制的两个名字，
-两者完全等价。
+**Infrastructure Action Runner** — A lightweight, single-binary CLI for self-hosted server management, environment bootstrapping, and structured restic backups.
 
-## 为什么需要 OpsPulse (Why)
+> **Target Audience**: Single operators and developers managing 10–20 VPS instances from local WSL/Linux environments.
+> **Explicit Non-Goals**: No Web UI, no enterprise PaaS bloat, no multi-tenant RBAC, and no Kubernetes/Swarm orchestration.
+> **Philosophy**: Local-first, zero remote agent, and fail-closed security.
 
-管理多台 VPS 时，个人开发者会反复撞上同样四件事：
+---
 
-- **重复初始化**：每开一台机器都要重敲一遍 apt、常用工具与安全配置。
-- **备份散落各处**：备份脚本和 cron 分散在各台机器上，成功与否无人知晓。
-- **迁移靠手抄**：换服务商时要手工导出数据、改路径、重配证书、重新上线。
-- **凭据四处漂**：密码与 Token 散在明文 `.env` 里，换机器时最难搬。
+## Why OpsPulse?
 
-OpsPulse 把这些收拢成一个可执行文件：清单、模板、备份、还原、调度、告警，都在本地跑。
+When managing multiple cloud VPS instances (Oracle Cloud, RackNerd, BandwagonHost, LightNode, etc.), solo developers repeatedly face the same operational overhead:
 
-## 核心特性 (Features)
+- **Repetitive Host Setup**: Re-running baseline system packages, user creation, and security hardening on every fresh VPS.
+- **Scattered Backups**: Disjointed scripts and crontabs spread across servers without centralized status visibility or verified recovery drills.
+- **Credential Sprawl**: SSH keys and tokens scattered across plaintext configuration files with no secure, reproducible way to restore them on a fresh workstation.
 
-1. **服务器清单与标签检索**：YAML 管理主机、标签与标签键值对，`ops ls --filter` 即筛即用。见[服务器与资产](docs/reference/server_ops.md)。
-2. **无 Agent 的探测与直连**：`ops server info` 一次 SSH 采回系统、硬件与 Docker 概览；`ops ssh` 免记 IP / 端口 / 密钥，支持跳板机。见[服务器与资产](docs/reference/server_ops.md)。
-3. **模板化初始化**：内置 19 个官方模板（`base`、`docker`、`security`、`restic` 等），模板是带 YAML frontmatter 的 Shell 脚本，可用同名文件覆盖。见[配置与模板](docs/reference/configuration.md#6-模板与-frontmatter-templates)。
-4. **结构化备份**：`backups.yaml` 声明任务，并发可调，支持 Dry-Run 与按保留策略自动修剪；常见单主机容器可免配置备份（Compose 原文件或反向生成配置、受支持数据库逻辑导出）。见[备份、还原与调度指南](docs/reference/backup.md)。
-5. **精准还原与常见容器迁移**：按任务、快照或单个资产还原；跨机恢复在找到匹配的容器 manifest 时默认启动，普通文件与同机恢复默认只写文件，路径可按 `remap` 重映射。Docker 支持边界见[支持矩阵](docs/reference/backup.md#docker-支持边界矩阵)。
-6. **定时调度与告警**：标准 Cron 表达式、防重叠、优雅退出；任务结束按 `failure` / `success` / `always` 推送 Webhook（Slack、Discord、飞书、钉钉、企业微信）。见[备份、还原与调度指南](docs/reference/backup.md#4-调度与守护进程-scheduler)与[配置与模板](docs/reference/configuration.md#4-通知渠道-notificationsyaml)。
-7. **资产模型**：Docker Compose、Volume、数据库 Dump、Nginx 站点等有状态数据以稳定 ID 登记，备份与还原按 ID 引用。见[业务资产模型](docs/reference/server_ops.md#8-业务资产与引用保护-assets)。
-8. **本地优先的凭据**：SSH 凭据只存在本机（`0600`），`ops ssh` / `ops exec` / `ops cp` 全程不碰 1Password；1Password 只作为**备份与跨机同步的目标**，`ops 1p backup` 把整机凭据写进一个 Secure Note，`ops 1p restore` 在新机器上一条命令还原。见[1Password 备份与跨机同步指南](docs/reference/onepassword.md)。
+OpsPulse consolidates these responsibilities into a single local binary with no remote agent. Managed hosts still need the standard tools used by the selected workflow, such as `bash`, `restic`, Docker/Compose, and the supported database dump utilities.
 
-## 3 分钟上手 (Quick Start)
+---
+
+## Core Capabilities (Working Today)
+
+### 1. Server Inventory & Agentless Direct Connect
+- **Declarative Inventory**: Manage hosts, SSH credentials, jump hosts (bastions), and tags in a clean YAML format (`servers.yaml`).
+- **One-Shot Hardware & Docker Probing**: `ops server info <name>` executes an agentless probe via a single SSH round-trip, returning formatted OS, hardware specs, and Docker runtime summaries.
+- **Native Interactive SSH**: `ops ssh <name>` opens your native terminal session directly using inventory metadata—no need to remember IP addresses, non-standard ports, or key locations.
+
+### 2. Shell Template Provisioning (Bootstrap)
+- **19 Built-in Templates**: Provision fresh machines using battle-tested shell templates with YAML frontmatter (`base`, `docker`, `security`, `restic`, etc.).
+- **Local Overrides**: Override any official template by placing a matching script in your configuration directory.
+
+### 3. Structured restic Backup & Precision Restore
+- **Declarative restic Orchestration**: Define backup jobs in `backups.yaml`. Features tunable concurrency, dry-run previews, automated retention policies, and structured SQLite execution logging.
+- **Disaster-Ready Emergency Restore (`--allow-untracked`)**: Defaults to fail-closed audit protection. In disaster scenarios where local SQLite is inaccessible or locked, `--allow-untracked` permits emergency recovery to proceed while flagging the run with exit code `3`.
+- **Targeted Asset Model**: Individual services, volumes, and database dumps can be tracked as discrete assets in `assets.yaml` for granular, single-asset restoration.
+
+### 4. Local-First Credentials & 1Password Disaster Recovery
+- **Zero Third-Party Dependency in Hot Path**: Daily operations (`ops ssh`, `ops exec`, `ops cp`) read private keys directly from your local filesystem with strict `0600` permissions.
+- **One-Command Workstation Disaster Recovery**: `ops 1p backup` packages your entire inventory and managed private keys into an encrypted 1Password Secure Note. Setting up a fresh machine takes minutes with `ops 1p restore`.
+
+---
+
+## Quick Start
 
 ```bash
-# 1. 添加一台服务器（密码静默输入，连通后引导注入公钥）
-ops add oracle-sg ubuntu@203.0.113.10 --tags prod
+# 1. Add a server (interactive host key trust, silent password input, optional key injection)
+ops add vps-01 203.0.113.10 --tags prod
 
-# 2. 查看清单（支持按 label / tag 过滤）
-ops ls
+# 2. Inspect host and Docker runtime status
+ops server info vps-01
 
-# 3. 直接登录（原生终端，支持 vim / tmux / htop）
-ops ssh oracle-sg
+# 3. Connect via native SSH
+ops ssh vps-01
 
-# 4. 跑一次已定义的备份任务（任务写在 backups.yaml 里）
+# 4. Run a declarative backup job
 ops backup run web-data
 ```
 
-完整路径（编译、shell 补全、`ops bootstrap` 初始化第一台机器）见[新手入门教程](docs/tutorial/getting_started.md)。
+For the complete walk-through (including shell completions and provisioning templates), see the [Getting Started Tutorial](docs/tutorial/getting_started.md).
 
-## 安装 (Install)
+---
 
-**下载预编译包**（无需 Go 环境）：到 [Releases](https://github.com/volcano6/opspulse/releases) 页面
-下载对应平台的压缩包（linux / darwin / windows × amd64 / arm64），校验后解压即用：
+## Installation
+
+### Pre-built Binaries (Recommended)
+Download the latest archive for your platform from [Releases](https://github.com/volcano6/opspulse/releases):
 
 ```bash
-# 以 linux-amd64 为例，把版本号换成实际下载的那一版
+# Example for linux-amd64 (replace v0.4.0 with the latest release tag):
 tar -xzf opspulse-v0.4.0-linux-amd64.tar.gz
-grep 'linux-amd64' checksums.txt | sha256sum -c -   # macOS 用 shasum -a 256 -c -
-sudo install -m 0755 opspulse /usr/local/bin/
-opspulse version
+grep 'linux-amd64' checksums.txt | sha256sum -c -
+sudo install -m 0755 opspulse /usr/local/bin/ops
+ops version
 ```
 
-Windows 下载 `.zip`，解压后把 `opspulse.exe` 放进 `PATH` 即可；压缩包内已含 `LICENSE` 与 `README.md`。
-
-每个 release 还附带 SPDX JSON SBOM（`*-sbom.spdx.json`），并通过 GitHub 构建来源证明
-（build provenance）签名。可用 GitHub CLI 核验下载文件的来源：
-
+Every official release includes SPDX JSON SBOMs and is signed with GitHub Build Provenance:
 ```bash
 gh attestation verify opspulse-v0.4.0-linux-amd64.tar.gz --repo volcano6/opspulse
 ```
 
-**从源码编译**（需 Go 1.26+）：
+### Build from Source
+Requires **Go 1.26+**:
 
 ```bash
 git clone https://github.com/volcano6/opspulse.git && cd opspulse
-make install              # 编译并安装到 PATH
-ops completion --install  # 注入 shell 补全（Bash / Zsh / Fish / PowerShell）
+make install              # Builds and installs 'ops' to your PATH
+ops completion --install  # Automatically registers shell completions (Bash, Zsh, Fish, PowerShell)
 ```
 
-## 文档地图 (Docs)
+---
 
-- **教程**：[新手入门教程](docs/tutorial/getting_started.md)、[跨机迁移与环境备份](docs/tutorial/migration.md)、[1Password 离线验证教程](docs/tutorial/onepassword_offline_verify.md)
-- **参考手册**（命令、字段、参数）：[命令行参考](docs/reference/cli.md)、[配置与模板](docs/reference/configuration.md)、[服务器与资产](docs/reference/server_ops.md)、[备份、还原与调度指南](docs/reference/backup.md)、[1Password](docs/reference/onepassword.md)
-- **安全与边界**：[架构与信任模型](docs/explanation/architecture.md)、[安全策略](SECURITY.md)
-- **贡献与开发**：[贡献指南](CONTRIBUTING.md)、[版本变更](CHANGELOG.md)
+## Roadmap
 
-全部文档的索引（按场景入口、推荐阅读顺序、故障排查入口）见 [docs/README.md](docs/README.md)。
+- **v0.5.0 (Next)**: Release hardening, broader migration tests, and operational polish.
+- **v0.6.0**: Architecture modularization (`ssh.go` decoupling) and daemon productionization (systemd unit / Windows Task Scheduler).
+- **v0.7.0**: Deep WSL integration, automated SSH topology bootstrapping, and zero-latency local status overview.
+- **v0.8.0**: Docker migration coverage and preflight hardening beyond the current `plan` / `apply` flow.
 
-## 边界与安全模型 (Boundaries and Security)
+---
 
-**不做什么**：
+## Documentation Map
 
-- 不替代 Ansible 类配置管理：只按模板做一次性初始化，不做持续的状态收敛。
-- 不替代 Terraform 类 IaC：管理已经存在的机器，不创建云资源。
-- 不替代监控与告警平台：只在作业结束时推一条事件，不做指标采集与值班。
-- 不封装 restic 的语义：仓库、快照与保留策略仍是 restic 的模型，OpsPulse 只负责编排。
-- 不保证任意 Docker workload 无损迁移：支持常见单主机 Compose / 单容器、named volume、
-  常规 bind mount 与受支持 SQL 数据库；任意 runtime 字段、离线镜像、GPU/宿主机资源、
-  DNS/证书/反向代理与完整手写 SSH 配置需要人工处理。
+- **Tutorials**: [Getting Started](docs/tutorial/getting_started.md), [Container Migration & WSL Backup](docs/tutorial/migration.md), [1Password Offline Verification](docs/tutorial/onepassword_offline_verify.md)
+- **Reference**: [Command Line Reference](docs/reference/cli.md), [Backup & Restore Guide](docs/reference/backup.md), [Configuration & Templates](docs/reference/configuration.md), [Servers & Assets](docs/reference/server_ops.md), [1Password Integration](docs/reference/onepassword.md)
+- **Architecture & Security**: [Architecture & Trust Model](docs/explanation/architecture.md), [Security Policy](SECURITY.md)
+- **Governance**: [Changelog](CHANGELOG.md), [Contributing Guidelines](CONTRIBUTING.md)
 
-**安全边界**：信任根是本机磁盘（`servers.yaml` 权限 `0600`）；主机密钥默认 fail-closed，交互式
-`ops add` 会展示指纹并要求明确确认，非交互场景只有显式 `OPSPULSE_TRUST_NEW_HOST_KEY=1` 才写入未知主机；私钥永不外传；交互式密码经 `0600` 受限临时文件
-交给 `SSH_ASKPASS`，连接退出后写零并删除。完整的信任模型、凭据生命周期与落盘权限表见
-[架构与信任模型](docs/explanation/architecture.md)；漏洞上报渠道与支持版本见 [SECURITY.md](SECURITY.md)。
+---
 
-## 开源协议 (License)
+## Security Model & Non-Goals
 
-基于 [Apache License 2.0](LICENSE) 协议开源。
+- **Not a Puppet/Ansible Replacement**: OpsPulse performs single-shot template bootstrapping and command execution; it does not enforce continuous state convergence.
+- **Not a Cloud Provisioner (Terraform)**: OpsPulse manages existing servers and infrastructure; it does not provision cloud VMs.
+- **Not a Monitoring Platform**: OpsPulse fires discrete webhook events on job completion; it does not store time-series metrics.
+- **Root of Trust**: Local workstation disk (`servers.yaml` with `0600` permissions). Unknown host keys fail closed by default. SSH keys are preferred; passwords, when used, are stored as plaintext in the local inventory and should be removed with `ops server setup-key <name> --remove-password` after key authentication is verified.
+
+---
+
+## License
+
+Open-source software licensed under the [Apache License 2.0](LICENSE).

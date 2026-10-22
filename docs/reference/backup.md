@@ -363,7 +363,7 @@ ops restore history web-data --limit 5
 
 #### 审计写入失败时的行为
 
-恢复与备份使用同一条 fail-closed 原则，但恢复没有 `--allow-untracked` 逃生口：
+恢复与备份使用同一条 fail-closed 原则；两者都提供显式的 `--allow-untracked` 应急模式：
 
 | 场景 | 行为 |
 |:---|:---|
