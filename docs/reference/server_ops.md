@@ -321,6 +321,53 @@ ops server setup --restore --yes
 `--yes` 同时作为既有 `ops 1p restore` 的无人值守确认；它只跳过交互询问，不会绕过
 已知主机密钥冲突等硬阻止项。
 
+### 创建 key-only sudo 用户 (`ops server create-user`)
+
+新机器仍以 root 登录时，可以一次完成「创建普通用户、锁定为该用户的唯一公钥、授予免密 sudo、
+全局禁止 SSH 密码认证、禁用 root SSH」。当前只支持 Ubuntu/Debian：
+
+```bash
+# 创建 ubuntu，复用当前服务器私钥
+ops server create-user web-01 ubuntu
+
+# 使用一个已经存在的私钥
+ops server create-user web-01 ubuntu --key ~/.ssh/existing_server_key
+
+# CI / 无人值守环境显式确认
+ops server create-user web-01 ubuntu --yes
+```
+
+执行顺序是固定的：
+
+1. 创建或复用目标用户，并让 `~/.ssh/authorized_keys` **只保留**命令选定的公钥；
+2. 写入 `/etc/sudoers.d/90-opspulse-<user>`，授予 `NOPASSWD:ALL`；
+3. 用新用户名和新密钥建立一次独立 SSH 连接，并执行 `sudo -n true`；
+4. 验证通过后，把 `servers.yaml` 切换到新用户并清除旧明文密码；
+5. 写入全局 key-only SSH 配置：
+
+   ```text
+   PubkeyAuthentication yes
+   PasswordAuthentication no
+   ChallengeResponseAuthentication no
+   AuthenticationMethods publickey
+   PermitRootLogin no
+   PermitEmptyPasswords no
+   ```
+
+6. 重载 `ssh`/`sshd` 后再次验证新用户仍能通过密钥登录并执行 sudo。
+
+配置写入 `/etc/ssh/sshd_config.d/00-opspulse-key-only.conf`。文件名使用 `00-` 前缀，
+因为 OpenSSH 对同一配置项采用“最先读取的值优先”；这可以覆盖常见的
+`50-cloud-init.conf` 以及主配置末尾的相反设置。命令会先用 `sshd -t`
+校验配置、用 `sshd -T` 确认 `PermitRootLogin no`、`PasswordAuthentication no`、
+keyboard-interactive/ChallengeResponse 已关闭、`AuthenticationMethods publickey` 生效，再重载。
+如果当前系统的 `sshd_config` 在 include 之前已经设置了相反值，命令会失败并恢复原配置，
+同时输出 `sshd -T` 中的实际有效认证设置。
+
+> **sudo 模式**：新用户获得的是 `NOPASSWD` sudo，因此不需要设置可登录密码。root 账户本身
+> 不会被删除，但 root SSH 会被完全禁止。锁定成功后，如果新用户仍无法连接，请从云厂商控制台
+> 删除上面的 drop-in 并重载 sshd。
+
 ### setup 后的批量连通性检查
 
 setup 默认会在结尾给出批量入口建议：

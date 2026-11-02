@@ -57,6 +57,7 @@
 | `ops restore run <job-name>` | 从备份快照执行还原操作 |
 | `ops server` | 管理服务器清单 |
 | `ops server add <name> [target]` | 新增或更新清单中的服务器 |
+| `ops server create-user <name> <username>` | 创建 key-only sudo 用户并锁定全机 SSH 密码与 root 登录 |
 | `ops server edit <name>` | 编辑服务器清单并在保存前校验 |
 | `ops server info <name>` | 采集服务器的系统、硬件与 Docker 状态 |
 | `ops server list` | 列出所有已配置的服务器 |
@@ -1007,6 +1008,48 @@ success / partial / failed / canceled / dry-run。
 | `--skip-test` | - | `false` | 添加服务器时跳过 SSH 连通性测试 |
 | `--tags` | - | (空) | 逗号分隔的标签（如 prod,web） |
 | `--user` | `-u` | `root` | SSH 用户名 |
+
+继承的持久 flag：`--debug`（定义于 `ops`）。
+
+### `ops server create-user <name> <username>`
+
+在 Ubuntu/Debian 服务器上创建或更新一个仅允许 SSH 密钥登录的 sudo 用户。
+
+命令按以下顺序执行，任何一步失败都会停在破坏性修改之前：
+
+```
+  1. 创建用户（已存在时复用）、加入 sudo 组，并让 authorized_keys 只保留指定公钥；
+  2. 为该用户写入 NOPASSWD sudoers 规则，并验证 sudo 可用；
+  3. 用新用户名和新密钥建立一次独立 SSH 连接，证明密钥登录和 sudo 都可用；
+  4. 把 servers.yaml 中的服务器切换到新用户和新密钥，并清除旧明文密码；
+  5. 全局禁用 SSH 密码与 keyboard-interactive 认证，只允许 publickey；
+  6. 设置 PermitRootLogin no，重载 sshd，并再次验证新用户仍可登录。
+```
+
+未指定 --key 时优先复用服务器当前绑定的私钥；没有绑定私钥时生成 OpsPulse
+专用密钥 ~/.ssh/opspulse_<name>。新用户使用 NOPASSWD sudo，因此不需要设置
+可登录密码。目标用户不能是 root。authorized_keys 中除指定公钥外的旧公钥会被移除。
+
+该操作默认要求交互确认；非交互脚本必须显式加 --yes。命令不会删除 root 账户
+或私钥。SSH 被锁定后，如新用户连接异常，请从云厂商控制台恢复：
+
+```
+  rm -f /etc/ssh/sshd_config.d/00-opspulse-key-only.conf
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd
+```
+
+示例：
+```
+  ops server create-user hw-sh ubuntu
+  ops server create-user hw-sh ubuntu --key ~/.ssh/existing_server_key
+  ops server create-user hw-sh ubuntu --yes
+```
+
+| flag | 简写 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--key` | `-i` | (空) | 已存在的私钥路径（默认复用当前私钥，或生成 ~/.ssh/opspulse_<name>） |
+| `--no-copy-key` | - | `false` | 私钥位于 ~/.ssh/ 之外时不提示复制到该目录 |
+| `--yes` | `-y` | `false` | 无人值守确认全局禁用 SSH 密码认证与 root 登录 |
 
 继承的持久 flag：`--debug`（定义于 `ops`）。
 
