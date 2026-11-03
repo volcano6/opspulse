@@ -40,7 +40,7 @@ GO_PROXY ?= $(shell go env GOPROXY)
 COVER_FILE ?= coverage.out
 COVER_MIN  ?= 65
 
-.PHONY: all build build-cross install fmt-check vet vet-cross test cover vuln lint docs-gen docs-check changelog e2e neutrality docker ci clean
+.PHONY: all build build-cross install fmt-check vet vet-cross test cover vuln lint docs-gen docs-check e2e neutrality docker ci clean
 
 all: build
 
@@ -48,7 +48,7 @@ build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) ./cmd/opspulse
 	@cp bin/$(APP_NAME) bin/opspulse 2>/dev/null || true
 
-# 三个发布平台的交叉编译。只做编译校验 + 留出可用产物；真正的六平台矩阵在 release.yaml。
+# 三个平台的交叉编译校验。只证明代码可编译，不生成官方发行包。
 build-cross:
 	@mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME)-linux-amd64 ./cmd/opspulse
@@ -137,14 +137,6 @@ docs-gen:
 # 想让对账器对着另一份语料跑（验证门禁有牙）：OPSPULSE_DOCS_CORPUS=<dir> make docs-check。
 docs-check:
 	go test ./cmd/opspulse -run 'TestCLIReferenceUpToDate|TestDocsLinksResolve|TestDocsCommandsExist|TestDocsCommandsAreDocumented' -count=1
-
-# 从 conventional commit 生成 CHANGELOG 章节——变更记录不再手写。默认区间是
-# 「最近一个 tag..HEAD」，只打印到 stdout；发版时用
-# `make changelog CHANGELOG_ARGS="--version 0.5.0 --write"` 写回 CHANGELOG.md。
-# release.yaml 用同一个脚本生成 release body（因此两处内容同源）。
-# 不接进 ci：它依赖 git 标签与提交历史，不适合当门禁。
-changelog:
-	bash scripts/gen-changelog.sh $(CHANGELOG_ARGS)
 
 # 1Password 备份/还原的离线端到端（stub op CLI）：真实 `op` 需要桌面端交互授权，
 # 无法在 CI 里驱动，这条路径是唯一能覆盖它的自动化。

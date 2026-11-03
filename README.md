@@ -70,39 +70,18 @@ For the complete walk-through (including shell completions and provisioning temp
 
 ## Installation
 
-### Pre-built Binaries (Recommended)
-Download the latest archive for your platform from [Releases](https://github.com/volcano6/opspulse/releases):
-
-```bash
-# Example for linux-amd64 (replace v0.4.0 with the latest release tag):
-tar -xzf opspulse-v0.4.0-linux-amd64.tar.gz
-grep 'linux-amd64' checksums.txt | sha256sum -c -
-sudo install -m 0755 opspulse /usr/local/bin/ops
-ops version
-```
-
-Every official release includes SPDX JSON SBOMs and is signed with GitHub Build Provenance:
-```bash
-gh attestation verify opspulse-v0.4.0-linux-amd64.tar.gz --repo volcano6/opspulse
-```
-
-### Build from Source
-Requires **Go 1.26+**:
+OpsPulse is developed as a source-first, rolling `main` branch. There are no official
+binary releases or stable version series. Build the current source locally:
 
 ```bash
 git clone https://github.com/volcano6/opspulse.git && cd opspulse
 make install              # Builds and installs 'ops' to your PATH
 ops completion --install  # Automatically registers shell completions (Bash, Zsh, Fish, PowerShell)
+ops version               # Shows the build commit and date
 ```
 
----
-
-## Roadmap
-
-- **v0.5.0 (Next)**: Release hardening, broader migration tests, and operational polish.
-- **v0.6.0**: Architecture modularization (`ssh.go` decoupling) and daemon productionization (systemd unit / Windows Task Scheduler).
-- **v0.7.0**: Deep WSL integration, automated SSH topology bootstrapping, and zero-latency local status overview.
-- **v0.8.0**: Docker migration coverage and preflight hardening beyond the current `plan` / `apply` flow.
+Requires **Go 1.26+** and `make`. To update later, pull the latest source and run
+`make install` again.
 
 ---
 
@@ -111,7 +90,7 @@ ops completion --install  # Automatically registers shell completions (Bash, Zsh
 - **Tutorials**: [Getting Started](docs/tutorial/getting_started.md), [Container Migration & WSL Backup](docs/tutorial/migration.md), [1Password Offline Verification](docs/tutorial/onepassword_offline_verify.md)
 - **Reference**: [Command Line Reference](docs/reference/cli.md), [Backup & Restore Guide](docs/reference/backup.md), [Configuration & Templates](docs/reference/configuration.md), [Servers & Assets](docs/reference/server_ops.md), [1Password Integration](docs/reference/onepassword.md)
 - **Architecture & Security**: [Architecture & Trust Model](docs/explanation/architecture.md), [Security Policy](SECURITY.md)
-- **Governance**: [Changelog](CHANGELOG.md), [Contributing Guidelines](CONTRIBUTING.md)
+- **Development**: [Contributing Guidelines](CONTRIBUTING.md)
 
 ---
 

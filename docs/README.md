@@ -59,8 +59,8 @@
 ## 5. 文档之外 (Beyond These Docs)
 
 [README.md](../README.md)（英文简介、安装、快速上手）、[README_zh.md](../README_zh.md)（中文简介、安装、快速上手）、
-[SECURITY.md](../SECURITY.md)（漏洞上报与支持版本）、
-[CONTRIBUTING.md](../CONTRIBUTING.md)（构建、提交与中性化约定）、[CHANGELOG.md](../CHANGELOG.md)（版本变更）。
+[SECURITY.md](../SECURITY.md)（漏洞上报与当前主线支持范围）、
+[CONTRIBUTING.md](../CONTRIBUTING.md)（构建、提交与中性化约定）。
 
 ## 6. 维护约定 (Maintenance)
 
@@ -72,10 +72,9 @@
 - **CLI 文案就是文档文案**：命令摘要、`Long` 说明与 flag 文案用中文写在 `cmd/opspulse/*.go`，`ops --help`
   与 `reference/cli.md` 是同一份文字的两个出口（用法与帮助模板在 `cmd/opspulse/main.go`）。改文案改 Go 源，
   再跑 `make docs-gen`；新增命令时按中文写，别留英文。
-- **冻结清单**：不新增 CODE_OF_CONDUCT、CONTRIBUTORS、wiki、ADR 与文档专用 CHANGELOG；要加新页面前先问
+- **冻结清单**：不新增 CODE_OF_CONDUCT、CONTRIBUTORS、wiki、ADR、CHANGELOG 与发行说明；要加新页面前先问
   「它是不是已有页面的一节」。
-- **版本变更不手写**：`CHANGELOG.md` 由 `make changelog`（`scripts/gen-changelog.sh`）从 conventional
-  commit 生成，发版时写入。
+- **源码是唯一发行物**：不维护版本 tag、官方二进制包或自动 Release；安装说明只描述从当前 `main` 构建。
 
 ---
 

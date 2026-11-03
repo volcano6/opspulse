@@ -6,11 +6,10 @@ name: CI
 # 要新增/修改检查项时改 Makefile（以及 `ci` 目标的依赖列表），不要在这里内联命令——
 # 历史上 CI 与 scripts/ci.sh 各有一份命令，两边很快就漂移成了两套闸门。
 #
-# 触发面：main 的 push/PR，以及 `v*` tag（tag push 不再绕过门禁）。
+# 触发面：main 的 push/PR。项目不维护版本 tag 或官方二进制发行。
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -115,7 +114,7 @@ jobs:
       - name: Vulnerability scan
         run: make vuln
 
-  # 三平台交叉构建（证明 windows/darwin 也能编译出产物）。
+  # 三平台交叉构建：只证明 linux/darwin/windows 都能编译，不上传可下载发行包。
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -127,10 +126,6 @@ jobs:
           cache: true
       - name: Cross build
         run: make build-cross
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: opspulse-cross
-          path: bin/
 
   # 1Password 备份/还原的离线端到端：真实 `op` 需要桌面端交互授权，CI 里无法驱动，
   # 因此它用 scripts/opstub 这个 stub CLI 断言调用序列（脚本自己构建二进制）。

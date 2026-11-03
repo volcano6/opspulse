@@ -70,37 +70,17 @@ ops backup run web-data
 
 ## 安装 (Install)
 
-### 下载预编译包（推荐）
-在 [Releases](https://github.com/volcano6/opspulse/releases) 页面下载对应平台的压缩包（linux / darwin / windows × amd64 / arm64）：
+OpsPulse 采用源码优先的滚动 `main` 分支开发，不提供官方预编译包，也不维护稳定版本系列。
+请在本地构建当前源码：
 
-```bash
-# 以 linux-amd64 为例（把 v0.4.0 换成最新 Release 的版本号）：
-tar -xzf opspulse-v0.4.0-linux-amd64.tar.gz
-grep 'linux-amd64' checksums.txt | sha256sum -c -
-sudo install -m 0755 opspulse /usr/local/bin/ops
-ops version
-```
-
-每个官方 Release 均附带 SPDX JSON SBOM 并通过 GitHub Build Provenance 签名。可用 GitHub CLI 核验：
-```bash
-gh attestation verify opspulse-v0.4.0-linux-amd64.tar.gz --repo volcano6/opspulse
-```
-
-### 从源码编译（需 Go 1.26+）
 ```bash
 git clone https://github.com/volcano6/opspulse.git && cd opspulse
 make install              # 编译并安装 ops 到 PATH
 ops completion --install  # 自动注册 Shell 补全（Bash / Zsh / Fish / PowerShell）
+ops version               # 显示本次构建的 commit 与日期
 ```
 
----
-
-## 演进里程碑 (Roadmap)
-
-- **v0.5.0（下一版本）**：发布加固、扩大迁移测试覆盖面与日常运维打磨。
-- **v0.6.0**：架构模块化解耦（`ssh.go` 拆分）与守护进程系统服务化（systemd / Windows 计划任务）。
-- **v0.7.0**：WSL 深度集成优化、SSH 拓扑秒级重建与本地缓存状态快览。
-- **v0.8.0**：在现有 `plan` / `apply` 流程之上扩大 Docker 迁移覆盖面并加固预检。
+需要 **Go 1.26+** 和 `make`。后续更新时拉取最新源码，再执行一次 `make install`。
 
 ---
 
@@ -109,7 +89,7 @@ ops completion --install  # 自动注册 Shell 补全（Bash / Zsh / Fish / Powe
 - **教程**：[新手入门教程](docs/tutorial/getting_started.md)、[容器跨机迁移与环境备份](docs/tutorial/migration.md)、[1Password 离线验证教程](docs/tutorial/onepassword_offline_verify.md)
 - **参考手册**：[命令行参考](docs/reference/cli.md)、[备份、还原与调度指南](docs/reference/backup.md)、[配置与模板](docs/reference/configuration.md)、[服务器与资产](docs/reference/server_ops.md)、[1Password](docs/reference/onepassword.md)
 - **架构与边界**：[架构与信任模型](docs/explanation/architecture.md)、[安全策略](SECURITY.md)
-- **规范与开发**：[变更日志](CHANGELOG.md)、[贡献指南](CONTRIBUTING.md)
+- **参与开发**：[贡献指南](CONTRIBUTING.md)
 
 ---
 
